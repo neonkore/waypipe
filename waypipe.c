@@ -23,8 +23,6 @@
  * SOFTWARE.
  */
 
-#define _POSIX_C_SOURCE 200112L
-
 #include <getopt.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -32,129 +30,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
-#include <errno.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-
-static int run_client(const char *socket_path)
-{
-	struct sockaddr_un saddr;
-	int fd;
-
-	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
-		fprintf(stderr, "Socket path is too long and would be truncated: %s\n",
-				socket_path);
-		return EXIT_FAILURE;
-	}
-
-	saddr.sun_family = AF_UNIX;
-	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd == -1) {
-		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
-		return EXIT_FAILURE;
-	}
-	if (bind(fd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		fprintf(stderr, "Error binding socket: %s\n", strerror(errno));
-		close(fd);
-		return EXIT_FAILURE;
-	}
-
-	if (listen(fd, 1) == -1) {
-		fprintf(stderr, "Error listening to socket: %s\n",
-				strerror(errno));
-		close(fd);
-		unlink(socket_path);
-		return EXIT_FAILURE;
-	}
-
-	fprintf(stderr, "I'm a client on %s!\n", socket_path);
-	for (int i = 0; i < 1; i++) {
-		// Q: multiple parallel client support?
-
-		int client = accept(fd, NULL, NULL);
-		if (client == -1) {
-			fprintf(stderr, "Skipping connection\n");
-			continue;
-		}
-
-		int bufsize = 4096;
-		char *buf = calloc(bufsize + 1, 1);
-		while (1) {
-			int nb = read(client, buf, bufsize);
-			if (nb <= 0) {
-				fprintf(stderr, "Read failed, stopping\n");
-				break;
-			} else {
-				fprintf(stderr, "Read with %d bytes of data |%s|\n",
-						nb, buf);
-			}
-		}
-		fprintf(stderr, "...\n");
-	}
-
-	close(fd);
-	unlink(socket_path);
-
-	return EXIT_SUCCESS;
-}
-
-static int run_server(
-		const char *socket_path, int app_argc, const char **app_argv)
-{
-	fprintf(stderr, "I'm a server on %s!\n", socket_path);
-	fprintf(stderr, "Trying to run %d:", app_argc);
-	for (int i = 0; i < app_argc; i++) {
-		fprintf(stderr, " %s", app_argv[i]);
-	}
-	fprintf(stderr, "\n");
-
-	unsetenv("WAYLAND_DISPLAY");
-	setenv("WAYLAND_SOCKET", "xyzzy", 0);
-	pid_t pid = fork();
-	if (!pid) {
-		fprintf(stderr, "EEK\n");
-		execv(app_argv[0], app_argv + 1);
-		exit(EXIT_SUCCESS);
-	}
-	wait(pid);
-	fprintf(stderr, "Program ended\n");
-
-	struct sockaddr_un saddr;
-	int fd;
-
-	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
-		fprintf(stderr, "Socket path is too long and would be truncated: %s\n",
-				socket_path);
-		return EXIT_FAILURE;
-	}
-
-	saddr.sun_family = AF_UNIX;
-	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd == -1) {
-		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
-		return EXIT_FAILURE;
-	}
-	if (connect(fd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		fprintf(stderr, "Error connecting socket: %s\n",
-				strerror(errno));
-		close(fd);
-		return EXIT_FAILURE;
-	}
-
-	for (int i = 0; i < 10; i++) {
-		sleep(1);
-		char msg[256];
-		sprintf(msg, "Message #%d", i);
-		write(fd, msg, strlen(msg) + 1);
-	}
-	close(fd);
-
-	return EXIT_SUCCESS;
-}
+int run_server(const char *socket_path, int app_argc, const char **app_argv);
+int run_client(const char *socket_path);
 
 static int usage(int retcode)
 {
