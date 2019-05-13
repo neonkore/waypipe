@@ -48,7 +48,7 @@ int run_client(const char *socket_path)
 	int displayfd = wl_display_get_fd(display);
 
 	struct sockaddr_un saddr;
-	int fd;
+	int channelsock;
 
 	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
 		fprintf(stderr, "Socket path is too long and would be truncated: %s\n",
@@ -58,21 +58,21 @@ int run_client(const char *socket_path)
 
 	saddr.sun_family = AF_UNIX;
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd == -1) {
+	channelsock = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (channelsock == -1) {
 		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
 		return EXIT_FAILURE;
 	}
-	if (bind(fd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
+	if (bind(channelsock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
 		fprintf(stderr, "Error binding socket: %s\n", strerror(errno));
-		close(fd);
+		close(channelsock);
 		return EXIT_FAILURE;
 	}
 
-	if (listen(fd, 1) == -1) {
+	if (listen(channelsock, 1) == -1) {
 		fprintf(stderr, "Error listening to socket: %s\n",
 				strerror(errno));
-		close(fd);
+		close(channelsock);
 		unlink(socket_path);
 		return EXIT_FAILURE;
 	}
@@ -85,8 +85,8 @@ int run_client(const char *socket_path)
 		// Q: multiple parallel remote client support? then multiplex
 		// over all accepted clients?
 
-		int client = accept(fd, NULL, NULL);
-		if (client == -1) {
+		int chanclient = accept(channelsock, NULL, NULL);
+		if (chanclient == -1) {
 			fprintf(stderr, "Skipping connection\n");
 			continue;
 		}
@@ -97,11 +97,12 @@ int run_client(const char *socket_path)
 			// pselect multiple.
 			fd_set readfds;
 			FD_ZERO(&readfds);
-			FD_SET(client, &readfds);
+			FD_SET(chanclient, &readfds);
 			FD_SET(displayfd, &readfds);
 			struct timespec timeout = {
 					.tv_sec = 0, .tv_nsec = 700000000L};
-			int maxfd = client > displayfd ? client : displayfd;
+			int maxfd = chanclient > displayfd ? chanclient
+							   : displayfd;
 			int r = pselect(maxfd + 1, &readfds, NULL, NULL,
 					&timeout, NULL);
 			if (r == -1) {
@@ -109,57 +110,91 @@ int run_client(const char *socket_path)
 				break;
 			}
 			fprintf(stderr, "Post select %d %d %d\n", r,
-					FD_ISSET(client, &readfds),
+					FD_ISSET(chanclient, &readfds),
 					FD_ISSET(displayfd, &readfds));
 			if (r == 0) {
 				const char *msg = "magic";
-				ssize_t nb = write(
-						client, msg, strlen(msg) + 1);
+				ssize_t nb = write(chanclient, msg,
+						strlen(msg) + 1);
 				if (nb == -1) {
 					fprintf(stderr, "Write failed, retrying anyway\n");
 				}
 
 				continue;
 			}
-			if (FD_ISSET(client, &readfds)) {
+			if (FD_ISSET(chanclient, &readfds)) {
 				fprintf(stderr, "client isset\n");
-				int rc = iovec_read(client, buffer, maxmsg,
-						NULL, NULL);
-				if (rc == -1) {
-					fprintf(stderr, "FD Read failure %ld: %s\n",
-							rc, strerror(errno));
+				struct muxheader header;
+				if (read(chanclient, &header,
+						    sizeof(struct muxheader)) <
+						sizeof(struct muxheader)) {
+					fprintf(stderr, "FD header read failure: %s\n",
+							strerror(errno));
 					break;
 				}
-				fprintf(stderr, "read bytes: %d\n", rc);
-				if (rc > 0) {
-					int wc = iovec_write(displayfd, buffer,
-							rc, NULL, NULL);
-					if (wc == -1) {
-						fprintf(stderr, "FD Write  failure %ld: %s\n",
-								wc,
-								strerror(errno));
+				char *tmpbuf = calloc(header.length, 1);
+				int nread = 0;
+				while (nread < header.length) {
+					int nr = read(chanclient,
+							tmpbuf + nread,
+							header.length - nread);
+					if (nr <= 0) {
 						break;
 					}
-				} else {
-					fprintf(stderr, "the other side shut down\n");
+					nread += nr;
+				}
+				if (nread < header.length) {
+					fprintf(stderr, "FD body read failure %ld/%ld: %s\n",
+							nread, header.length,
+							strerror(errno));
 					break;
 				}
+
+				fprintf(stderr, "read bytes: %d = %d\n", nread,
+						header.length);
+				int wc = iovec_write(displayfd, tmpbuf, nread,
+						NULL, NULL);
+				if (wc == -1) {
+					fprintf(stderr, "FD Write  failure %ld: %s\n",
+							wc, strerror(errno));
+					break;
+				}
+				free(tmpbuf);
+				fprintf(stderr, "client done\n");
 			}
 			if (FD_ISSET(displayfd, &readfds)) {
 				fprintf(stderr, "displayfd isset\n");
+				int fdbuf[28];
+				int nfds = 28;
 				int rc = iovec_read(displayfd, buffer, maxmsg,
-						NULL, NULL);
+						fdbuf, &nfds);
 				if (rc == -1) {
 					fprintf(stderr, "CS Read failure %ld: %s\n",
 							rc, strerror(errno));
 					break;
 				}
 				if (rc > 0) {
-					int wc = iovec_write(client, buffer, rc,
-							NULL, NULL);
-					if (wc == -1) {
-						fprintf(stderr, "CS Write  failure %ld: %s\n",
-								wc,
+					if (nfds > 0) {
+						for (int i = 0; i < nfds; i++) {
+							fprintf(stderr, "Got FD = %d\n",
+									fdbuf[i]);
+							identify_fd(fdbuf[i]);
+						}
+					}
+
+					struct muxheader header = {
+							.metadata = 0,
+							.length = rc};
+					if (write(chanclient, &header,
+							    sizeof(header)) ==
+							-1) {
+						fprintf(stderr, "CS write header failure: %s\n",
+								strerror(errno));
+						break;
+					}
+					if (write(chanclient, buffer, rc) ==
+							-1) {
+						fprintf(stderr, "CS write body failure: %s\n",
 								strerror(errno));
 						break;
 					}
@@ -174,7 +209,7 @@ int run_client(const char *socket_path)
 
 	fprintf(stderr, "Closing\n");
 	close(displayfd);
-	close(fd);
+	close(channelsock);
 	unlink(socket_path);
 
 	return EXIT_SUCCESS;

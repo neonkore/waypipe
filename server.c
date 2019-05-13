@@ -84,7 +84,7 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 	int status;
 
 	struct sockaddr_un saddr;
-	int fd;
+	int channelfd;
 
 	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
 		fprintf(stderr, "Socket path is too long and would be truncated: %s\n",
@@ -94,15 +94,16 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 
 	saddr.sun_family = AF_UNIX;
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd == -1) {
+	channelfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (channelfd == -1) {
 		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
 		return EXIT_FAILURE;
 	}
-	if (connect(fd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
+	if (connect(channelfd, (struct sockaddr *)&saddr, sizeof(saddr)) ==
+			-1) {
 		fprintf(stderr, "Error connecting socket: %s\n",
 				strerror(errno));
-		close(fd);
+		close(channelfd);
 		return EXIT_FAILURE;
 	}
 
@@ -126,9 +127,10 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 			break;
 		}
 		FD_ZERO(&readfds);
-		FD_SET(fd, &readfds);
+		FD_SET(channelfd, &readfds);
 		FD_SET(client_socket, &readfds);
-		int maxfd = fd > client_socket ? fd : client_socket;
+		int maxfd = channelfd > client_socket ? channelfd
+						      : client_socket;
 		int r = pselect(maxfd + 1, &readfds, NULL, NULL, &timeout,
 				NULL);
 		if (r < 0) {
@@ -142,27 +144,42 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 		} else {
 			fprintf(stderr, "%d are set\n", r);
 		}
-		if (FD_ISSET(fd, &readfds)) {
+		if (FD_ISSET(channelfd, &readfds)) {
 			fprintf(stderr, "Readfd isset\n");
-			int rc = iovec_read(fd, buffer, maxmsg, NULL, NULL);
-			if (rc == -1) {
-				fprintf(stderr, "FD Read failure %ld: %s\n", rc,
+			struct muxheader header;
+			if (read(channelfd, &header, sizeof(struct muxheader)) <
+					sizeof(struct muxheader)) {
+				fprintf(stderr, "FD header read failure: %s\n",
 						strerror(errno));
 				break;
 			}
-			fprintf(stderr, "Read from conn %d bytes\n", rc);
-			if (rc > 0) {
-				int wc = iovec_write(client_socket, buffer, rc,
-						NULL, NULL);
-				if (wc == -1) {
-					fprintf(stderr, "FD Write  failure %ld: %s\n",
-							wc, strerror(errno));
+			char *tmpbuf = calloc(header.length, 1);
+			int nread = 0;
+			while (nread < header.length) {
+				int nr = read(channelfd, tmpbuf + nread,
+						header.length - nread);
+				if (nr <= 0) {
 					break;
 				}
-			} else {
-				fprintf(stderr, "the other side shut down\n");
+				nread += nr;
+			}
+			if (nread < header.length) {
+				fprintf(stderr, "FD body read failure %ld/%ld: %s\n",
+						nread, header.length,
+						strerror(errno));
 				break;
 			}
+
+			fprintf(stderr, "Read from conn %d = %d bytes\n", nread,
+					header.length);
+			int wc = iovec_write(client_socket, tmpbuf, nread, NULL,
+					NULL);
+			if (wc == -1) {
+				fprintf(stderr, "FD Write  failure %ld: %s\n",
+						wc, strerror(errno));
+				break;
+			}
+			free(tmpbuf);
 		}
 		if (FD_ISSET(client_socket, &readfds)) {
 			fprintf(stderr, "client socket isset\n");
@@ -174,11 +191,17 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 				break;
 			}
 			if (rc > 0) {
-				int wc = iovec_write(
-						fd, buffer, rc, NULL, NULL);
-				if (wc == -1) {
-					fprintf(stderr, "CS Write  failure %ld: %s\n",
-							wc, strerror(errno));
+				struct muxheader header = {
+						.metadata = 0, .length = rc};
+				if (write(channelfd, &header, sizeof(header)) ==
+						-1) {
+					fprintf(stderr, "CS write header failure: %s\n",
+							strerror(errno));
+					break;
+				}
+				if (write(channelfd, buffer, rc) == -1) {
+					fprintf(stderr, "CS write body failure: %s\n",
+							strerror(errno));
 					break;
 				}
 			} else {
@@ -191,7 +214,7 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 			break;
 		}
 	}
-	close(fd);
+	close(channelfd);
 
 	// todo: scope manipulation, to ensure all cleanups are done
 	waitpid(pid, &status, 0);

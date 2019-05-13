@@ -25,10 +25,18 @@
 #ifndef WAYPIPE_UTIL_H
 #define WAYPIPE_UTIL_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
-int iovec_read(int socket, char* buf, size_t buflen, int* fds, int* numfds);
-int iovec_write(int conn, char* buf, size_t buflen, int* fds, int* numfds);
+int iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds);
+int iovec_write(int conn, char *buf, size_t buflen, int *fds, int *numfds);
+int chan_write(int conn, char *buf, size_t buflen);
+
+void identify_fd(int fd);
+
+struct muxheader {
+	int metadata;
+	int length;
+};
 
 #endif // WAYPIPE_UTIL_H

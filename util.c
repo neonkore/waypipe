@@ -23,14 +23,21 @@
  * SOFTWARE.
  */
 
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
-
-int iovec_read(int conn, char* buf, size_t buflen, int* fds, int* numfds) {
-	char cmsgdata[ (CMSG_LEN(28 * sizeof(int32_t))) ];
+int iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds)
+{
+	char cmsgdata[(CMSG_LEN(28 * sizeof(int32_t)))];
 	struct iovec the_iovec;
 	the_iovec.iov_len = buflen;
 	the_iovec.iov_base = buf;
@@ -44,12 +51,33 @@ int iovec_read(int conn, char* buf, size_t buflen, int* fds, int* numfds) {
 	msg.msg_flags = 0;
 	ssize_t ret = recvmsg(conn, &msg, MSG_DONTWAIT);
 
-	// parse FDS
+	if (fds && numfds) {
+		int maxfds = *numfds;
+		*numfds = 0;
 
+		// Read cmsg
+		struct cmsghdr *header = CMSG_FIRSTHDR(&msg);
+		while (header) {
+			if (header->cmsg_level == SOL_SOCKET &&
+					header->cmsg_type == SCM_RIGHTS) {
+				int *data = (int *)CMSG_DATA(header);
+				int nf = (header->cmsg_len -
+							 sizeof(struct cmsghdr)) /
+					 sizeof(int);
+				for (int i = 0; i < nf && *numfds < maxfds;
+						i++) {
+					fds[(*numfds)++] = data[i];
+				}
+			}
+
+			header = CMSG_NXTHDR(&msg, header);
+		}
+	}
 	return ret;
 }
-int iovec_write(int conn, char* buf, size_t buflen, int* fds, int* numfds) {
-//	char cmsgdata[ (CMSG_LEN(28 * sizeof(int32_t))) ];
+int iovec_write(int conn, char *buf, size_t buflen, int *fds, int *numfds)
+{
+	//	char cmsgdata[ (CMSG_LEN(28 * sizeof(int32_t))) ];
 	struct iovec the_iovec;
 	the_iovec.iov_len = buflen;
 	the_iovec.iov_base = buf;
@@ -66,4 +94,29 @@ int iovec_write(int conn, char* buf, size_t buflen, int* fds, int* numfds) {
 	// parse FDS
 
 	return ret;
+}
+
+void identify_fd(int fd)
+{
+	struct stat fsdata;
+	memset(&fsdata, 0, sizeof(fsdata));
+	int ret = fstat(fd, &fsdata);
+	if (ret == -1) {
+		fprintf(stderr, "Failed to identify %d as a file: %s\n", fd,
+				strerror(errno));
+	} else {
+		fprintf(stderr, "The filedesc %d is a file, of size %d!\n", fd,
+				fsdata.st_size);
+		// then we can open the file, read the contents, create a mirror
+		// file, make diffs, and transfer them out of band!
+
+		// memmap & clone, assuming that the file will not be resized.
+		char *data = mmap(NULL, fsdata.st_size, PROT_READ, MAP_SHARED,
+				fd, 0);
+		if (!data) {
+			fprintf(stderr, "Mmap failed!\n");
+		}
+
+		munmap(data, fsdata.st_size);
+	}
 }
