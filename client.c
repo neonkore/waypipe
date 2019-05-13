@@ -23,12 +23,18 @@
  * SOFTWARE.
  */
 
+#define _XOPEN_SOURCE 700
+
+#include "util.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
 
@@ -39,6 +45,7 @@ int run_client(const char *socket_path)
 		fprintf(stderr, "Failed to connect to a wayland server.\n");
 		return EXIT_FAILURE;
 	}
+	int displayfd = wl_display_get_fd(display);
 
 	struct sockaddr_un saddr;
 	int fd;
@@ -70,9 +77,13 @@ int run_client(const char *socket_path)
 		return EXIT_FAILURE;
 	}
 
+	int maxmsg = 4096;
+	char *buffer = calloc(1, maxmsg + 1);
+
 	fprintf(stderr, "I'm a client on %s!\n", socket_path);
 	for (int i = 0; i < 1; i++) {
-		// Q: multiple parallel client support?
+		// Q: multiple parallel remote client support? then multiplex
+		// over all accepted clients?
 
 		int client = accept(fd, NULL, NULL);
 		if (client == -1) {
@@ -83,18 +94,86 @@ int run_client(const char *socket_path)
 		int bufsize = 4096;
 		char *buf = calloc(bufsize + 1, 1);
 		while (1) {
-			int nb = read(client, buf, bufsize);
-			if (nb <= 0) {
-				fprintf(stderr, "Read failed, stopping\n");
+			// pselect multiple.
+			fd_set readfds;
+			FD_ZERO(&readfds);
+			FD_SET(client, &readfds);
+			FD_SET(displayfd, &readfds);
+			struct timespec timeout = {
+					.tv_sec = 0, .tv_nsec = 700000000L};
+			int maxfd = client > displayfd ? client : displayfd;
+			int r = pselect(maxfd + 1, &readfds, NULL, NULL,
+					&timeout, NULL);
+			if (r == -1) {
+				fprintf(stderr, "Select failed, stopping\n");
 				break;
-			} else {
-				fprintf(stderr, "Read with %d bytes of data |%s|\n",
-						nb, buf);
+			}
+			fprintf(stderr, "Post select %d %d %d\n", r,
+					FD_ISSET(client, &readfds),
+					FD_ISSET(displayfd, &readfds));
+			if (r == 0) {
+				const char *msg = "magic";
+				ssize_t nb = write(
+						client, msg, strlen(msg) + 1);
+				if (nb == -1) {
+					fprintf(stderr, "Write failed, retrying anyway\n");
+				}
+
+				continue;
+			}
+			if (FD_ISSET(client, &readfds)) {
+				fprintf(stderr, "client isset\n");
+				int rc = iovec_read(client, buffer, maxmsg,
+						NULL, NULL);
+				if (rc == -1) {
+					fprintf(stderr, "FD Read failure %ld: %s\n",
+							rc, strerror(errno));
+					break;
+				}
+				fprintf(stderr, "read bytes: %d\n", rc);
+				if (rc > 0) {
+					int wc = iovec_write(displayfd, buffer,
+							rc, NULL, NULL);
+					if (wc == -1) {
+						fprintf(stderr, "FD Write  failure %ld: %s\n",
+								wc,
+								strerror(errno));
+						break;
+					}
+				} else {
+					fprintf(stderr, "the other side shut down\n");
+					break;
+				}
+			}
+			if (FD_ISSET(displayfd, &readfds)) {
+				fprintf(stderr, "displayfd isset\n");
+				int rc = iovec_read(displayfd, buffer, maxmsg,
+						NULL, NULL);
+				if (rc == -1) {
+					fprintf(stderr, "CS Read failure %ld: %s\n",
+							rc, strerror(errno));
+					break;
+				}
+				if (rc > 0) {
+					int wc = iovec_write(client, buffer, rc,
+							NULL, NULL);
+					if (wc == -1) {
+						fprintf(stderr, "CS Write  failure %ld: %s\n",
+								wc,
+								strerror(errno));
+						break;
+					}
+				} else {
+					fprintf(stderr, "the display shut down\n");
+					break;
+				}
 			}
 		}
 		fprintf(stderr, "...\n");
 	}
 
+	fprintf(stderr, "Closing\n");
+	close(displayfd);
 	close(fd);
 	unlink(socket_path);
 
