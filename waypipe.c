@@ -119,7 +119,7 @@ int main(int argc, char **argv)
 		argv++;
 		argc--;
 	}
-	wp_loglevel = debug ? WP_DEBUG : WP_ERROR;
+	waypipe_loglevel = debug ? WP_DEBUG : WP_ERROR;
 
 	if (is_client) {
 		return run_client(socketpath);

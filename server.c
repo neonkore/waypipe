@@ -74,12 +74,12 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 		return EXIT_FAILURE;
 	}
 
-	struct wl_display *display = wl_display_create();
-	if (wl_display_add_socket_fd(display, csockpair[0]) == -1) {
-		wp_log(WP_ERROR, "Failed to add socket to display object\n");
-		wl_display_destroy(display);
-		return EXIT_FAILURE;
-	}
+	//	struct wl_display *display = wl_display_create();
+	//	if (wl_display_add_socket_fd(display, csockpair[0]) == -1) {
+	//		wp_log(WP_ERROR, "Failed to add socket to display
+	// object\n"); 		wl_display_destroy(display); 		return
+	// EXIT_FAILURE;
+	//	}
 
 	int status;
 
@@ -117,17 +117,16 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 	 * csockpair[0] -> fd
 	 * 1 second timer (poll waitpid) */
 	struct timespec timeout = {.tv_sec = 0, .tv_nsec = 500000000L};
-	fd_set readfds;
+
 	int iter = 0;
 
 	int maxmsg = 4096;
 	char *buffer = calloc(1, maxmsg + 1);
-
+	struct fd_translation_map fdtransmap = {
+			.local_sign = -1, .list = NULL, .max_local_id = 1};
 	while (true) {
 		iter++;
-		if (iter > 10) {
-			break;
-		}
+		fd_set readfds;
 		FD_ZERO(&readfds);
 		FD_SET(channelfd, &readfds);
 		FD_SET(client_socket, &readfds);
@@ -140,45 +139,58 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 					strerror(errno));
 			return EXIT_FAILURE;
 		}
-		if (r == 0) {
-			// timeout!
-			wp_log(WP_DEBUG, "timeout,?? \n");
-		} else {
-			wp_log(WP_DEBUG, "%d are set\n", r);
-		}
+
+		wp_log(WP_DEBUG,
+				"Post select %d channelfd=%d client_socket=%d\n",
+				r, FD_ISSET(channelfd, &readfds),
+				FD_ISSET(client_socket, &readfds));
 		if (FD_ISSET(channelfd, &readfds)) {
 			wp_log(WP_DEBUG, "Readfd isset\n");
-			struct muxheader header;
-			if (read(channelfd, &header, sizeof(struct muxheader)) <
-					sizeof(struct muxheader)) {
+			ssize_t nbytes;
+			if (read(channelfd, &nbytes, sizeof(ssize_t)) <
+					(ssize_t)sizeof(ssize_t)) {
 				wp_log(WP_ERROR, "FD header read failure: %s\n",
 						strerror(errno));
 				break;
 			}
-			char *tmpbuf = calloc(header.length, 1);
-			int nread = 0;
-			while (nread < header.length) {
-				int nr = read(channelfd, tmpbuf + nread,
-						header.length - nread);
+			char *tmpbuf = calloc(nbytes, 1);
+			ssize_t nread = 0;
+			while (nread < nbytes) {
+				ssize_t nr = read(channelfd, tmpbuf + nread,
+						nbytes - nread);
 				if (nr <= 0) {
 					break;
 				}
 				nread += nr;
 			}
-			if (nread < header.length) {
+			if (nread < nbytes) {
 				wp_log(WP_ERROR,
 						"FD body read failure %ld/%ld: %s\n",
-						nread, header.length,
-						strerror(errno));
+						nread, nbytes, strerror(errno));
 				break;
 			}
+			char *waymsg;
+			int waylen;
+			int nids;
+			int ids[28];
+			int ntransfers;
+			struct transfer transfers[50];
+			unpack_pipe_message((size_t)nbytes, tmpbuf, &waylen,
+					&waymsg, &nids, ids, &ntransfers,
+					transfers);
+
+			apply_updates(&fdtransmap, ntransfers, transfers);
+
+			int fds[28];
+			memset(fds, 0, sizeof(fds));
+			untranslate_ids(&fdtransmap, nids, ids, fds);
 
 			wp_log(WP_DEBUG, "Read from conn %d = %d bytes\n",
-					nread, header.length);
-			int wc = iovec_write(client_socket, tmpbuf, nread, NULL,
-					NULL);
+					nread, nbytes);
+			int wc = iovec_write(client_socket, waymsg, waylen, fds,
+					nids);
 			if (wc == -1) {
-				wp_log(WP_ERROR, "FD Write  failure %ld: %s\n",
+				wp_log(WP_ERROR, "FD Write  failure %d: %s\n",
 						wc, strerror(errno));
 				break;
 			}
@@ -219,9 +231,12 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 			break;
 		}
 	}
+	cleanup_translation_map(&fdtransmap);
 	close(channelfd);
+	free(buffer);
 
 	// todo: scope manipulation, to ensure all cleanups are done
+	wp_log(WP_DEBUG, "Waiting for child process\n");
 	waitpid(pid, &status, 0);
 	wp_log(WP_DEBUG, "Program ended\n");
 	return EXIT_SUCCESS;

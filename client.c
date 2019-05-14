@@ -79,140 +79,144 @@ int run_client(const char *socket_path)
 		return EXIT_FAILURE;
 	}
 
-	int maxmsg = 4096;
-	char *buffer = calloc(1, maxmsg + 1);
-
 	wp_log(WP_DEBUG, "I'm a client on %s!\n", socket_path);
-	for (int i = 0; i < 1; i++) {
-		// Q: multiple parallel remote client support? then multiplex
-		// over all accepted clients?
+	// Q: multiple parallel remote client support? then multiplex
+	// over all accepted clients?
 
-		int chanclient = accept(channelsock, NULL, NULL);
-		if (chanclient == -1) {
-			wp_log(WP_DEBUG, "Skipping connection\n");
-			continue;
+	// TODO: fork the client on each acceptance, and have each forked
+	// version connect separately to the Wayland server. (At the very least,
+	// this will be necessary to ensure distinct pids for each client)
+	int chanclient = accept(channelsock, NULL, NULL);
+	if (chanclient == -1) {
+		wp_log(WP_DEBUG, "First connection failed\n");
+		return EXIT_FAILURE;
+	}
+
+	struct fd_translation_map fdtransmap = {
+			.local_sign = 1, .list = NULL, .max_local_id = 1};
+
+	const int maxmsg = 4096;
+	char *buffer = calloc(1, maxmsg + 1);
+	while (1) {
+		// pselect multiple.
+		fd_set readfds;
+		FD_ZERO(&readfds);
+		FD_SET(chanclient, &readfds);
+		FD_SET(displayfd, &readfds);
+		struct timespec timeout = {.tv_sec = 0, .tv_nsec = 700000000L};
+		int maxfd = chanclient > displayfd ? chanclient : displayfd;
+		int r = pselect(maxfd + 1, &readfds, NULL, NULL, &timeout,
+				NULL);
+		if (r == -1) {
+			wp_log(WP_ERROR, "Select failed, stopping\n");
+			break;
 		}
+		wp_log(WP_DEBUG, "Post select %d %d %d\n", r,
+				FD_ISSET(chanclient, &readfds),
+				FD_ISSET(displayfd, &readfds));
 
-		int bufsize = 4096;
-		char *buf = calloc(bufsize + 1, 1);
-		while (1) {
-			// pselect multiple.
-			fd_set readfds;
-			FD_ZERO(&readfds);
-			FD_SET(chanclient, &readfds);
-			FD_SET(displayfd, &readfds);
-			struct timespec timeout = {
-					.tv_sec = 0, .tv_nsec = 700000000L};
-			int maxfd = chanclient > displayfd ? chanclient
-							   : displayfd;
-			int r = pselect(maxfd + 1, &readfds, NULL, NULL,
-					&timeout, NULL);
-			if (r == -1) {
-				wp_log(WP_ERROR, "Select failed, stopping\n");
+		if (FD_ISSET(chanclient, &readfds)) {
+			wp_log(WP_DEBUG, "client isset\n");
+			struct muxheader header;
+			int hr = read(chanclient, &header,
+					sizeof(struct muxheader));
+			if (hr >= 0 && hr < sizeof(struct muxheader)) {
+				wp_log(WP_ERROR,
+						"channel client connection closed %d\n",
+						hr);
 				break;
 			}
-			wp_log(WP_DEBUG, "Post select %d %d %d\n", r,
-					FD_ISSET(chanclient, &readfds),
-					FD_ISSET(displayfd, &readfds));
-
-			if (FD_ISSET(chanclient, &readfds)) {
-				wp_log(WP_DEBUG, "client isset\n");
-				struct muxheader header;
-				if (read(chanclient, &header,
-						    sizeof(struct muxheader)) <
-						sizeof(struct muxheader)) {
-					wp_log(WP_ERROR,
-							"FD header read failure: %s\n",
-							strerror(errno));
-					break;
-				}
-				char *tmpbuf = calloc(header.length, 1);
-				int nread = 0;
-				while (nread < header.length) {
-					int nr = read(chanclient,
-							tmpbuf + nread,
-							header.length - nread);
-					if (nr <= 0) {
-						break;
-					}
-					nread += nr;
-				}
-				if (nread < header.length) {
-					wp_log(WP_ERROR,
-							"FD body read failure %ld/%ld: %s\n",
-							nread, header.length,
-							strerror(errno));
-					break;
-				}
-
-				wp_log(WP_DEBUG, "read bytes: %d = %d\n", nread,
-						header.length);
-				int wc = iovec_write(displayfd, tmpbuf, nread,
-						NULL, NULL);
-				if (wc == -1) {
-					wp_log(WP_ERROR,
-							"FD Write  failure %ld: %s\n",
-							wc, strerror(errno));
-					break;
-				}
-				free(tmpbuf);
-				wp_log(WP_DEBUG, "client done\n");
+			if (hr == -1) {
+				wp_log(WP_ERROR, "FD header read failure: %s\n",
+						strerror(errno));
+				break;
 			}
-			if (FD_ISSET(displayfd, &readfds)) {
-				wp_log(WP_DEBUG, "displayfd isset\n");
-				int fdbuf[28];
-				int nfds = 28;
-				int rc = iovec_read(displayfd, buffer, maxmsg,
-						fdbuf, &nfds);
-				if (rc == -1) {
-					wp_log(WP_ERROR,
-							"CS Read failure %ld: %s\n",
-							rc, strerror(errno));
+			char *tmpbuf = calloc(header.length, 1);
+			int nread = 0;
+			while (nread < header.length) {
+				int nr = read(chanclient, tmpbuf + nread,
+						header.length - nread);
+				if (nr <= 0) {
 					break;
 				}
-				if (rc > 0) {
-					if (nfds > 0) {
-						for (int i = 0; i < nfds; i++) {
-							wp_log(WP_DEBUG,
-									"Got FD = %d\n",
-									fdbuf[i]);
-							identify_fd(fdbuf[i]);
-						}
-					}
+				nread += nr;
+			}
+			if (nread < header.length) {
+				wp_log(WP_ERROR,
+						"FD body read failure %ld/%ld: %s\n",
+						nread, header.length,
+						strerror(errno));
+				break;
+			}
 
-					struct muxheader header = {
-							.metadata = 0,
-							.length = rc};
-					if (write(chanclient, &header,
-							    sizeof(header)) ==
-							-1) {
-						wp_log(WP_ERROR,
-								"CS write header failure: %s\n",
-								strerror(errno));
-						break;
-					}
-					if (write(chanclient, buffer, rc) ==
-							-1) {
-						wp_log(WP_ERROR,
-								"CS write body failure: %s\n",
-								strerror(errno));
-						break;
-					}
-				} else {
-					wp_log(WP_DEBUG,
-							"the display shut down\n");
+			wp_log(WP_DEBUG, "read bytes: %d = %d\n", nread,
+					header.length);
+			int wc = iovec_write(displayfd, tmpbuf, (size_t)nread,
+					NULL, 0);
+			if (wc == -1) {
+				wp_log(WP_ERROR, "FD Write  failure %ld: %s\n",
+						wc, strerror(errno));
+				break;
+			}
+			free(tmpbuf);
+			wp_log(WP_DEBUG, "client done\n");
+		}
+		if (FD_ISSET(displayfd, &readfds)) {
+			wp_log(WP_DEBUG, "displayfd isset\n");
+			int fdbuf[28];
+			int nfds = 28;
+
+			int rc = iovec_read(displayfd, buffer, maxmsg, fdbuf,
+					&nfds);
+			if (rc == -1) {
+				wp_log(WP_ERROR, "CS Read failure %ld: %s\n",
+						rc, strerror(errno));
+				break;
+			}
+			if (rc > 0) {
+				int ids[28];
+				translate_fds(&fdtransmap, nfds, fdbuf, ids);
+				int ntransfers;
+				struct transfer transfers[50];
+				collect_updates(&fdtransmap, &ntransfers,
+						transfers);
+
+				char *msg = NULL;
+				size_t msglen;
+				pack_pipe_message(&msglen, &msg, rc, buffer,
+						nfds, ids, ntransfers,
+						transfers);
+				wp_log(WP_DEBUG,
+						"Packed message size (%d fds): %ld\n",
+						nfds, msglen);
+
+				if (write(chanclient, msg, msglen) == -1) {
+					free(msg);
+					wp_log(WP_ERROR,
+							"CS msg write failure: %s\n",
+							strerror(errno));
 					break;
 				}
+				free(msg);
+			} else {
+				wp_log(WP_DEBUG, "the display shut down\n");
+				break;
 			}
 		}
-		close(chanclient);
-		wp_log(WP_DEBUG, "...\n");
 	}
+
+	cleanup_translation_map(&fdtransmap);
+
+	free(buffer);
+	close(chanclient);
+	wp_log(WP_DEBUG, "...\n");
 
 	wp_log(WP_DEBUG, "Closing client\n");
 	close(displayfd);
 	close(channelsock);
 	unlink(socket_path);
+
+	wl_display_disconnect(display);
 
 	return EXIT_SUCCESS;
 }

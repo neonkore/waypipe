@@ -28,6 +28,8 @@
 #include "util.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,7 +42,7 @@
 #include <time.h>
 #include <unistd.h>
 
-log_cat_t wp_loglevel = WP_ERROR;
+log_cat_t waypipe_loglevel = WP_ERROR;
 
 const char *static_timestamp(void)
 {
@@ -92,9 +94,9 @@ int iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds)
 	}
 	return ret;
 }
-int iovec_write(int conn, char *buf, size_t buflen, int *fds, int *numfds)
+int iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
+		int numfds)
 {
-	//	char cmsgdata[ (CMSG_LEN(28 * sizeof(int32_t))) ];
 	struct iovec the_iovec;
 	the_iovec.iov_len = buflen;
 	the_iovec.iov_base = buf;
@@ -106,34 +108,295 @@ int iovec_write(int conn, char *buf, size_t buflen, int *fds, int *numfds)
 	msg.msg_control = NULL;
 	msg.msg_controllen = 0;
 	msg.msg_flags = 0;
+
+	union {
+		char buf[CMSG_SPACE(sizeof(int) * 28)];
+		struct cmsghdr align;
+	} uc;
+	memset(uc.buf, 0, sizeof(uc.buf));
+
+	if (numfds > 0) {
+		msg.msg_control = uc.buf;
+		msg.msg_controllen = sizeof(uc.buf);
+		struct cmsghdr *frst = CMSG_FIRSTHDR(&msg);
+		frst->cmsg_level = SOL_SOCKET;
+		frst->cmsg_type = SCM_RIGHTS;
+		memcpy(CMSG_DATA(frst), fds, numfds * sizeof(int));
+		frst->cmsg_len = CMSG_LEN(numfds * sizeof(int));
+		msg.msg_controllen = CMSG_SPACE(numfds * sizeof(int));
+		wp_log(WP_DEBUG, "Writing %d fds to cmsg data\n", numfds);
+	}
+
 	ssize_t ret = sendmsg(conn, &msg, 0);
-
-	// parse FDS
-
 	return ret;
 }
 
-void identify_fd(int fd)
+void cleanup_translation_map(struct fd_translation_map *map)
 {
-	struct stat fsdata;
-	memset(&fsdata, 0, sizeof(fsdata));
-	int ret = fstat(fd, &fsdata);
-	if (ret == -1) {
-		wp_log(WP_ERROR, "Failed to identify %d as a file: %s\n", fd,
-				strerror(errno));
-	} else {
-		wp_log(WP_DEBUG, "The filedesc %d is a file, of size %d!\n", fd,
-				fsdata.st_size);
-		// then we can open the file, read the contents, create a mirror
-		// file, make diffs, and transfer them out of band!
+	struct shadow_fd *cur = map->list;
+	map->list = NULL;
+	while (cur) {
+		struct shadow_fd *shadow = cur;
 
-		// memmap & clone, assuming that the file will not be resized.
-		char *data = mmap(NULL, fsdata.st_size, PROT_READ, MAP_SHARED,
-				fd, 0);
-		if (!data) {
-			wp_log(WP_ERROR, "Mmap failed!\n");
+		close(shadow->fd_local);
+		if (shadow->memsize != (size_t)-1) {
+			munmap(shadow->mem_local, shadow->memsize);
+			free(shadow->mem_mirror);
+		}
+		if (shadow->shm_buf_name[0]) {
+			shm_unlink(shadow->shm_buf_name);
 		}
 
-		munmap(data, fsdata.st_size);
+		cur = shadow->next;
+		shadow->next = NULL;
+		free(shadow);
+	}
+}
+void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
+		int ids[])
+{
+	for (int i = 0; i < nfds; i++) {
+		struct shadow_fd *cur = map->list;
+		int the_fd = fds[i];
+		bool found = false;
+		while (cur) {
+			if (cur->fd_local == the_fd) {
+				ids[i] = cur->remote_id;
+				found = true;
+				break;
+			}
+
+			cur = cur->next;
+		}
+		if (found) {
+			continue;
+		}
+		// Create a new translation map.
+		struct shadow_fd *shadow = calloc(1, sizeof(struct shadow_fd));
+		shadow->next = map->list;
+		map->list = shadow;
+		shadow->fd_local = the_fd;
+		shadow->mem_local = NULL;
+		shadow->mem_mirror = NULL;
+		shadow->memsize = (size_t)-1;
+		shadow->remote_id = (map->max_local_id++) * map->local_sign;
+		ids[i] = shadow->remote_id;
+
+		wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d\n",
+				the_fd);
+
+		struct stat fsdata;
+		memset(&fsdata, 0, sizeof(fsdata));
+		int ret = fstat(the_fd, &fsdata);
+		if (ret != -1) {
+			// We have a file-like object
+			shadow->memsize = fsdata.st_size;
+			// both r/w permissions, because the size the allocates
+			// the memory does not always have to be the size that
+			// modifies it
+			shadow->mem_local = mmap(NULL, shadow->memsize,
+					PROT_READ | PROT_WRITE, MAP_SHARED,
+					the_fd, 0);
+			if (!shadow->mem_local) {
+				wp_log(WP_ERROR, "Mmap failed!\n");
+				continue;
+			}
+			// This will be created at the first transfer
+			shadow->mem_mirror = NULL;
+		} else {
+			wp_log(WP_ERROR, "The fd %d is not file-like\n",
+					the_fd);
+		}
+	}
+}
+void collect_updates(struct fd_translation_map *map, int *ntransfers,
+		struct transfer transfers[])
+{
+	int nt = 0;
+	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+		if (cur->memsize == (size_t)-1) {
+			wp_log(WP_ERROR,
+					"shadowlist element not transferrable\n");
+			continue;
+		}
+
+		if (!cur->mem_mirror) {
+			cur->mem_mirror = calloc(cur->memsize, 1);
+		} else if (memcmp(cur->mem_local, cur->mem_mirror,
+					   cur->memsize) == 0) {
+			continue;
+		}
+
+		memcpy(cur->mem_mirror, cur->mem_local, cur->memsize);
+		transfers[nt].data = cur->mem_mirror;
+		transfers[nt].size = cur->memsize;
+		transfers[nt].obj_id = cur->remote_id;
+		nt++;
+	}
+	*ntransfers = nt;
+}
+
+void pack_pipe_message(size_t *msglen, char **msg, int waylen,
+		const char *waymsg, int nids, const int ids[], int ntransfers,
+		const struct transfer transfers[])
+{
+	// TODO: network byte order everything!
+
+	size_t size = sizeof(size_t); // including the header
+	size += nids * (2 * sizeof(int));
+	for (int i = 0; i < ntransfers; i++) {
+		size_t num_longs = (transfers[i].size + 7) / 8;
+		size += 2 * sizeof(int) + 8 * num_longs;
+	}
+	size_t waymsg_longs = (size_t)(waylen + 7) / 8;
+	size += 2 * sizeof(int) + 8 * waymsg_longs;
+
+	void *data = calloc(size, 1);
+	size_t *cursor = data;
+	*cursor++ = size - sizeof(size_t); // size excluding this header
+	for (int i = 0; i < nids; i++) {
+		int *sd = (int *)cursor;
+		sd[0] = ids[i];
+		sd[1] = -1;
+		cursor++;
+	}
+	for (int i = 0; i < ntransfers; i++) {
+		int *sd = (int *)cursor;
+		sd[0] = transfers[i].obj_id;
+		sd[1] = transfers[i].size;
+		char *cd = (char *)cursor;
+		memcpy(cd + 8, transfers[i].data, transfers[i].size);
+
+		size_t num_longs = (transfers[i].size + 7) / 8;
+		cursor += 1 + num_longs;
+	}
+
+	int *wsd = (int *)cursor;
+	wsd[0] = 0; // the actual message
+	wsd[1] = waylen;
+	char *wcd = (char *)cursor;
+	memcpy(wcd + 8, waymsg, waylen);
+
+	*msg = data;
+	*msglen = size;
+}
+
+void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
+		char **waymsg, int *nids, int ids[], int *ntransfers,
+		struct transfer transfers[])
+{
+	int ni = 0, nt = 0;
+	size_t *cursor = (size_t *)msg;
+	while (true) {
+		int *sd = (int *)cursor;
+		int obj_id = sd[0];
+		int obj_len = sd[1];
+		if (obj_len != -1) {
+			char *data = ((char *)cursor) + 8;
+			if (obj_id == 0) {
+				*waylen = obj_len;
+				*waymsg = data;
+				break;
+			} else {
+				// Add to list of data transfers
+				transfers[nt].obj_id = obj_id;
+				transfers[nt].size = obj_len;
+				transfers[nt].data = data;
+				nt++;
+			}
+			int nlongs = (obj_len + 7) / 8;
+			cursor += 1 + nlongs;
+		} else {
+			// Add to list of file descriptors passed along
+			ids[ni++] = obj_id;
+
+			cursor += 1;
+		}
+	}
+	*nids = ni;
+	*ntransfers = nt;
+}
+
+void untranslate_ids(struct fd_translation_map *map, int nids, const int ids[],
+		int fds[])
+{
+	for (int i = 0; i < nids; i++) {
+		struct shadow_fd *cur = map->list;
+		int the_id = ids[i];
+		bool found = false;
+		while (cur) {
+			if (cur->remote_id == the_id) {
+				fds[i] = cur->fd_local;
+				found = true;
+				break;
+			}
+
+			cur = cur->next;
+		}
+		if (!found) {
+			wp_log(WP_ERROR,
+					"Could not untranslate remote id %d in map\n",
+					the_id);
+			fds[i] = -1;
+		}
+	}
+}
+static void apply_update(
+		struct fd_translation_map *map, const struct transfer *transf)
+{
+	struct shadow_fd *cur = map->list;
+	bool found = false;
+	while (cur) {
+		if (cur->remote_id == transf->obj_id) {
+			found = true;
+			break;
+		}
+
+		cur = cur->next;
+	}
+	if (found) {
+		if (transf->size != cur->memsize) {
+			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld\n",
+					transf->size, cur->memsize);
+		}
+		memcpy(cur->mem_mirror, transf->data, transf->size);
+		memcpy(cur->mem_local, cur->mem_mirror, transf->size);
+		return;
+	}
+
+	struct shadow_fd *shadow = calloc(1, sizeof(struct shadow_fd));
+	shadow->next = map->list;
+	map->list = shadow;
+	shadow->mem_local = NULL;
+	shadow->memsize = transf->size;
+	shadow->remote_id = transf->obj_id;
+	shadow->mem_mirror = calloc(shadow->memsize, 1);
+	memcpy(shadow->mem_mirror, transf->data, transf->size);
+	sprintf(shadow->shm_buf_name, "/waypipe-data_%d", shadow->remote_id);
+
+	shadow->fd_local = shm_open(
+			shadow->shm_buf_name, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	if (shadow->fd_local == -1) {
+		wp_log(WP_ERROR,
+				"Failed to create shm file for object %d: %s\n",
+				shadow->remote_id, strerror(errno));
+		return;
+	}
+	if (ftruncate(shadow->fd_local, shadow->memsize) == -1) {
+		wp_log(WP_ERROR,
+				"Failed to resize shm file %s to size %ld for reason: %s\n",
+				shadow->shm_buf_name, shadow->memsize,
+				strerror(errno));
+		return;
+	}
+	shadow->mem_local = mmap(NULL, shadow->memsize, PROT_READ | PROT_WRITE,
+			MAP_SHARED, shadow->fd_local, 0);
+	memcpy(shadow->mem_local, shadow->mem_mirror, shadow->memsize);
+}
+void apply_updates(struct fd_translation_map *map, int ntransfers,
+		const struct transfer transfers[])
+{
+	for (int i = 0; i < ntransfers; i++) {
+		apply_update(map, &transfers[i]);
 	}
 }
