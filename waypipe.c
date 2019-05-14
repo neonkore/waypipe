@@ -23,6 +23,8 @@
  * SOFTWARE.
  */
 
+#include "util.h"
+
 #include <getopt.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -45,6 +47,7 @@ static int usage(int retcode)
 			"wayland compositor, run as server on the side with the wayland client\n"
 			"and link the sockets with ssh or some other transport.\n\n");
 	fprintf(ostream, "options:\n");
+	fprintf(stderr, "    -d,  --debug                 Print debug messages.\n");
 	fprintf(stderr, "    -h,  --help                  Display this help and exit.\n");
 	fprintf(stderr, "    -v,  --version               Print waypipe version.\n");
 	return retcode;
@@ -57,15 +60,17 @@ int main(int argc, char **argv)
 	bool help = false;
 	bool version = false;
 	bool fail = false;
+	bool debug = false;
 	bool is_client;
 	const char *socketpath;
 	int opt;
 	static const struct option options[] = {
 			{"help", no_argument, NULL, 'h'},
-			{"version", no_argument, NULL, 'v'}, {0, 0, NULL, 0}};
+			{"version", no_argument, NULL, 'v'},
+			{"debug", no_argument, NULL, 'd'}, {0, 0, NULL, 0}};
 
 	while (1) {
-		opt = getopt_long(argc, argv, "hvcs", options, NULL);
+		opt = getopt_long(argc, argv, "hvd", options, NULL);
 
 		if (opt == -1)
 			break;
@@ -76,6 +81,9 @@ int main(int argc, char **argv)
 			break;
 		case 'v':
 			version = true;
+			break;
+		case 'd':
+			debug = true;
 			break;
 		default:
 			fail = true;
@@ -111,6 +119,8 @@ int main(int argc, char **argv)
 		argv++;
 		argc--;
 	}
+	wp_loglevel = debug ? WP_DEBUG : WP_ERROR;
+
 	if (is_client) {
 		return run_client(socketpath);
 	} else {

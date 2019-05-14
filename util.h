@@ -34,6 +34,20 @@ int chan_write(int conn, char *buf, size_t buflen);
 
 void identify_fd(int fd);
 
+typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
+// void wp_log(log_cat_t cat, );
+
+extern log_cat_t wp_loglevel;
+
+// mutates a static local, hence can only be called singlethreaded
+const char *static_timestamp(void);
+
+// no trailing ;, user must supply
+#define wp_log(level, fmt, ...)                                                \
+	if ((level) >= wp_loglevel)                                            \
+	fprintf(stderr, "%s [%s:%3d] " fmt, static_timestamp(), __FILE__,      \
+			__LINE__, ##__VA_ARGS__)
+
 struct muxheader {
 	int metadata;
 	int length;

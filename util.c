@@ -23,6 +23,10 @@
  * SOFTWARE.
  */
 
+#define _XOPEN_SOURCE 700
+
+#include "util.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +37,20 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
+
+log_cat_t wp_loglevel = WP_ERROR;
+
+const char *static_timestamp(void)
+{
+	static char msg[64];
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	double time = (ts.tv_sec % 100) * 1. + ts.tv_nsec * 1e-9;
+	sprintf(msg, "%9.6f", time);
+	return msg;
+}
 
 int iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds)
 {
@@ -102,10 +119,10 @@ void identify_fd(int fd)
 	memset(&fsdata, 0, sizeof(fsdata));
 	int ret = fstat(fd, &fsdata);
 	if (ret == -1) {
-		fprintf(stderr, "Failed to identify %d as a file: %s\n", fd,
+		wp_log(WP_ERROR, "Failed to identify %d as a file: %s\n", fd,
 				strerror(errno));
 	} else {
-		fprintf(stderr, "The filedesc %d is a file, of size %d!\n", fd,
+		wp_log(WP_DEBUG, "The filedesc %d is a file, of size %d!\n", fd,
 				fsdata.st_size);
 		// then we can open the file, read the contents, create a mirror
 		// file, make diffs, and transfer them out of band!
@@ -114,7 +131,7 @@ void identify_fd(int fd)
 		char *data = mmap(NULL, fsdata.st_size, PROT_READ, MAP_SHARED,
 				fd, 0);
 		if (!data) {
-			fprintf(stderr, "Mmap failed!\n");
+			wp_log(WP_ERROR, "Mmap failed!\n");
 		}
 
 		munmap(data, fsdata.st_size);
