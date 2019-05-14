@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 int iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds);
 int iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
@@ -46,16 +47,6 @@ const char *static_timestamp(void);
 	if ((level) >= waypipe_loglevel)                                       \
 	fprintf(stderr, "%s [%s:%3d] " fmt, static_timestamp(), __FILE__,      \
 			__LINE__, ##__VA_ARGS__)
-
-// TODO: find a simple/fast binary protocol to communicate
-// file data replacements; [Net-length;] [NFDS, [ID, LENGTH [DATA]], orig
-// message] the 'net-length' makes the following read run straightforward. if
-// sub-length > 0, then we are done.
-
-struct muxheader {
-	int metadata;
-	int length;
-};
 
 struct fd_translation_map {
 	struct shadow_fd *list;
@@ -108,5 +99,8 @@ void untranslate_ids(struct fd_translation_map *map, int nids, const int ids[],
  * none */
 void apply_updates(struct fd_translation_map *map, int ntransfers,
 		const struct transfer transfers[]);
+
+/** Read the contents of a packed message into a newly allocated buffer */
+ssize_t read_size_then_buf(int fd, char **msg);
 
 #endif // WAYPIPE_UTIL_H

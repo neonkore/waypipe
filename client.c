@@ -116,49 +116,47 @@ int run_client(const char *socket_path)
 				FD_ISSET(displayfd, &readfds));
 
 		if (FD_ISSET(chanclient, &readfds)) {
-			wp_log(WP_DEBUG, "client isset\n");
-			struct muxheader header;
-			int hr = read(chanclient, &header,
-					sizeof(struct muxheader));
-			if (hr >= 0 && hr < sizeof(struct muxheader)) {
+			wp_log(WP_DEBUG, "chanclient isset\n");
+			char *tmpbuf;
+			ssize_t nbytes =
+					read_size_then_buf(chanclient, &tmpbuf);
+			if (nbytes == 0) {
 				wp_log(WP_ERROR,
-						"channel client connection closed %d\n",
-						hr);
+						"channel read connection closed\n");
 				break;
 			}
-			if (hr == -1) {
-				wp_log(WP_ERROR, "FD header read failure: %s\n",
-						strerror(errno));
-				break;
-			}
-			char *tmpbuf = calloc(header.length, 1);
-			int nread = 0;
-			while (nread < header.length) {
-				int nr = read(chanclient, tmpbuf + nread,
-						header.length - nread);
-				if (nr <= 0) {
-					break;
-				}
-				nread += nr;
-			}
-			if (nread < header.length) {
-				wp_log(WP_ERROR,
-						"FD body read failure %ld/%ld: %s\n",
-						nread, header.length,
+			if (nbytes == -1) {
+				wp_log(WP_ERROR, "channel read failure: %s\n",
 						strerror(errno));
 				break;
 			}
 
-			wp_log(WP_DEBUG, "read bytes: %d = %d\n", nread,
-					header.length);
-			int wc = iovec_write(displayfd, tmpbuf, (size_t)nread,
-					NULL, 0);
+			char *waymsg;
+			int waylen;
+			int nids;
+			int ids[28];
+			int ntransfers;
+			struct transfer transfers[50];
+			unpack_pipe_message((size_t)nbytes, tmpbuf, &waylen,
+					&waymsg, &nids, ids, &ntransfers,
+					transfers);
+
+			apply_updates(&fdtransmap, ntransfers, transfers);
+
+			int fds[28];
+			memset(fds, 0, sizeof(fds));
+			untranslate_ids(&fdtransmap, nids, ids, fds);
+
+			wp_log(WP_DEBUG, "Read from conn %d = %d bytes\n",
+					nbytes, nbytes);
+			int wc = iovec_write(
+					displayfd, waymsg, waylen, fds, nids);
+			free(tmpbuf);
 			if (wc == -1) {
-				wp_log(WP_ERROR, "FD Write  failure %ld: %s\n",
+				wp_log(WP_ERROR, "FD Write  failure %d: %s\n",
 						wc, strerror(errno));
 				break;
 			}
-			free(tmpbuf);
 			wp_log(WP_DEBUG, "client done\n");
 		}
 		if (FD_ISSET(displayfd, &readfds)) {
@@ -193,7 +191,7 @@ int run_client(const char *socket_path)
 				if (write(chanclient, msg, msglen) == -1) {
 					free(msg);
 					wp_log(WP_ERROR,
-							"CS msg write failure: %s\n",
+							"CC msg write failure: %s\n",
 							strerror(errno));
 					break;
 				}

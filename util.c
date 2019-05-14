@@ -99,7 +99,7 @@ int iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 {
 	struct iovec the_iovec;
 	the_iovec.iov_len = buflen;
-	the_iovec.iov_base = buf;
+	the_iovec.iov_base = (char *)buf;
 	struct msghdr msg;
 	msg.msg_name = NULL;
 	msg.msg_namelen = 0;
@@ -254,6 +254,7 @@ void pack_pipe_message(size_t *msglen, char **msg, int waylen,
 	void *data = calloc(size, 1);
 	size_t *cursor = data;
 	*cursor++ = size - sizeof(size_t); // size excluding this header
+	wp_log(WP_DEBUG, "Packing %ld bytes as tail\n", size - sizeof(size_t));
 	for (int i = 0; i < nids; i++) {
 		int *sd = (int *)cursor;
 		sd[0] = ids[i];
@@ -285,6 +286,7 @@ void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 		char **waymsg, int *nids, int ids[], int *ntransfers,
 		struct transfer transfers[])
 {
+	(void)msglen;
 	int ni = 0, nt = 0;
 	size_t *cursor = (size_t *)msg;
 	while (true) {
@@ -399,4 +401,33 @@ void apply_updates(struct fd_translation_map *map, int ntransfers,
 	for (int i = 0; i < ntransfers; i++) {
 		apply_update(map, &transfers[i]);
 	}
+}
+
+ssize_t read_size_then_buf(int fd, char **msg)
+{
+	*msg = NULL;
+	ssize_t nbytes = 0;
+	ssize_t nrc = read(fd, &nbytes, sizeof(ssize_t));
+	if (nrc == 0) {
+		return 0;
+	}
+	if (nrc < (ssize_t)sizeof(ssize_t)) {
+		return -1;
+	}
+	wp_log(WP_DEBUG, "rstb %ld\n", nbytes);
+	char *tmpbuf = calloc(nbytes, 1);
+	ssize_t nread = 0;
+	while (nread < nbytes) {
+		ssize_t nr = read(fd, tmpbuf + nread, nbytes - nread);
+		if (nr <= 0) {
+			break;
+		}
+		nread += nr;
+	}
+	if (nread < nbytes) {
+		free(tmpbuf);
+		return -1;
+	}
+	*msg = tmpbuf;
+	return nbytes;
 }

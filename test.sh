@@ -2,9 +2,9 @@
 
 root=`pwd`
 
-#program=`which bash`
-# program=`which weston-flower`
-program=`which demo.py`
+program=`which bash`
+program=`which weston-flower`
+#program=`which demo.py`
 
 ($root/waypipe -d client /tmp/socket-client 2>&1 | sed 's/.*/\x1b[33m&\x1b[0m/') &
 # ssh-to-self; should have a local keypair set up
