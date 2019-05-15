@@ -63,8 +63,9 @@ struct shadow_fd {
 	int remote_id; // + if created serverside; - if created clientside
 	size_t memsize;
 	int fd_local;
-	char *mem_local;  // mmap'd
-	char *mem_mirror; // malloc'd
+	char *mem_local;   // mmap'd
+	char *mem_mirror;  // malloc'd
+	char *diff_buffer; // malloc'd
 	char shm_buf_name[256];
 };
 
