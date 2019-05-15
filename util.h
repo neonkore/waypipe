@@ -43,9 +43,13 @@ extern log_cat_t waypipe_loglevel;
 const char *static_timestamp(void);
 
 // no trailing ;, user must supply
+#ifndef WAYPIPE_SRC_DIR_LENGTH
+#define WAYPIPE_SRC_DIR_LENGTH 0
+#endif
 #define wp_log(level, fmt, ...)                                                \
 	if ((level) >= waypipe_loglevel)                                       \
-	fprintf(stderr, "%s [%s:%3d] " fmt, static_timestamp(), __FILE__,      \
+	fprintf(stderr, "%s [%s:%3d] " fmt, static_timestamp(),                \
+			((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,     \
 			__LINE__, ##__VA_ARGS__)
 
 struct fd_translation_map {

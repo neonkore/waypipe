@@ -17,6 +17,9 @@ waypipe - A transparent proxy for Wayland applications
 *-v, --version*
 	Show the version number and quit.
 
+*-d, --debug*
+	Print debug log messages.
+
 # DESCRIPTION
 
 waypipe is a proxy for Wayland clients, with the aim of supporting

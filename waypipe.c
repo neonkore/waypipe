@@ -94,13 +94,15 @@ int main(int argc, char **argv)
 	argv += optind;
 	argc -= optind;
 
-	if (fail || argc < 2) {
+	if (fail) {
+		return usage(EXIT_FAILURE);
+	} else if (version) {
+		fprintf(stdout, "waypipe " WAYPIPE_VERSION "\n");
+		return EXIT_SUCCESS;
+	} else if (argc < 2) {
 		return usage(EXIT_FAILURE);
 	} else if (help) {
 		return usage(EXIT_SUCCESS);
-	} else if (version) {
-		fprintf(stdout, "waypipe unversioned\n");
-		return EXIT_SUCCESS;
 	} else if (!strcmp(argv[0], "client")) {
 		is_client = true;
 	} else if (!strcmp(argv[0], "server")) {

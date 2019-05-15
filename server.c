@@ -173,13 +173,12 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 			memset(fds, 0, sizeof(fds));
 			untranslate_ids(&fdtransmap, nids, ids, fds);
 
-			wp_log(WP_DEBUG, "Read from conn %d = %d bytes\n",
-					nbytes, nbytes);
 			ssize_t wc = iovec_write(
 					appfd, waymsg, waylen, fds, nids);
 			free(tmpbuf);
 			if (wc == -1) {
-				wp_log(WP_ERROR, "FD Write  failure %d: %s\n",
+				wp_log(WP_ERROR,
+						"appfd write failure %ld: %s\n",
 						wc, strerror(errno));
 				break;
 			}

@@ -126,7 +126,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 			free(tmpbuf);
 			if (wc == -1) {
 				wp_log(WP_ERROR,
-						"dispfd write failure %d: %s\n",
+						"dispfd write failure %ld: %s\n",
 						wc, strerror(errno));
 				break;
 			}
