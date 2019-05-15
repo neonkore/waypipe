@@ -38,59 +38,33 @@
 #include <unistd.h>
 #include <wayland-client-core.h>
 
-int run_client(const char *socket_path)
+/*
+ * Connect-disconnect cycle, to verify that the client can connect to a display.
+ */
+static int verify_connection()
 {
+	struct wl_display *display = wl_display_connect(NULL);
+	if (!display) {
+		return -1;
+	}
+	wl_display_disconnect(display);
+	return 0;
+}
+
+struct pidstack {
+	struct pidstack *next;
+	pid_t proc;
+};
+
+static int run_client_child(int chanfd, const char *socket_path)
+{
+	wp_log(WP_DEBUG, "I'm a client on %s!\n", socket_path);
 	struct wl_display *display = wl_display_connect(NULL);
 	if (!display) {
 		wp_log(WP_ERROR, "Failed to connect to a wayland server.\n");
 		return EXIT_FAILURE;
 	}
 	int displayfd = wl_display_get_fd(display);
-
-	struct sockaddr_un saddr;
-	int channelsock;
-
-	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
-		wp_log(WP_ERROR,
-				"Socket path is too long and would be truncated: %s\n",
-				socket_path);
-		return EXIT_FAILURE;
-	}
-
-	saddr.sun_family = AF_UNIX;
-	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	channelsock = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (channelsock == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s\n",
-				strerror(errno));
-		return EXIT_FAILURE;
-	}
-	if (bind(channelsock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error binding socket: %s\n", strerror(errno));
-		close(channelsock);
-		return EXIT_FAILURE;
-	}
-
-	if (listen(channelsock, 1) == -1) {
-		wp_log(WP_ERROR, "Error listening to socket: %s\n",
-				strerror(errno));
-		close(channelsock);
-		unlink(socket_path);
-		return EXIT_FAILURE;
-	}
-
-	wp_log(WP_DEBUG, "I'm a client on %s!\n", socket_path);
-	// Q: multiple parallel remote client support? then multiplex
-	// over all accepted clients?
-
-	// TODO: fork the client on each acceptance, and have each forked
-	// version connect separately to the Wayland server. (At the very least,
-	// this will be necessary to ensure distinct pids for each client)
-	int chanclient = accept(channelsock, NULL, NULL);
-	if (chanclient == -1) {
-		wp_log(WP_DEBUG, "First connection failed\n");
-		return EXIT_FAILURE;
-	}
 
 	struct fd_translation_map fdtransmap = {
 			.local_sign = 1, .list = NULL, .max_local_id = 1};
@@ -101,10 +75,10 @@ int run_client(const char *socket_path)
 		// pselect multiple.
 		fd_set readfds;
 		FD_ZERO(&readfds);
-		FD_SET(chanclient, &readfds);
+		FD_SET(chanfd, &readfds);
 		FD_SET(displayfd, &readfds);
 		struct timespec timeout = {.tv_sec = 0, .tv_nsec = 700000000L};
-		int maxfd = chanclient > displayfd ? chanclient : displayfd;
+		int maxfd = chanfd > displayfd ? chanfd : displayfd;
 		int r = pselect(maxfd + 1, &readfds, NULL, NULL, &timeout,
 				NULL);
 		if (r == -1) {
@@ -112,14 +86,13 @@ int run_client(const char *socket_path)
 			break;
 		}
 		wp_log(WP_DEBUG, "Post select %d %d %d\n", r,
-				FD_ISSET(chanclient, &readfds),
+				FD_ISSET(chanfd, &readfds),
 				FD_ISSET(displayfd, &readfds));
 
-		if (FD_ISSET(chanclient, &readfds)) {
+		if (FD_ISSET(chanfd, &readfds)) {
 			wp_log(WP_DEBUG, "chanclient isset\n");
 			char *tmpbuf;
-			ssize_t nbytes =
-					read_size_then_buf(chanclient, &tmpbuf);
+			ssize_t nbytes = read_size_then_buf(chanfd, &tmpbuf);
 			if (nbytes == 0) {
 				wp_log(WP_ERROR,
 						"channel read connection closed\n");
@@ -188,7 +161,7 @@ int run_client(const char *socket_path)
 						"Packed message size (%d fds): %ld\n",
 						nfds, msglen);
 
-				if (write(chanclient, msg, msglen) == -1) {
+				if (write(chanfd, msg, msglen) == -1) {
 					free(msg);
 					wp_log(WP_ERROR,
 							"CC msg write failure: %s\n",
@@ -206,15 +179,82 @@ int run_client(const char *socket_path)
 	cleanup_translation_map(&fdtransmap);
 
 	free(buffer);
-	close(chanclient);
+	close(chanfd);
 	wp_log(WP_DEBUG, "...\n");
 
 	wp_log(WP_DEBUG, "Closing client\n");
 	close(displayfd);
-	close(channelsock);
-	unlink(socket_path);
 
 	wl_display_disconnect(display);
 
 	return EXIT_SUCCESS;
+}
+
+int run_client(const char *socket_path)
+{
+	if (verify_connection() == -1) {
+		wp_log(WP_ERROR,
+				"Failed to connect to a wayland compositor.\n");
+		return EXIT_FAILURE;
+	}
+	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.\n");
+
+	struct sockaddr_un saddr;
+	int channelsock;
+
+	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
+		wp_log(WP_ERROR,
+				"Socket path is too long and would be truncated: %s\n",
+				socket_path);
+		return EXIT_FAILURE;
+	}
+
+	saddr.sun_family = AF_UNIX;
+	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
+	channelsock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (channelsock == -1) {
+		wp_log(WP_ERROR, "Error creating socket: %s\n",
+				strerror(errno));
+		return EXIT_FAILURE;
+	}
+	if (bind(channelsock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
+		wp_log(WP_ERROR, "Error binding socket: %s\n", strerror(errno));
+		close(channelsock);
+		return EXIT_FAILURE;
+	}
+	if (listen(channelsock, 3) == -1) {
+		wp_log(WP_ERROR, "Error listening to socket: %s\n",
+				strerror(errno));
+		close(channelsock);
+		unlink(socket_path);
+		return EXIT_FAILURE;
+	}
+
+	int retcode = EXIT_SUCCESS;
+	while (true) {
+		int chanclient = accept(channelsock, NULL, NULL);
+		if (chanclient == -1) {
+			wp_log(WP_DEBUG,
+					"Connection failure -- too many clients\n");
+			continue;
+		}
+
+		pid_t npid = fork();
+		if (npid == 0) {
+			// Run forked process, with the only shared state being
+			// the new channel socket
+			close(channelsock);
+			return run_client_child(chanclient, socket_path);
+		} else if (npid == -1) {
+			wp_log(WP_DEBUG, "Fork failure\n");
+			retcode = EXIT_FAILURE;
+			break;
+		} else {
+			// todo: make an option in which only one client is
+			// permitted
+		}
+	}
+	close(channelsock);
+	unlink(socket_path);
+	return retcode;
 }
