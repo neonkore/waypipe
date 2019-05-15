@@ -54,7 +54,7 @@ const char *static_timestamp(void)
 	return msg;
 }
 
-int iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds)
+ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds)
 {
 	char cmsgdata[(CMSG_LEN(28 * sizeof(int32_t)))];
 	struct iovec the_iovec;
@@ -94,7 +94,7 @@ int iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds)
 	}
 	return ret;
 }
-int iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
+ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		int numfds)
 {
 	struct iovec the_iovec;
@@ -254,7 +254,6 @@ void pack_pipe_message(size_t *msglen, char **msg, int waylen,
 	void *data = calloc(size, 1);
 	size_t *cursor = data;
 	*cursor++ = size - sizeof(size_t); // size excluding this header
-	wp_log(WP_DEBUG, "Packing %ld bytes as tail\n", size - sizeof(size_t));
 	for (int i = 0; i < nids; i++) {
 		int *sd = (int *)cursor;
 		sd[0] = ids[i];
@@ -414,7 +413,6 @@ ssize_t read_size_then_buf(int fd, char **msg)
 	if (nrc < (ssize_t)sizeof(ssize_t)) {
 		return -1;
 	}
-	wp_log(WP_DEBUG, "rstb %ld\n", nbytes);
 	char *tmpbuf = calloc(nbytes, 1);
 	ssize_t nread = 0;
 	while (nread < nbytes) {

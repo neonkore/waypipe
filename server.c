@@ -84,7 +84,7 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 	int status;
 
 	struct sockaddr_un saddr;
-	int channelfd;
+	int chanfd;
 
 	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
 		wp_log(WP_ERROR,
@@ -95,22 +95,21 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 
 	saddr.sun_family = AF_UNIX;
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	channelfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (channelfd == -1) {
+	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (chanfd == -1) {
 		wp_log(WP_ERROR, "Error creating socket: %s\n",
 				strerror(errno));
 		return EXIT_FAILURE;
 	}
-	if (connect(channelfd, (struct sockaddr *)&saddr, sizeof(saddr)) ==
-			-1) {
+	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
 		wp_log(WP_ERROR, "Error connecting socket: %s\n",
 				strerror(errno));
-		close(channelfd);
+		close(chanfd);
 		return EXIT_FAILURE;
 	}
 
 	// A connection has already been established
-	int client_socket = csockpair[0];
+	int appfd = csockpair[0];
 
 	/** Main select loop:
 	 * fd -> csockpair[0]
@@ -128,10 +127,9 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 		iter++;
 		fd_set readfds;
 		FD_ZERO(&readfds);
-		FD_SET(channelfd, &readfds);
-		FD_SET(client_socket, &readfds);
-		int maxfd = channelfd > client_socket ? channelfd
-						      : client_socket;
+		FD_SET(chanfd, &readfds);
+		FD_SET(appfd, &readfds);
+		int maxfd = chanfd > appfd ? chanfd : appfd;
 		int r = pselect(maxfd + 1, &readfds, NULL, NULL, &timeout,
 				NULL);
 		if (r < 0) {
@@ -140,21 +138,17 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 			return EXIT_FAILURE;
 		}
 
-		wp_log(WP_DEBUG,
-				"Post select %d channelfd=%d client_socket=%d\n",
-				r, FD_ISSET(channelfd, &readfds),
-				FD_ISSET(client_socket, &readfds));
-		if (FD_ISSET(channelfd, &readfds)) {
-			wp_log(WP_DEBUG, "Readfd isset\n");
+		if (FD_ISSET(chanfd, &readfds)) {
+			wp_log(WP_DEBUG, "Channel read begun\n");
 			char *tmpbuf;
-			ssize_t nbytes = read_size_then_buf(channelfd, &tmpbuf);
+			ssize_t nbytes = read_size_then_buf(chanfd, &tmpbuf);
 			if (nbytes == 0) {
 				wp_log(WP_ERROR,
-						"channel read connection closed\n");
+						"Channel read connection closed\n");
 				break;
 			}
 			if (nbytes == -1) {
-				wp_log(WP_ERROR, "channel read failure: %s\n",
+				wp_log(WP_ERROR, "Channel read failure: %s\n",
 						strerror(errno));
 				break;
 			}
@@ -169,6 +163,10 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 					&waymsg, &nids, ids, &ntransfers,
 					transfers);
 
+			wp_log(WP_DEBUG,
+					"Read %ld byte msg, %d fds, %d transfers\n",
+					nbytes, nids, ntransfers);
+
 			apply_updates(&fdtransmap, ntransfers, transfers);
 
 			int fds[28];
@@ -177,8 +175,8 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 
 			wp_log(WP_DEBUG, "Read from conn %d = %d bytes\n",
 					nbytes, nbytes);
-			int wc = iovec_write(client_socket, waymsg, waylen, fds,
-					nids);
+			ssize_t wc = iovec_write(
+					appfd, waymsg, waylen, fds, nids);
 			free(tmpbuf);
 			if (wc == -1) {
 				wp_log(WP_ERROR, "FD Write  failure %d: %s\n",
@@ -186,15 +184,15 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 				break;
 			}
 		}
-		if (FD_ISSET(client_socket, &readfds)) {
+		if (FD_ISSET(appfd, &readfds)) {
 			wp_log(WP_DEBUG, "client socket isset\n");
 			int fdbuf[28];
 			int nfds = 28;
 
-			int rc = iovec_read(client_socket, buffer, maxmsg,
-					fdbuf, &nfds);
+			ssize_t rc = iovec_read(
+					appfd, buffer, maxmsg, fdbuf, &nfds);
 			if (rc == -1) {
-				wp_log(WP_ERROR, "CS Read failure %ld: %s\n",
+				wp_log(WP_ERROR, "appfd read failure %ld: %s\n",
 						rc, strerror(errno));
 				break;
 			}
@@ -215,14 +213,16 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 						"Packed message size (%d fds): %ld\n",
 						nfds, msglen);
 
-				if (write(channelfd, msg, msglen) == -1) {
+				if (write(chanfd, msg, msglen) == -1) {
 					free(msg);
 					wp_log(WP_ERROR,
-							"CS msg write failure: %s\n",
+							"chanfd write failure: %s\n",
 							strerror(errno));
 					break;
 				}
 				free(msg);
+
+				wp_log(WP_DEBUG, "Channel write complete\n");
 			} else {
 				wp_log(WP_DEBUG, "the client shut down\n");
 				break;
@@ -234,7 +234,7 @@ int run_server(const char *socket_path, int app_argc, char *const app_argv[])
 		}
 	}
 	cleanup_translation_map(&fdtransmap);
-	close(channelfd);
+	close(chanfd);
 	free(buffer);
 
 	// todo: scope manipulation, to ensure all cleanups are done

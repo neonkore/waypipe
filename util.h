@@ -30,8 +30,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-int iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds);
-int iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
+ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds);
+ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		int numfds);
 
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
