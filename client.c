@@ -28,12 +28,15 @@
 #include "util.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
@@ -190,71 +193,122 @@ static int run_client_child(int chanfd, const char *socket_path)
 	return EXIT_SUCCESS;
 }
 
-int run_client(const char *socket_path)
+int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 {
 	if (verify_connection() == -1) {
 		wp_log(WP_ERROR,
 				"Failed to connect to a wayland compositor.\n");
+		if (eol_pid) {
+			waitpid(eol_pid, NULL, 0);
+		}
 		return EXIT_FAILURE;
 	}
 	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.\n");
 
-	struct sockaddr_un saddr;
-	int channelsock;
-
-	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
-		wp_log(WP_ERROR,
-				"Socket path is too long and would be truncated: %s\n",
-				socket_path);
-		return EXIT_FAILURE;
-	}
-
-	saddr.sun_family = AF_UNIX;
-	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	channelsock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	int nmaxclients = oneshot ? 1 : 3; // << todo, increase
+	int channelsock = setup_nb_socket(socket_path, nmaxclients);
 	if (channelsock == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s\n",
-				strerror(errno));
-		return EXIT_FAILURE;
-	}
-	if (bind(channelsock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error binding socket: %s\n", strerror(errno));
-		close(channelsock);
-		return EXIT_FAILURE;
-	}
-	if (listen(channelsock, 3) == -1) {
-		wp_log(WP_ERROR, "Error listening to socket: %s\n",
-				strerror(errno));
-		close(channelsock);
-		unlink(socket_path);
+		// Error messages already made
+		if (eol_pid) {
+			waitpid(eol_pid, NULL, 0);
+		}
 		return EXIT_FAILURE;
 	}
 
 	int retcode = EXIT_SUCCESS;
-	while (true) {
-		int chanclient = accept(channelsock, NULL, NULL);
-		if (chanclient == -1) {
-			wp_log(WP_DEBUG,
-					"Connection failure -- too many clients\n");
+	struct kstack *children = NULL;
+
+	/* A large fraction of the logic here is needed if we run in
+	 * 'ssh' mode, but the ssh invocation itself fails while we
+	 * are waiting for a socket accept */
+	struct pollfd cs;
+	cs.fd = channelsock;
+	cs.events = POLL_IN;
+	cs.revents = 0;
+	while (1) {
+		// TODO: figure out a safe, non-polling solution
+		int r = poll(&cs, 1, 1000);
+		if (r == -1) {
+			if (errno == EINTR) {
+				continue;
+			}
+			retcode = EXIT_FAILURE;
+			break;
+		}
+		if (eol_pid) {
+			int stat;
+			int wp = waitpid(eol_pid, &stat, WNOHANG);
+			if (wp > 0) {
+				wp_log(WP_ERROR, "Child (ssh) died early\n");
+				eol_pid = 0; // < recycled
+				retcode = EXIT_FAILURE;
+				break;
+			}
+		}
+		// scan stack for children, and clean them up!
+		wait_on_children(&children, WNOHANG);
+
+		if (r == 0) {
+			// Nothing to read
 			continue;
 		}
 
-		pid_t npid = fork();
-		if (npid == 0) {
-			// Run forked process, with the only shared state being
-			// the new channel socket
-			close(channelsock);
-			return run_client_child(chanclient, socket_path);
-		} else if (npid == -1) {
-			wp_log(WP_DEBUG, "Fork failure\n");
+		int chanclient = accept(channelsock, NULL, NULL);
+		if (chanclient == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				// The wakeup may have been spurious
+				continue;
+			}
+			wp_log(WP_ERROR, "Connection failure: %s\n",
+					strerror(errno));
 			retcode = EXIT_FAILURE;
 			break;
 		} else {
-			// todo: make an option in which only one client is
-			// permitted
+			if (oneshot) {
+				retcode = run_client_child(
+						chanclient, socket_path);
+				break;
+			} else {
+				pid_t npid = fork();
+				if (npid == 0) {
+					// Run forked process, with the only
+					// shared state being the new channel
+					// socket
+					while (children) {
+						struct kstack *nxt =
+								children->nxt;
+						free(children);
+						children = nxt;
+					}
+
+					close(channelsock);
+					run_client_child(chanclient,
+							socket_path);
+					// exit path?
+					return EXIT_SUCCESS;
+				} else if (npid == -1) {
+					wp_log(WP_DEBUG, "Fork failure\n");
+					retcode = EXIT_FAILURE;
+					break;
+				} else {
+					struct kstack *kd = calloc(1,
+							sizeof(struct kstack));
+					kd->pid = npid;
+					kd->nxt = children;
+					children = kd;
+				}
+				continue;
+			}
 		}
 	}
+
 	close(channelsock);
 	unlink(socket_path);
+	if (eol_pid) {
+		// Don't return until the child process completes
+		int status;
+		waitpid(eol_pid, &status, 0);
+	}
+	wait_on_children(&children, 0);
 	return retcode;
 }

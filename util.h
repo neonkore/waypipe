@@ -30,22 +30,27 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+/** Set the given flag with fcntl. Silently return -1 on failure. */
+int set_fnctl_flag(int fd, int the_flag);
+/** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
+ * nmaxclients. Prints its own error messages; returns -1 on failure. */
+int setup_nb_socket(const char *socket_path, int nmaxclients);
+
 ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds);
 ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		int numfds);
 
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
-// void wp_log(log_cat_t cat, );
 
 extern log_cat_t waypipe_loglevel;
 
 // mutates a static local, hence can only be called singlethreaded
 const char *static_timestamp(void);
 
-// no trailing ;, user must supply
 #ifndef WAYPIPE_SRC_DIR_LENGTH
 #define WAYPIPE_SRC_DIR_LENGTH 0
 #endif
+// no trailing ;, user must supply
 #define wp_log(level, fmt, ...)                                                \
 	if ((level) >= waypipe_loglevel)                                       \
 	fprintf(stderr, "%s [%s:%3d] " fmt, static_timestamp(),                \
@@ -107,5 +112,12 @@ void apply_updates(struct fd_translation_map *map, int ntransfers,
 
 /** Read the contents of a packed message into a newly allocated buffer */
 ssize_t read_size_then_buf(int fd, char **msg);
+
+struct kstack {
+	struct kstack *nxt;
+	pid_t pid;
+};
+
+void wait_on_children(struct kstack **children, int options);
 
 #endif // WAYPIPE_UTIL_H

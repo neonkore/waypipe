@@ -39,10 +39,61 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 log_cat_t waypipe_loglevel = WP_ERROR;
+
+int set_fnctl_flag(int fd, int the_flag)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1) {
+		return -1;
+	}
+	return fcntl(fd, F_SETFL, flags | the_flag);
+}
+
+int setup_nb_socket(const char *socket_path, int nmaxclients)
+{
+	struct sockaddr_un saddr;
+	int sock;
+
+	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
+		wp_log(WP_ERROR,
+				"Socket path is too long and would be truncated: %s\n",
+				socket_path);
+		return -1;
+	}
+
+	saddr.sun_family = AF_UNIX;
+	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
+	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (sock == -1) {
+		wp_log(WP_ERROR, "Error creating socket: %s\n",
+				strerror(errno));
+		return -1;
+	}
+	if (set_fnctl_flag(sock, O_NONBLOCK | O_CLOEXEC) == -1) {
+		wp_log(WP_ERROR, "Error making socket nonblocking: %s\n",
+				strerror(errno));
+		close(sock);
+		return -1;
+	}
+	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
+		wp_log(WP_ERROR, "Error binding socket: %s\n", strerror(errno));
+		close(sock);
+		return -1;
+	}
+	if (listen(sock, nmaxclients) == -1) {
+		wp_log(WP_ERROR, "Error listening to socket: %s\n",
+				strerror(errno));
+		close(sock);
+		unlink(socket_path);
+		return -1;
+	}
+	return sock;
+}
 
 const char *static_timestamp(void)
 {
@@ -189,6 +240,8 @@ void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
 		struct stat fsdata;
 		memset(&fsdata, 0, sizeof(fsdata));
 		int ret = fstat(the_fd, &fsdata);
+		// TODO: pipe support, also use fctnl(F_GETFL)
+
 		if (ret != -1) {
 			// We have a file-like object
 			shadow->memsize = fsdata.st_size;
@@ -290,6 +343,7 @@ static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		uint64_t block = diff_blocks[i];
 		uint64_t nfrom = block >> 32;
 		uint64_t nto = (block << 32) >> 32;
+		// TODO: validation, lest this be even more of a security risk
 		memcpy(base_blocks + nfrom, diff_blocks + i + 1,
 				8 * (nto - nfrom));
 		i += nto - nfrom + 1;
@@ -483,7 +537,9 @@ static void apply_update(
 	shadow->mem_mirror = calloc(shadow->memsize, 1);
 	// The first time only, the transfer data is a direct copy of the source
 	memcpy(shadow->mem_mirror, transf->data, transf->size);
-	sprintf(shadow->shm_buf_name, "/waypipe-data_%d", shadow->remote_id);
+	// The PID should be unique during the lifetime of the program
+	sprintf(shadow->shm_buf_name, "/waypipe%d-data_%d", getpid(),
+			shadow->remote_id);
 
 	shadow->fd_local = shm_open(
 			shadow->shm_buf_name, O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -538,4 +594,24 @@ ssize_t read_size_then_buf(int fd, char **msg)
 	}
 	*msg = tmpbuf;
 	return nbytes;
+}
+
+void wait_on_children(struct kstack **children, int options)
+{
+	struct kstack *cur = *children;
+	struct kstack **prv = children;
+	while (cur) {
+		int stat;
+		if (waitpid(cur->pid, &stat, options) > 0) {
+			wp_log(WP_ERROR, "Child handler %d has died\n",
+					cur->pid);
+			struct kstack *nxt = cur->nxt;
+			free(cur);
+			cur = nxt;
+			*prv = nxt;
+		} else {
+			prv = &cur->nxt;
+			cur = cur->nxt;
+		}
+	}
 }

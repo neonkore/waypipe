@@ -6,37 +6,56 @@ waypipe - A transparent proxy for Wayland applications
 
 # SYNOPSIS
 
-*waypipe* [options...] client socket_path++
-*waypipe* [options...] server socket_path -- command
+*waypipe* [options...] client++
+*waypipe* [options...] server -- command++
+*waypipe* [options...] ssh ...
+
+# DESCRIPTION
+
+waypipe is a proxy for Wayland clients, with the aim of supporting behavior
+like *ssh -X*.
 
 # OPTIONS
-
-*-h, --help*
-	Show help message and quit.
-
-*-v, --version*
-	Show the version number and quit.
 
 *-d, --debug*
 	Print debug log messages.
 
-# DESCRIPTION
+*-h, --help*
+	Show help message and quit.
 
-waypipe is a proxy for Wayland clients, with the aim of supporting
-behavior like *ssh -X*.
+*-o, --oneshot*
+	Only permit a single connection, and exit when it is closed.
+
+*-s S, --socket S*
+	Use *S* as the path for the unix socket.
+
+*-v, --version*
+	Show the version number and quit.
 
 # EXAMPLE 
 
+The following *waypipe ssh* subcommand will attempt to run *weston-flower* on
+the server _exserv_, displaying the result on the local system.
+
 ```
-	waypipe client /tmp/socket-client &
-	ssh -R/tmp/socket-server:/tmp/socket-client localhost waypipe server /tmp/socket-server -- weston-flower
+	waypipe -o ssh user@exserv weston-flower
+```
+
+One can obtain similar behavior by explictly running waypipe and ssh:
+
+```
+	waypipe -o --socket /tmp/socket-client client  &
+	ssh -R/tmp/socket-server:/tmp/socket-client -t user@exserv waypipe -o --socket /tmp/socket-server server -- weston-flower
 	kill %1
 ```
+
 	
 # ENVIRONMENT
 
-In server mode, the environment variable _WAYLAND_SOCKET_ is set, and the matching
-socket is inherited unto children.
+When running as a server, by default _WAYLAND_DISPLAY_ will be set for the
+invoked process. If the *--oneshot* flag is set, waypipe will instead set
+_WAYLAND_SOCKET_ and inherit a corresponding file descriptor to the invoked
+(child) process.
 
 # SEE ALSO
 

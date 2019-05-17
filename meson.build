@@ -63,4 +63,3 @@ custom_target(
 	install_dir: '@0@/man1'.format(mandir)
 )
 
-# TODO: version!

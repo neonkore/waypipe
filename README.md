@@ -16,11 +16,15 @@ may not be the same on the remote system.
 
     SRV=localhost
 
-    /usr/bin/waypipe client /tmp/socket-local &
+    /usr/bin/waypipe -s /tmp/socket-local client &
     ssh -R/tmp/socket-remote:/tmp/socket-local -t $SRV \
-        /usr/bin/waypipe server /tmp/socket-remote -- /usr/bin/weston-terminal
+        /usr/bin/waypipe -s /tmp/socket-remote server -- /usr/bin/weston-terminal
     
     kill %1
+
+`waypipe` also provides a more abbreviated syntax for the above:
+
+    /usr/bin/waypipe ssh $SRV /usr/bin/weston-terminal
 
 ## Installing
 
