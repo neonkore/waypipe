@@ -270,9 +270,6 @@ int main(int argc, char **argv)
 					return EXIT_FAILURE;
 				}
 
-				fprintf(stderr, "Destination is |%s|\n",
-						argv[dstidx]);
-
 				int nextra = 9 + debug + oneshot;
 				char **arglist = calloc(
 						argc + nextra, sizeof(char *));
@@ -303,10 +300,6 @@ int main(int argc, char **argv)
 					arglist[offset + i] = argv[i];
 				}
 				arglist[argc + offset] = NULL;
-
-				for (int i = 0; i < argc + nextra; i++) {
-					fprintf(stderr, ":: %s\n", arglist[i]);
-				}
 
 				// execvp effectively frees arglist
 				execvp(arglist[0], arglist);

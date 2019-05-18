@@ -33,7 +33,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
-#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -46,36 +45,34 @@
 /* Closes both provided file descriptors */
 static int run_server_child(int chanfd, int appfd)
 {
-	/** Main select loop:
-	 * fd -> csockpair[0]
-	 * csockpair[0] -> fd
-	 * 1 second timer (poll waitpid) */
-	struct timespec timeout = {.tv_sec = 0, .tv_nsec = 500000000L};
-
-	int iter = 0;
-
 	int maxmsg = 4096;
 	char *buffer = calloc(1, maxmsg + 1);
 	struct fd_translation_map fdtransmap = {
 			.local_sign = -1, .list = NULL, .max_local_id = 1};
-	while (true) {
-		iter++;
-		fd_set readfds;
-		FD_ZERO(&readfds);
-		FD_SET(chanfd, &readfds);
-		FD_SET(appfd, &readfds);
-		int maxfd = chanfd > appfd ? chanfd : appfd;
-		int r = pselect(maxfd + 1, &readfds, NULL, NULL, &timeout,
-				NULL);
-		if (r < 0) {
-			wp_log(WP_ERROR, "Error selecting fds: %s\n",
-					strerror(errno));
-			return EXIT_FAILURE;
+	struct pollfd *pfds = NULL;
+	while (1) {
+		int npoll = 2 + count_npipes(&fdtransmap);
+		free(pfds);
+		// todo: resizing logic
+		pfds = calloc(npoll, sizeof(struct pollfd));
+		pfds[0].fd = chanfd;
+		pfds[0].events = POLL_IN;
+		pfds[1].fd = appfd;
+		pfds[1].events = POLL_IN;
+		fill_with_pipes(&fdtransmap, pfds + 2);
+
+		int r = poll(pfds, (nfds_t)npoll, 700);
+		if (r == -1) {
+			wp_log(WP_ERROR, "poll failed, stopping\n");
+			break;
 		}
 
-		if (FD_ISSET(chanfd, &readfds)) {
-			wp_log(WP_DEBUG, "Channel read begun\n");
+		mark_pipe_object_statuses(&fdtransmap, npoll - 2, pfds + 2);
+
+		if (pfds[0].revents & POLLIN) {
+			// chanfd
 			char *tmpbuf;
+			wp_log(WP_DEBUG, "Channel read begun\n");
 			ssize_t nbytes = read_size_then_buf(chanfd, &tmpbuf);
 			if (nbytes == 0) {
 				wp_log(WP_ERROR,
@@ -88,11 +85,11 @@ static int run_server_child(int chanfd, int appfd)
 				break;
 			}
 
-			char *waymsg;
-			int waylen;
-			int nids;
+			char *waymsg = NULL;
+			int waylen = 0;
+			int nids = 0;
 			int ids[28];
-			int ntransfers;
+			int ntransfers = 0;
 			struct transfer transfers[50];
 			unpack_pipe_message((size_t)nbytes, tmpbuf, &waylen,
 					&waymsg, &nids, ids, &ntransfers,
@@ -108,61 +105,80 @@ static int run_server_child(int chanfd, int appfd)
 			memset(fds, 0, sizeof(fds));
 			untranslate_ids(&fdtransmap, nids, ids, fds);
 
-			ssize_t wc = iovec_write(
-					appfd, waymsg, waylen, fds, nids);
-			free(tmpbuf);
-			if (wc == -1) {
-				wp_log(WP_ERROR,
-						"appfd write failure %ld: %s\n",
-						wc, strerror(errno));
-				break;
+			if (waymsg) {
+				ssize_t wc = iovec_write(appfd, waymsg, waylen,
+						fds, nids);
+				free(tmpbuf);
+				if (wc == -1) {
+					wp_log(WP_ERROR,
+							"appfd write failure %ld: %s\n",
+							wc, strerror(errno));
+					break;
+				}
+				close_local_pipe_ends(&fdtransmap);
+			} else {
+				free(tmpbuf);
 			}
-		}
-		if (FD_ISSET(appfd, &readfds)) {
-			wp_log(WP_DEBUG, "client socket isset\n");
-			int fdbuf[28];
-			int nfds = 28;
 
-			ssize_t rc = iovec_read(
-					appfd, buffer, maxmsg, fdbuf, &nfds);
+			flush_writable_pipes(&fdtransmap);
+			close_rclosed_pipes(&fdtransmap);
+		}
+
+		int ntransfers = 0;
+		// the wayland message is a zeroth transfer
+		struct transfer transfers[50];
+		int nfds = 0;
+		int ids[28];
+		if (pfds[1].revents & POLLIN) {
+			int fdbuf[28];
+			ssize_t rc = iovec_read(appfd, buffer, maxmsg, fdbuf,
+					&nfds, 28);
 			if (rc == -1) {
 				wp_log(WP_ERROR, "appfd read failure %ld: %s\n",
 						rc, strerror(errno));
 				break;
 			}
 			if (rc > 0) {
-				int ids[28];
-				translate_fds(&fdtransmap, nfds, fdbuf, ids);
-				int ntransfers;
-				struct transfer transfers[50];
-				collect_updates(&fdtransmap, &ntransfers,
-						transfers);
-
-				char *msg = NULL;
-				size_t msglen;
-				pack_pipe_message(&msglen, &msg, rc, buffer,
-						nfds, ids, ntransfers,
-						transfers);
 				wp_log(WP_DEBUG,
-						"Packed message size (%d fds): %ld\n",
-						nfds, msglen);
+						"appfd: read %ld byte waymsg, %d fds\n",
+						rc, nfds);
 
-				if (write(chanfd, msg, msglen) == -1) {
-					free(msg);
-					wp_log(WP_ERROR,
-							"chanfd write failure: %s\n",
-							strerror(errno));
-					break;
-				}
-				free(msg);
+				transfers[0].obj_id = 0;
+				transfers[0].size = (size_t)rc;
+				transfers[0].data = buffer;
+				transfers[0].type = FDC_UNKNOWN;
+				ntransfers = 1;
 
-				wp_log(WP_DEBUG, "Channel write complete\n");
+				translate_fds(&fdtransmap, nfds, fdbuf, ids);
 			} else {
-				wp_log(WP_DEBUG, "the client shut down\n");
+				wp_log(WP_DEBUG, "The client shut down\n");
 				break;
 			}
 		}
+		read_readable_pipes(&fdtransmap);
+		collect_updates(&fdtransmap, &ntransfers, transfers);
+		if (ntransfers > 0) {
+			char *msg = NULL;
+			size_t msglen;
+			pack_pipe_message(&msglen, &msg, nfds, ids, ntransfers,
+					transfers);
+			wp_log(WP_DEBUG,
+					"Packed message size (%d fds, %d blobs): %ld\n",
+					nfds, ntransfers, msglen);
+
+			if (write(chanfd, msg, msglen) == -1) {
+				free(msg);
+				wp_log(WP_ERROR, "chanfd write failure: %s\n",
+						strerror(errno));
+				break;
+			}
+			free(msg);
+
+			wp_log(WP_DEBUG, "Channel write complete\n");
+		}
 	}
+	free(pfds);
+
 	cleanup_translation_map(&fdtransmap);
 	close(chanfd);
 	close(appfd);

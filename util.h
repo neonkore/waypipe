@@ -36,7 +36,8 @@ int set_fnctl_flag(int fd, int the_flag);
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);
 
-ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds);
+ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds,
+		int maxfds);
 ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		int numfds);
 
@@ -63,21 +64,43 @@ struct fd_translation_map {
 	int local_sign;
 };
 
+// TODO: FDC_PIPE_RW support (for non-linux); and evtly, FDC_DMABUF
+typedef enum { FDC_UNKNOWN, FDC_FILE, FDC_PIPE_IR, FDC_PIPE_IW } fdcat_t;
+
+struct pipe_buffer {
+	void *data;
+	ssize_t size;
+	ssize_t used;
+};
+
 struct shadow_fd {
 	struct shadow_fd *next; // singly-linked list
+	fdcat_t type;
 	int remote_id; // + if created serverside; - if created clientside
-	size_t memsize;
 	int fd_local;
-	char *mem_local;   // mmap'd
-	char *mem_mirror;  // malloc'd
-	char *diff_buffer; // malloc'd
-	char shm_buf_name[256];
+	// File data
+	size_t file_size;
+	char *file_mem_local;   // mmap'd
+	char *file_mem_mirror;  // malloc'd
+	char *file_diff_buffer; // malloc'd
+	char file_shm_buf_name[256];
+	// Pipe data
+	struct pipe_buffer pipe_send;
+	struct pipe_buffer pipe_recv;
+	/* this is a pipe end we can read/write from. It only sometimes
+	 * equals fd_local */
+	int pipe_fd;
+	bool pipe_readable, pipe_writable, pipe_onlyhere;
+	// pipe closure -> explicit state machine ?
+	bool pipe_lclosed, pipe_rclosed;
 };
 
 struct transfer {
 	size_t size;
+	fdcat_t type;
 	char *data;
 	int obj_id;
+	int special; // type-specific extra data
 };
 
 void cleanup_translation_map(struct fd_translation_map *map);
@@ -93,9 +116,8 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 /** Allocate a large new buffer to contain message data, the id list, and file
  * updates. The buffer includes the size_t at the beginning, which indicates
  * the tail size */
-void pack_pipe_message(size_t *msglen, char **msg, int waylen,
-		const char *waymsg, int nids, const int ids[], int ntransfers,
-		const struct transfer transfers[]);
+void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
+		int ntransfers, const struct transfer transfers[]);
 /** Unpack the buffer containing message data, the id list, and file updates.
  * All returned pointers refer to positions in the source buffer. */
 void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
@@ -112,6 +134,25 @@ void apply_updates(struct fd_translation_map *map, int ntransfers,
 
 /** Read the contents of a packed message into a newly allocated buffer */
 ssize_t read_size_then_buf(int fd, char **msg);
+
+/** Count the number of pipe fds being maintained by the translation map */
+int count_npipes(const struct fd_translation_map *map);
+/** Fill in pollfd entries, with POLL_IN | POLLOUT */
+struct pollfd;
+void fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds);
+
+/** mark pipe shadows as being ready to read or write */
+void mark_pipe_object_statuses(
+		struct fd_translation_map *map, int nfds, struct pollfd *pfds);
+/** For pipes marked writeable, flush as much buffered data as possible */
+void flush_writable_pipes(struct fd_translation_map *map);
+/** For pipes marked readable, read as much data as possible without blocking */
+void read_readable_pipes(struct fd_translation_map *map);
+/** pipe file descriptors should never be removed, since then close-detection
+ * fails. This closes the second pipe ends if we own both of them */
+void close_local_pipe_ends(struct fd_translation_map *map);
+/** If a pipe is remotely closed, but not locally closed, then close it too */
+void close_rclosed_pipes(struct fd_translation_map *map);
 
 struct kstack {
 	struct kstack *nxt;

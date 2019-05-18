@@ -6,6 +6,7 @@ waypipe=`which waypipe`
 
 program=`which bash`
 program=`which weston-terminal`
+program=`which termite`
 #program=`which weston-flower`
 #program=`which demo.py`
 
