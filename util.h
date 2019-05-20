@@ -71,8 +71,15 @@ struct fd_translation_map {
 	int local_sign;
 };
 
-// TODO: FDC_PIPE_RW support (for non-linux); and evtly, FDC_DMABUF
-typedef enum { FDC_UNKNOWN, FDC_FILE, FDC_PIPE_IR, FDC_PIPE_IW } fdcat_t;
+// TODO: evtly, FDC_DMABUF and more complicated emulation types
+typedef enum {
+	FDC_UNKNOWN,
+	FDC_FILE,
+	FDC_PIPE_IR,
+	FDC_PIPE_IW,
+	FDC_PIPE_RW
+} fdcat_t;
+bool fdcat_ispipe(fdcat_t t);
 
 struct pipe_buffer {
 	void *data;
@@ -98,7 +105,7 @@ struct shadow_fd {
 	 * equals fd_local */
 	int pipe_fd;
 	bool pipe_readable, pipe_writable, pipe_onlyhere;
-	// pipe closure -> explicit state machine ?
+	// pipe closure (as in, POLLHUP, other end writeclose) -> statemachine?
 	bool pipe_lclosed, pipe_rclosed;
 };
 

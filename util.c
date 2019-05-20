@@ -73,6 +73,11 @@ int set_fnctl_flag(int fd, int the_flag)
 	return fcntl(fd, F_SETFL, flags | the_flag);
 }
 
+bool fdcat_ispipe(fdcat_t t)
+{
+	return t == FDC_PIPE_IR || t == FDC_PIPE_RW || t == FDC_PIPE_IW;
+}
+
 int setup_nb_socket(const char *socket_path, int nmaxclients)
 {
 	struct sockaddr_un saddr;
@@ -214,8 +219,7 @@ void cleanup_translation_map(struct fd_translation_map *map)
 			if (shadow->file_shm_buf_name[0]) {
 				shm_unlink(shadow->file_shm_buf_name);
 			}
-		} else if (shadow->type == FDC_PIPE_IR ||
-				shadow->type == FDC_PIPE_IW) {
+		} else if (fdcat_ispipe(shadow->type)) {
 			close(shadow->pipe_fd);
 			if (shadow->pipe_fd != shadow->fd_local) {
 				close(shadow->fd_local);
@@ -259,35 +263,7 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 		wp_log(WP_ERROR, "The fd %d is not file-like\n", fd);
 		return shadow->remote_id;
 	}
-
-	if (S_ISFIFO(fsdata.st_mode)) {
-		int flags = fcntl(fd, F_GETFL, 0);
-		if (flags == -1) {
-			wp_log(WP_ERROR, "fctnl F_GETFL failed!\n");
-		}
-		if ((flags & O_ACCMODE) == O_RDONLY) {
-			shadow->type = FDC_PIPE_IR;
-		} else if ((flags & O_ACCMODE) == O_WRONLY) {
-			shadow->type = FDC_PIPE_IW;
-		} else {
-			wp_log(WP_ERROR,
-					"double ended pipe head encountered; not implemented\n");
-			shadow->type = FDC_PIPE_IR;
-			// TODO:  implement with socketpair, and use
-			// dir-specific close logic
-		}
-
-		// Make this end of the pipe nonblocking, so that we can include
-		// it in our main loop.
-		set_fnctl_flag(shadow->fd_local, O_NONBLOCK);
-		shadow->pipe_fd = shadow->fd_local;
-
-		// Allocate a reasonably small read buffer
-		shadow->pipe_recv.size = 16384;
-		shadow->pipe_recv.data = calloc(shadow->pipe_recv.size, 1);
-
-		shadow->pipe_onlyhere = true;
-	} else if (S_ISREG(fsdata.st_mode)) {
+	if (S_ISREG(fsdata.st_mode)) {
 
 		// We have a file-like object
 		shadow->file_size = fsdata.st_size;
@@ -304,9 +280,36 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 		shadow->file_mem_mirror = NULL;
 		shadow->type = FDC_FILE;
 	} else {
-		wp_log(WP_ERROR,
-				"The fd %d is neither a pipe nor a regular file\n",
-				fd);
+		if (!S_ISFIFO(fsdata.st_mode)) {
+			/* For example, weston-terminal passes the master
+			 * connection of the terminal which was acquired with
+			 * forkpty; it probably links to a character device */
+			wp_log(WP_ERROR,
+					"The fd %d is neither a pipe nor a regular file. Proceeding under the assumption that it is pipe-like.\n",
+					fd);
+		}
+		int flags = fcntl(fd, F_GETFL, 0);
+		if (flags == -1) {
+			wp_log(WP_ERROR, "fctnl F_GETFL failed!\n");
+		}
+		if ((flags & O_ACCMODE) == O_RDONLY) {
+			shadow->type = FDC_PIPE_IR;
+		} else if ((flags & O_ACCMODE) == O_WRONLY) {
+			shadow->type = FDC_PIPE_IW;
+		} else {
+			shadow->type = FDC_PIPE_RW;
+		}
+
+		// Make this end of the pipe nonblocking, so that we can include
+		// it in our main loop.
+		set_fnctl_flag(shadow->fd_local, O_NONBLOCK);
+		shadow->pipe_fd = shadow->fd_local;
+
+		// Allocate a reasonably small read buffer
+		shadow->pipe_recv.size = 16384;
+		shadow->pipe_recv.data = calloc(shadow->pipe_recv.size, 1);
+
+		shadow->pipe_onlyhere = true;
 	}
 
 	return shadow->remote_id;
@@ -451,8 +454,7 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			transfers[nt].type = cur->type;
 			transfers[nt].size = diffsize;
 			transfers[nt].special = 0;
-		} else if (cur->type == FDC_PIPE_IR ||
-				cur->type == FDC_PIPE_IW) {
+		} else if (fdcat_ispipe(cur->type)) {
 			if (cur->pipe_recv.used > 0 || cur->pipe_onlyhere ||
 					(cur->pipe_lclosed &&
 							!cur->pipe_rclosed)) {
@@ -631,11 +633,14 @@ static void apply_update(
 					transf->size, transf->data);
 			apply_diff(cur->file_size, cur->file_mem_local,
 					transf->size, transf->data);
-		} else if (cur->type == FDC_PIPE_IR ||
-				cur->type == FDC_PIPE_IW) {
-			if ((transf->type == cur->type) ||
-					(transf->type != FDC_PIPE_IR &&
-							transf->type != FDC_PIPE_IW)) {
+		} else if (fdcat_ispipe(cur->type)) {
+			bool rw_match = cur->type == FDC_PIPE_RW &&
+					transf->type == FDC_PIPE_RW;
+			bool iw_match = cur->type == FDC_PIPE_IW &&
+					transf->type == FDC_PIPE_IR;
+			bool ir_match = cur->type == FDC_PIPE_IR &&
+					transf->type == FDC_PIPE_IW;
+			if (!rw_match && !iw_match && !ir_match) {
 				wp_log(WP_ERROR,
 						"Transfer type contramismatch %d %d\n",
 						transf->type, cur->type);
@@ -710,26 +715,44 @@ static void apply_update(
 				shadow->fd_local, 0);
 		memcpy(shadow->file_mem_local, shadow->file_mem_mirror,
 				shadow->file_size);
-	} else if (shadow->type == FDC_PIPE_IR || shadow->type == FDC_PIPE_IW) {
-		shadow->type = shadow->type == FDC_PIPE_IR ? FDC_PIPE_IW
-							   : FDC_PIPE_IR;
+	} else if (fdcat_ispipe(shadow->type)) {
 		int pipedes[2];
-		if (pipe(pipedes) == -1) {
-			wp_log(WP_ERROR, "Failed to create a pipe: %s\n",
-					strerror(errno));
-			return;
+		if (transf->type == FDC_PIPE_RW) {
+			if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipedes) ==
+					-1) {
+				wp_log(WP_ERROR,
+						"Failed to create a socketpair: %s\n",
+						strerror(errno));
+				return;
+			}
+		} else {
+			if (pipe(pipedes) == -1) {
+				wp_log(WP_ERROR,
+						"Failed to create a pipe: %s\n",
+						strerror(errno));
+				return;
+			}
 		}
+
 		/* We pass 'fd_local' to the client, although we only read and
 		 * write from pipe_fd if it exists. */
-		if (shadow->type == FDC_PIPE_IR) {
+		if (transf->type == FDC_PIPE_IW) {
 			// Read end is 0; the other process writes
 			shadow->fd_local = pipedes[1];
 			shadow->pipe_fd = pipedes[0];
-		} else {
+			shadow->type = FDC_PIPE_IR;
+		} else if (transf->type == FDC_PIPE_IR) {
 			// Write end is 1; the other process reads
 			shadow->fd_local = pipedes[0];
 			shadow->pipe_fd = pipedes[1];
+			shadow->type = FDC_PIPE_IW;
+		} else { // FDC_PIPE_RW
+			// Here, it doesn't matter which end is which
+			shadow->fd_local = pipedes[0];
+			shadow->pipe_fd = pipedes[1];
+			shadow->type = FDC_PIPE_RW;
 		}
+
 		if (set_fnctl_flag(shadow->pipe_fd, O_NONBLOCK) == -1) {
 			wp_log(WP_ERROR,
 					"Failed to make private pipe end nonblocking: %s\n",
@@ -803,7 +826,7 @@ int count_npipes(const struct fd_translation_map *map)
 {
 	int np = 0;
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (cur->type == FDC_PIPE_IR || cur->type == FDC_PIPE_IW) {
+		if (fdcat_ispipe(cur->type)) {
 			if (!cur->pipe_lclosed) {
 				np++;
 			}
@@ -815,13 +838,15 @@ void fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds)
 {
 	unsigned int np = 0;
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (cur->type == FDC_PIPE_IR || cur->type == FDC_PIPE_IW) {
+		if (fdcat_ispipe(cur->type)) {
 			if (!cur->pipe_lclosed) {
 				pfds[np].fd = cur->pipe_fd;
-				if (cur->type == FDC_PIPE_IR) {
-					pfds[np].events = POLL_IN;
+				if (cur->type == FDC_PIPE_RW) {
+					pfds[np].events = POLLIN | POLLOUT;
+				} else if (cur->type == FDC_PIPE_IR) {
+					pfds[np].events = POLLIN;
 				} else if (cur->type == FDC_PIPE_IW) {
-					pfds[np].events = POLL_OUT;
+					pfds[np].events = POLLOUT;
 				}
 				np++;
 			}
@@ -833,8 +858,7 @@ static struct shadow_fd *get_shadow_for_pipe_fd(
 		struct fd_translation_map *map, int pipefd)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if ((cur->type == FDC_PIPE_IW || cur->type == FDC_PIPE_IR) &&
-				cur->pipe_fd == pipefd) {
+		if (fdcat_ispipe(cur->type) && cur->pipe_fd == pipefd) {
 			return cur;
 		}
 	}
@@ -868,17 +892,14 @@ void mark_pipe_object_statuses(
 void flush_writable_pipes(struct fd_translation_map *map)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		bool ispipe = (cur->type == FDC_PIPE_IW ||
-				cur->type == FDC_PIPE_IR);
-		if (ispipe && cur->pipe_writable && cur->pipe_send.used > 0) {
+		if (fdcat_ispipe(cur->type) && cur->pipe_writable &&
+				cur->pipe_send.used > 0) {
 			cur->pipe_writable = false;
 			wp_log(WP_DEBUG, "Flushing %ld bytes into RID=%d\n",
 					cur->pipe_send.used, cur->remote_id);
 			ssize_t changed =
 					write(cur->pipe_fd, cur->pipe_send.data,
 							cur->pipe_send.used);
-			// TODO:  PIPE close events are also significant, and
-			// must be transferred close(cur->pipe_fd);
 
 			if (changed == -1) {
 				wp_log(WP_ERROR,
@@ -907,9 +928,7 @@ void flush_writable_pipes(struct fd_translation_map *map)
 void read_readable_pipes(struct fd_translation_map *map)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		bool ispipe = (cur->type == FDC_PIPE_IW ||
-				cur->type == FDC_PIPE_IR);
-		if (ispipe && cur->pipe_readable &&
+		if (fdcat_ispipe(cur->type) && cur->pipe_readable &&
 				cur->pipe_recv.size > cur->pipe_recv.used) {
 			cur->pipe_readable = false;
 			ssize_t changed = read(cur->pipe_fd,
@@ -937,9 +956,7 @@ void read_readable_pipes(struct fd_translation_map *map)
 void close_local_pipe_ends(struct fd_translation_map *map)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		bool ispipe = (cur->type == FDC_PIPE_IW ||
-				cur->type == FDC_PIPE_IR);
-		if (ispipe && cur->fd_local != -2 &&
+		if (fdcat_ispipe(cur->type) && cur->fd_local != -2 &&
 				cur->fd_local != cur->pipe_fd) {
 			close(cur->fd_local);
 			cur->fd_local = -2;
@@ -950,9 +967,8 @@ void close_local_pipe_ends(struct fd_translation_map *map)
 void close_rclosed_pipes(struct fd_translation_map *map)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		bool ispipe = (cur->type == FDC_PIPE_IW ||
-				cur->type == FDC_PIPE_IR);
-		if (ispipe && cur->pipe_rclosed && !cur->pipe_lclosed) {
+		if (fdcat_ispipe(cur->type) && cur->pipe_rclosed &&
+				!cur->pipe_lclosed) {
 			close(cur->pipe_fd);
 			if (cur->pipe_fd == cur->fd_local) {
 				cur->fd_local = -2;

@@ -80,6 +80,7 @@ static int usage(int retcode)
 
 static void fill_rand_token(char tok[static 8])
 {
+	// TODO: replace with a true random value; time() overlaps /very/ easily
 	srand(time(NULL));
 	for (int i = 0; i < 8; i++) {
 		unsigned int r = ((unsigned int)rand()) % 62;
