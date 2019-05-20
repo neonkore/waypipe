@@ -23,9 +23,12 @@
  * SOFTWARE.
  */
 
+#define _XOPEN_SOURCE 700
+
 #include "util.h"
 
 #include <getopt.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -134,6 +137,7 @@ static int locate_openssh_cmd_hostname(int argc, char *const *argv)
 	return dstidx;
 }
 
+void handle_noop(int sig) { (void)sig; }
 int main(int argc, char **argv)
 {
 	bool help = false;
@@ -229,6 +233,25 @@ int main(int argc, char **argv)
 		argc--;
 	}
 	waypipe_loglevel = debug ? WP_DEBUG : WP_ERROR;
+	waypipe_log_mode = is_client ? 'C' : 'S';
+
+	// Setup signals
+	struct sigaction ia; // SIGINT: abort operations, and set a flag
+	ia.sa_handler = handle_sigint;
+	sigemptyset(&ia.sa_mask);
+	ia.sa_flags = 0;
+	struct sigaction ca; // SIGCHLD: restart operations, but EINTR on poll
+	ca.sa_handler = handle_noop;
+	sigemptyset(&ca.sa_mask);
+	ca.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	if (sigaction(SIGINT, &ia, NULL) == -1) {
+		wp_log(WP_ERROR, "Failed to set signal action for SIGINT\n");
+		return EXIT_FAILURE;
+	}
+	if (sigaction(SIGCHLD, &ca, NULL) == -1) {
+		wp_log(WP_ERROR, "Failed to set signal action for SIGCHLD\n");
+		return EXIT_FAILURE;
+	}
 
 	if (is_client) {
 		if (setup_ssh) {

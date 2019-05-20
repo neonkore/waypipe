@@ -44,7 +44,25 @@
 #include <time.h>
 #include <unistd.h>
 
+bool shutdown_flag = false;
+char waypipe_log_mode = '?';
 log_cat_t waypipe_loglevel = WP_ERROR;
+
+void handle_sigint(int sig)
+{
+	(void)sig;
+	char buf[20];
+	int pid = getpid();
+	sprintf(buf, "SIGINT(%d)\n", pid);
+	write(STDOUT_FILENO, buf, strlen(buf));
+	if (!shutdown_flag) {
+		shutdown_flag = true;
+	} else {
+		const char msg[] = "Second SIGINT, aborting.\n";
+		write(STDERR_FILENO, msg, sizeof(msg));
+		abort();
+	}
+}
 
 int set_fnctl_flag(int fd, int the_flag)
 {
@@ -254,8 +272,9 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 		} else {
 			wp_log(WP_ERROR,
 					"double ended pipe head encountered; not implemented\n");
-			shadow->type = FDC_PIPE_IR; // <typical of data offers,
-						    // creator sends
+			shadow->type = FDC_PIPE_IR;
+			// TODO:  implement with socketpair, and use
+			// dir-specific close logic
 		}
 
 		// Make this end of the pipe nonblocking, so that we can include
@@ -766,9 +785,8 @@ void wait_on_children(struct kstack **children, int options)
 	struct kstack *cur = *children;
 	struct kstack **prv = children;
 	while (cur) {
-		int stat;
-		if (waitpid(cur->pid, &stat, options) > 0) {
-			wp_log(WP_ERROR, "Child handler %d has died\n",
+		if (waitpid(cur->pid, NULL, options) > 0) {
+			wp_log(WP_DEBUG, "Child handler %d has died\n",
 					cur->pid);
 			struct kstack *nxt = cur->nxt;
 			free(cur);

@@ -74,7 +74,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 	const int maxmsg = 4096;
 	char *buffer = calloc(1, maxmsg + 1);
 	struct pollfd *pfds = NULL;
-	while (1) {
+	while (!shutdown_flag) {
 		int npoll = 2 + count_npipes(&fdtransmap);
 		free(pfds);
 		// todo: resizing logic
@@ -85,7 +85,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 		pfds[1].events = POLL_IN;
 		fill_with_pipes(&fdtransmap, pfds + 2);
 
-		int r = poll(pfds, (nfds_t)npoll, 700);
+		int r = poll(pfds, (nfds_t)npoll, -1);
 		if (r == -1) {
 			wp_log(WP_ERROR, "poll failed, stopping\n");
 			break;
@@ -99,7 +99,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 			wp_log(WP_DEBUG, "Channel read begun\n");
 			ssize_t nbytes = read_size_then_buf(chanfd, &tmpbuf);
 			if (nbytes == 0) {
-				wp_log(WP_ERROR,
+				wp_log(WP_DEBUG,
 						"Channel read connection closed\n");
 				break;
 			}
@@ -245,30 +245,31 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 	cs.fd = channelsock;
 	cs.events = POLL_IN;
 	cs.revents = 0;
-	while (1) {
+	while (!shutdown_flag) {
 		// TODO: figure out a safe, non-polling solution
-		int r = poll(&cs, 1, 1000);
+		if (eol_pid) {
+			int wp = waitpid(eol_pid, NULL, WNOHANG);
+			if (wp > 0) {
+				wp_log(WP_DEBUG, "Child (ssh) died, exiting\n");
+				eol_pid = 0; // < recycled
+				retcode = EXIT_SUCCESS;
+				break;
+			}
+		}
+
+		// scan stack for children, and clean them up!
+		wait_on_children(&children, WNOHANG);
+
+		int r = poll(&cs, 1, -1);
 		if (r == -1) {
 			if (errno == EINTR) {
+				// If SIGCHLD, we will check the child.
+				// If SIGINT, the loop ends
 				continue;
 			}
 			retcode = EXIT_FAILURE;
 			break;
-		}
-		if (eol_pid) {
-			int stat;
-			int wp = waitpid(eol_pid, &stat, WNOHANG);
-			if (wp > 0) {
-				wp_log(WP_ERROR, "Child (ssh) died early\n");
-				eol_pid = 0; // < recycled
-				retcode = EXIT_FAILURE;
-				break;
-			}
-		}
-		// scan stack for children, and clean them up!
-		wait_on_children(&children, WNOHANG);
-
-		if (r == 0) {
+		} else if (r == 0) {
 			// Nothing to read
 			continue;
 		}
@@ -311,6 +312,9 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 					retcode = EXIT_FAILURE;
 					break;
 				} else {
+					// Remove connection from this process
+					close(chanclient);
+
 					struct kstack *kd = calloc(1,
 							sizeof(struct kstack));
 					kd->pid = npid;
@@ -324,11 +328,18 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 
 	close(channelsock);
 	unlink(socket_path);
+	int cleanup_type = shutdown_flag ? WNOHANG : 0;
 	if (eol_pid) {
 		// Don't return until the child process completes
-		int status;
-		waitpid(eol_pid, &status, 0);
+		waitpid(eol_pid, NULL, cleanup_type);
 	}
-	wait_on_children(&children, 0);
+	wait_on_children(&children, cleanup_type);
+	// Free stack, in case we suddenly shutdown and fail to clean up
+	// children
+	while (children) {
+		struct kstack *nxt = children->nxt;
+		free(children);
+		children = nxt;
+	}
 	return retcode;
 }

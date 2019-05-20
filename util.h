@@ -30,6 +30,11 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+// On SIGINT, this is set to true. The main program should then cleanup ASAP
+extern bool shutdown_flag;
+
+void handle_sigint(int sig);
+
 /** Set the given flag with fcntl. Silently return -1 on failure. */
 int set_fnctl_flag(int fd, int the_flag);
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
@@ -43,6 +48,7 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
 
+extern char waypipe_log_mode;
 extern log_cat_t waypipe_loglevel;
 
 // mutates a static local, hence can only be called singlethreaded
@@ -54,7 +60,8 @@ const char *static_timestamp(void);
 // no trailing ;, user must supply
 #define wp_log(level, fmt, ...)                                                \
 	if ((level) >= waypipe_loglevel)                                       \
-	fprintf(stderr, "%s [%s:%3d] " fmt, static_timestamp(),                \
+	fprintf(stderr, "%c%d:%s [%s:%3d] " fmt, waypipe_log_mode, getpid(),   \
+			static_timestamp(),                                    \
 			((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,     \
 			__LINE__, ##__VA_ARGS__)
 

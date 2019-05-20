@@ -50,7 +50,7 @@ static int run_server_child(int chanfd, int appfd)
 	struct fd_translation_map fdtransmap = {
 			.local_sign = -1, .list = NULL, .max_local_id = 1};
 	struct pollfd *pfds = NULL;
-	while (1) {
+	while (!shutdown_flag) {
 		int npoll = 2 + count_npipes(&fdtransmap);
 		free(pfds);
 		// todo: resizing logic
@@ -61,10 +61,18 @@ static int run_server_child(int chanfd, int appfd)
 		pfds[1].events = POLL_IN;
 		fill_with_pipes(&fdtransmap, pfds + 2);
 
-		int r = poll(pfds, (nfds_t)npoll, 700);
+		int r = poll(pfds, (nfds_t)npoll, -1);
 		if (r == -1) {
-			wp_log(WP_ERROR, "poll failed, stopping\n");
-			break;
+			if (errno == EINTR) {
+				wp_log(WP_ERROR,
+						"poll interrupted: shutdown=%c\n",
+						shutdown_flag ? 'Y' : 'n');
+			} else {
+				wp_log(WP_ERROR,
+						"poll failed due to, stopping: %s\n",
+						strerror(errno));
+				break;
+			}
 		}
 
 		mark_pipe_object_statuses(&fdtransmap, npoll - 2, pfds + 2);
@@ -295,6 +303,7 @@ int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
 		} else {
 			retval = EXIT_FAILURE;
 		}
+		close(server_link);
 	} else {
 		struct kstack *children = NULL;
 
@@ -304,24 +313,34 @@ int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
 		pf.fd = wdisplay_socket;
 		pf.events = POLL_IN;
 		pf.revents = 0;
-		while (1) {
-			int r = poll(&pf, 1, 1000);
-			if (r == -1) {
-				if (errno == EINTR) {
-					continue;
-				}
-				retval = EXIT_FAILURE;
+		while (!shutdown_flag) {
+			int wp = waitpid(pid, NULL, WNOHANG);
+			if (wp > 0) {
+				wp_log(WP_DEBUG,
+						"Child program has died, exiting\n");
+				retval = EXIT_SUCCESS;
 				break;
-			}
-			int stat;
-			if (waitpid(pid, &stat, WNOHANG) > 0) {
-				wp_log(WP_ERROR, "Child program died early\n");
+			} else if (wp == -1) {
+				wp_log(WP_ERROR, "Failed in waitpid: %s\n",
+						strerror(errno));
 				retval = EXIT_FAILURE;
 				break;
 			}
 			// scan stack for children, and clean them up!
 			wait_on_children(&children, WNOHANG);
-			if (r == 0) {
+
+			int r = poll(&pf, 1, -1);
+			if (r == -1) {
+				if (errno == EINTR) {
+					// If SIGCHLD, we will check the child.
+					// If SIGINT, the loop ends
+					continue;
+				}
+				fprintf(stderr, "Poll failed: %s\n",
+						strerror(errno));
+				retval = EXIT_FAILURE;
+				break;
+			} else if (r == 0) {
 				continue;
 			}
 
@@ -359,6 +378,10 @@ int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
 					retval = EXIT_FAILURE;
 					break;
 				} else {
+					// This process no longer needs the
+					// application connection
+					close(appfd);
+
 					struct kstack *kd = calloc(1,
 							sizeof(struct kstack));
 					kd->pid = npid;
@@ -368,15 +391,25 @@ int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
 				continue;
 			}
 		}
+		close(wdisplay_socket);
 		// Wait for child processes to exit
 		wp_log(WP_DEBUG, "Waiting for child handlers\n");
-		wait_on_children(&children, 0);
+		wait_on_children(&children, shutdown_flag ? WNOHANG : 0);
+		// Free stack, in case we suddenly shutdown and fail to clean up
+		// children
+		while (children) {
+			struct kstack *nxt = children->nxt;
+			free(children);
+			children = nxt;
+		}
 	}
 
+	if (!oneshot) {
+		unlink(displaypath);
+	}
 	// todo: scope manipulation, to ensure all cleanups are done
 	wp_log(WP_DEBUG, "Waiting for child process\n");
-	int status;
-	waitpid(pid, &status, 0);
+	waitpid(pid, NULL, shutdown_flag ? WNOHANG : 0);
 	wp_log(WP_DEBUG, "Program ended\n");
 	return retval;
 }

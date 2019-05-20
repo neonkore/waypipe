@@ -28,8 +28,11 @@ may not be the same on the remote system.
 
 ## Installing
 
-Build with meson[0]. A recent version of wayland is required. Man pages are
-generated with scdoc[1].
+Build with meson[0]. Requirements:
+
+* wayland (>= 1.15, to support absolute paths in WAYLAND_DISPLAY)
+* scdoc (to generate a man page)
+* ssh (OpenSSH >= 6.7, for Unix domain socket forwarding)
 
 [0] [https://mesonbuild.com/](https://mesonbuild.com/)
 [1] [https://git.sr.ht/~sircmpwn/scdoc](https://git.sr.ht/~sircmpwn/scdoc)
