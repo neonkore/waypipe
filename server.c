@@ -216,7 +216,8 @@ static int connect_to_channel(const char *socket_path)
 	return chanfd;
 }
 
-int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
+int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
+		char *const app_argv[])
 {
 	wp_log(WP_DEBUG, "I'm a server on %s, running: %s\n", socket_path,
 			app_argv[0]);
@@ -296,6 +297,9 @@ int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
 	int retval = EXIT_SUCCESS;
 	if (oneshot) {
 		int chanfd = connect_to_channel(socket_path);
+		if (unlink_at_end) {
+			unlink(socket_path);
+		}
 
 		wp_log(WP_DEBUG, "Oneshot connected\n");
 		if (chanfd != -1) {
@@ -390,6 +394,9 @@ int run_server(const char *socket_path, bool oneshot, char *const app_argv[])
 				}
 				continue;
 			}
+		}
+		if (unlink_at_end) {
+			unlink(socket_path);
 		}
 		close(wdisplay_socket);
 		// Wait for child processes to exit

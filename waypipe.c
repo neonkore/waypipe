@@ -40,7 +40,8 @@
 #include <time.h>
 #include <unistd.h>
 
-int run_server(const char *socket_path, bool oneshot, const char **app_argv);
+int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
+		const char **app_argv);
 int run_client(const char *socket_path, bool oneshot, pid_t eol_pid);
 
 /* Usage: Wrapped to 72 characters */
@@ -69,6 +70,8 @@ static const char usage_string[] =
 		"                       if it is a client, and to which waypipe\n"
 		"                       connects if it is a server. In ssh mode, forms\n"
 		"                       the prefix of the socket path.\n"
+		"    -u,  --unlink    If in server mode, unlink the socket once\n"
+		"                       no more connections will be made to it.\n"
 		"    -v,  --version   Print waypipe version.\n";
 
 static int usage(int retcode)
@@ -146,6 +149,7 @@ int main(int argc, char **argv)
 	bool fail = false;
 	bool debug = false;
 	bool oneshot = false;
+	bool unlink_at_end = false;
 	bool is_client, setup_ssh;
 	const char *socketpath = NULL;
 	static const struct option options[] = {
@@ -153,6 +157,7 @@ int main(int argc, char **argv)
 			{"help", no_argument, NULL, 'h'},
 			{"oneshot", no_argument, NULL, 'o'},
 			{"socket", required_argument, NULL, 's'},
+			{"unlink", no_argument, NULL, 'u'},
 			{"version", no_argument, NULL, 'v'}, {0, 0, NULL, 0}};
 
 	/* We do not parse any getopt arguments happening after the mode choice
@@ -169,7 +174,7 @@ int main(int argc, char **argv)
 
 	while (true) {
 		int option_index;
-		int opt = getopt_long(mode_argc, argv, "dhos:v", options,
+		int opt = getopt_long(mode_argc, argv, "dhos:uv", options,
 				&option_index);
 
 		if (opt == -1) {
@@ -177,20 +182,23 @@ int main(int argc, char **argv)
 		}
 
 		switch (opt) {
-		case 'h':
-			help = true;
-			break;
-		case 'v':
-			version = true;
-			break;
 		case 'd':
 			debug = true;
+			break;
+		case 'h':
+			help = true;
 			break;
 		case 'o':
 			oneshot = true;
 			break;
 		case 's':
 			socketpath = optarg;
+			break;
+		case 'u':
+			unlink_at_end = true;
+			break;
+		case 'v':
+			version = true;
 			break;
 		default:
 			fail = true;
@@ -294,7 +302,7 @@ int main(int argc, char **argv)
 					return EXIT_FAILURE;
 				}
 
-				int nextra = 9 + debug + oneshot;
+				int nextra = 10 + debug + oneshot;
 				char **arglist = calloc(
 						argc + nextra, sizeof(char *));
 
@@ -317,6 +325,7 @@ int main(int argc, char **argv)
 				if (oneshot) {
 					arglist[dstidx + 1 + offset++] = "-o";
 				}
+				arglist[dstidx + 1 + offset++] = "-u";
 				arglist[dstidx + 1 + offset++] = "-s";
 				arglist[dstidx + 1 + offset++] = serversock;
 				arglist[dstidx + 1 + offset++] = "server";
@@ -363,6 +372,6 @@ int main(int argc, char **argv)
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-server.sock";
 		}
-		return run_server(socketpath, oneshot, app_argv);
+		return run_server(socketpath, oneshot, unlink_at_end, app_argv);
 	}
 }
