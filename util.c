@@ -379,9 +379,12 @@ static void construct_diff(size_t size, const char *__restrict__ base,
 	// We do not add a final 'skip' block, because the unpacking routine
 	if (!skipping) {
 		diff_blocks[last_header] |= nblocks - nskip;
+		cursor -= nskip;
 	}
 	if (ntrailing > 0) {
-		memcpy(&diff[cursor * 8], &changed[nblocks * 8], ntrailing);
+		for (uint64_t i = 0; i < ntrailing; i++) {
+			diff[cursor * 8 + i] = changed[nblocks * 8 + i];
+		}
 	}
 	*diffsize = cursor * 8 + ntrailing;
 }
@@ -401,13 +404,22 @@ static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		uint64_t block = diff_blocks[i];
 		uint64_t nfrom = block >> 32;
 		uint64_t nto = (block << 32) >> 32;
-		// TODO: validation, lest this be even more of a security risk
+		if (nto > nblocks || nfrom >= nto ||
+				i + (nto - nfrom) >= ndiffblocks) {
+			wp_log(WP_ERROR,
+					"Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks\n",
+					nfrom, nto, nblocks, i + 1,
+					i + 1 + (nto - nfrom), ndiffblocks);
+			return;
+		}
 		memcpy(base_blocks + nfrom, diff_blocks + i + 1,
 				8 * (nto - nfrom));
 		i += nto - nfrom + 1;
 	}
 	if (ntrailing > 0) {
-		memcpy(&base[nblocks * 8], &diff[ndiffblocks * 8], ntrailing);
+		for (uint64_t i = 0; i < ntrailing; i++) {
+			base[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
+		}
 	}
 }
 
