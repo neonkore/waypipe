@@ -990,3 +990,28 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 		}
 	}
 }
+
+void parse_and_prune_messages(struct message_tracker *mt, bool from_client,
+		char *data, int *data_len, int *fds, int *fds_len)
+{
+	int fdpos = 0;
+	int writepos = 0;
+	for (int pos = 0; pos < *data_len;) {
+		int consumed_bytes = 0, consumed_fds = 0;
+		bool keep = handle_message(mt, from_client, &data[pos],
+				*data_len - pos, &consumed_bytes, &fds[fdpos],
+				*fds_len - fdpos, &consumed_fds);
+		if (pos != writepos) {
+			memmove(&data[writepos], &data[pos],
+					(size_t)consumed_bytes);
+		}
+		pos += consumed_bytes;
+		if (keep) {
+			writepos += consumed_bytes;
+		} else {
+			// I.e, forget that it was appended to the stream
+			wp_log(WP_DEBUG, "Dropping a message\n");
+		}
+	}
+	*data_len = writepos;
+}

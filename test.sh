@@ -4,14 +4,10 @@ root=`pwd`
 
 waypipe=`which waypipe`
 
-program=`which bash`
-program=`which weston-terminal`
-program=`which termite`
-#program=`which weston-flower`
-#program=`which demo.py`
+program=`which ${1:-weston-terminal}`
 
 debug=
-debug=-d
+#debug=-d
 
 # Orange=client, purple=server
 

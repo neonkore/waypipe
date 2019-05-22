@@ -39,12 +39,20 @@ endif
 wayland_client = dependency('wayland-client', version: '>=1.17')
 wayland_protos = dependency('wayland-protocols', version: '>=1.17')
 wayland_server = dependency('wayland-server', version: '>=1.17')
+libffi         = dependency('libffi')
 rt             = cc.find_library('rt')
+
+subdir('protocols')
 
 executable(
 	'waypipe',
-	['waypipe.c', 'client.c', 'server.c', 'util.c'],
-	dependencies : [rt, wayland_client, wayland_protos, wayland_server],
+	['waypipe.c', 'client.c', 'parsing.c', 'server.c', 'util.c'],
+	dependencies : [
+		libffi,          # To call wayland protocol functions
+		protos,          # Wayland protocol data
+		rt,              # For shared memory
+		wayland_client   # For wl_display_connnect
+	],
 	install: true
 )
 

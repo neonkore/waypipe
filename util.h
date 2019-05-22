@@ -29,6 +29,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 // On SIGINT, this is set to true. The main program should then cleanup ASAP
 extern bool shutdown_flag;
@@ -174,5 +175,50 @@ struct kstack {
 };
 
 void wait_on_children(struct kstack **children, int options);
+
+struct msg_handler {
+	const struct wl_interface *interface;
+	// these are structs packed densely with function pointers
+	const void *event_handlers;
+	const void *request_handlers;
+};
+struct wp_object {
+	// basically a 'wl_object', except that we need to watch/modify both
+	// client and server.
+	int obj_id;
+	const struct wl_interface *type; // Use to lookup the message handler
+};
+
+struct obj_list {
+	struct wp_object **objs;
+	int nobj;
+	int size;
+};
+struct message_tracker {
+	// objects all have a 'type'
+	// creating a new type <-> binding it in the 'interface' list, via
+	// registry. each type produces 'callbacks'
+	struct msg_handler handlers[50];
+	struct obj_list objects;
+};
+
+/**
+ * Given a set of messages and fds, parse the messages, and if indicated by
+ * parsing logic, compact the message buffer by removing selected messages.
+ */
+void parse_and_prune_messages(struct message_tracker *mt, bool from_client,
+		char *data, int *len, int *fds, int *nfds);
+
+// util.c ; returns add or delete
+
+void listset_insert(struct obj_list *lst, struct wp_object *obj);
+void listset_remove(struct obj_list *lst, struct wp_object *obj);
+struct wp_object *listset_get(struct obj_list *lst, int id);
+
+void init_message_tracker(struct message_tracker *mt);
+void cleanup_message_tracker(struct message_tracker *mt);
+bool handle_message(struct message_tracker *mt, bool from_client, void *data,
+		int data_len, int *consumed_length, int *fds, int fds_len,
+		int *n_consumed_fds);
 
 #endif // WAYPIPE_UTIL_H

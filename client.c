@@ -71,6 +71,9 @@ static int run_client_child(int chanfd, const char *socket_path)
 	struct fd_translation_map fdtransmap = {
 			.local_sign = 1, .list = NULL, .max_local_id = 1};
 
+	struct message_tracker mtracker;
+	init_message_tracker(&mtracker);
+
 	const int maxmsg = 4096;
 	char *buffer = calloc(1, maxmsg + 1);
 	struct pollfd *pfds = NULL;
@@ -130,6 +133,11 @@ static int run_client_child(int chanfd, const char *socket_path)
 			untranslate_ids(&fdtransmap, nids, ids, fds);
 
 			if (waymsg) {
+				parse_and_prune_messages(&mtracker, true,
+						waymsg, &waylen, fds, &nids);
+			}
+
+			if (waylen > 0) {
 				ssize_t wc = iovec_write(dispfd, waymsg, waylen,
 						fds, nids);
 				free(tmpbuf);
@@ -162,6 +170,12 @@ static int run_client_child(int chanfd, const char *socket_path)
 						"dispfd read failure %ld: %s\n",
 						rc, strerror(errno));
 				break;
+			}
+			if (rc > 0) {
+				int nrc = (int)rc;
+				parse_and_prune_messages(&mtracker, false,
+						buffer, &nrc, fdbuf, &nfds);
+				rc = nrc;
 			}
 			if (rc > 0) {
 				transfers[0].obj_id = 0;
@@ -200,6 +214,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 	}
 	free(pfds);
 	cleanup_translation_map(&fdtransmap);
+	cleanup_message_tracker(&mtracker);
 
 	free(buffer);
 	close(chanfd);
