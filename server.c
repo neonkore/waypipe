@@ -49,6 +49,8 @@ static int run_server_child(int chanfd, int appfd)
 	char *buffer = calloc(1, maxmsg + 1);
 	struct fd_translation_map fdtransmap = {
 			.local_sign = -1, .list = NULL, .max_local_id = 1};
+	struct message_tracker mtracker;
+	init_message_tracker(&mtracker);
 	struct pollfd *pfds = NULL;
 	while (!shutdown_flag) {
 		int npoll = 2 + count_npipes(&fdtransmap);
@@ -114,6 +116,12 @@ static int run_server_child(int chanfd, int appfd)
 			untranslate_ids(&fdtransmap, nids, ids, fds);
 
 			if (waymsg) {
+				parse_and_prune_messages(&mtracker, &fdtransmap,
+						false, waymsg, &waylen, fds,
+						&nids);
+			}
+
+			if (waymsg) {
 				ssize_t wc = iovec_write(appfd, waymsg, waylen,
 						fds, nids);
 				free(tmpbuf);
@@ -145,6 +153,13 @@ static int run_server_child(int chanfd, int appfd)
 				wp_log(WP_ERROR, "appfd read failure %ld: %s\n",
 						rc, strerror(errno));
 				break;
+			}
+			if (rc > 0) {
+				int nrc = (int)rc;
+				parse_and_prune_messages(&mtracker, &fdtransmap,
+						true, buffer, &nrc, fdbuf,
+						&nfds);
+				rc = nrc;
 			}
 			if (rc > 0) {
 				wp_log(WP_DEBUG,
@@ -188,6 +203,7 @@ static int run_server_child(int chanfd, int appfd)
 	free(pfds);
 
 	cleanup_translation_map(&fdtransmap);
+	cleanup_message_tracker(&mtracker);
 	close(chanfd);
 	close(appfd);
 	free(buffer);

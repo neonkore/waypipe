@@ -93,6 +93,8 @@ struct shadow_fd {
 	fdcat_t type;
 	int remote_id; // + if created serverside; - if created clientside
 	int fd_local;
+	// Dirty state. Should this file be scanned for updates?
+	bool is_dirty;
 	// File data
 	size_t file_size;
 	char *file_mem_local;   // mmap'd
@@ -181,11 +183,12 @@ struct msg_handler {
 	// these are structs packed densely with function pointers
 	const void *event_handlers;
 	const void *request_handlers;
+	enum { FDEFFECT_NEVER = 1, FDEFFECT_MAYBE = 2 } effect;
 };
 struct wp_object {
 	// basically a 'wl_object', except that we need to watch/modify both
 	// client and server.
-	int obj_id;
+	uint32_t obj_id;
 	const struct wl_interface *type; // Use to lookup the message handler
 };
 
@@ -198,7 +201,6 @@ struct message_tracker {
 	// objects all have a 'type'
 	// creating a new type <-> binding it in the 'interface' list, via
 	// registry. each type produces 'callbacks'
-	struct msg_handler handlers[50];
 	struct obj_list objects;
 };
 
@@ -206,19 +208,20 @@ struct message_tracker {
  * Given a set of messages and fds, parse the messages, and if indicated by
  * parsing logic, compact the message buffer by removing selected messages.
  */
-void parse_and_prune_messages(struct message_tracker *mt, bool from_client,
-		char *data, int *len, int *fds, int *nfds);
+void parse_and_prune_messages(struct message_tracker *mt,
+		struct fd_translation_map *map, bool from_client, char *data,
+		int *len, int *fds, int *nfds);
 
 // util.c ; returns add or delete
 
 void listset_insert(struct obj_list *lst, struct wp_object *obj);
 void listset_remove(struct obj_list *lst, struct wp_object *obj);
-struct wp_object *listset_get(struct obj_list *lst, int id);
+struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
 void init_message_tracker(struct message_tracker *mt);
 void cleanup_message_tracker(struct message_tracker *mt);
 bool handle_message(struct message_tracker *mt, bool from_client, void *data,
 		int data_len, int *consumed_length, int *fds, int fds_len,
-		int *n_consumed_fds);
+		int *n_consumed_fds, bool *buffer_changes);
 
 #endif // WAYPIPE_UTIL_H

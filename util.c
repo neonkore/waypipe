@@ -253,6 +253,8 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 	shadow->file_size = (size_t)-1;
 	shadow->remote_id = (map->max_local_id++) * map->local_sign;
 	shadow->type = FDC_UNKNOWN;
+	// File changes must be propagated
+	shadow->is_dirty = true;
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d\n", fd);
 
@@ -285,8 +287,8 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 			 * connection of the terminal which was acquired with
 			 * forkpty; it probably links to a character device */
 			wp_log(WP_ERROR,
-					"The fd %d is neither a pipe nor a regular file. Proceeding under the assumption that it is pipe-like.\n",
-					fd);
+					"The fd %d, size %ld, mode %x is neither a pipe nor a regular file. Proceeding under the assumption that it is pipe-like.\n",
+					fd, fsdata.st_size, fsdata.st_mode);
 		}
 		int flags = fcntl(fd, F_GETFL, 0);
 		if (flags == -1) {
@@ -428,6 +430,13 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
 		if (cur->type == FDC_FILE) {
+			if (!cur->is_dirty) {
+				// File is clean, we have no reason to believe
+				// that its contents could have changed
+				continue;
+			}
+			cur->is_dirty = false;
+
 			if (!cur->file_mem_mirror) {
 				cur->file_mem_mirror =
 						calloc(cur->file_size, 1);
@@ -467,6 +476,8 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			transfers[nt].size = diffsize;
 			transfers[nt].special = 0;
 		} else if (fdcat_ispipe(cur->type)) {
+			// Pipes always update, no matter what the message
+			// stream indicates. Hence no cur->is_dirty flag check
 			if (cur->pipe_recv.used > 0 || cur->pipe_onlyhere ||
 					(cur->pipe_lclosed &&
 							!cur->pipe_rclosed)) {
@@ -696,6 +707,7 @@ static void apply_update(
 	shadow->remote_id = transf->obj_id;
 	shadow->fd_local = -1;
 	shadow->type = transf->type;
+	shadow->is_dirty = false;
 	if (shadow->type == FDC_FILE) {
 		shadow->file_mem_local = NULL;
 		shadow->file_size = transf->size;
@@ -991,16 +1003,20 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 	}
 }
 
-void parse_and_prune_messages(struct message_tracker *mt, bool from_client,
-		char *data, int *data_len, int *fds, int *fds_len)
+void parse_and_prune_messages(struct message_tracker *mt,
+		struct fd_translation_map *map, bool from_client, char *data,
+		int *data_len, int *fds, int *fds_len)
 {
+	bool anything_changed = false;
 	int fdpos = 0;
 	int writepos = 0;
 	for (int pos = 0; pos < *data_len;) {
 		int consumed_bytes = 0, consumed_fds = 0;
+		bool buffer_changes = false;
 		bool keep = handle_message(mt, from_client, &data[pos],
 				*data_len - pos, &consumed_bytes, &fds[fdpos],
-				*fds_len - fdpos, &consumed_fds);
+				*fds_len - fdpos, &consumed_fds,
+				&buffer_changes);
 		if (pos != writepos) {
 			memmove(&data[writepos], &data[pos],
 					(size_t)consumed_bytes);
@@ -1012,6 +1028,12 @@ void parse_and_prune_messages(struct message_tracker *mt, bool from_client,
 			// I.e, forget that it was appended to the stream
 			wp_log(WP_DEBUG, "Dropping a message\n");
 		}
+		anything_changed |= buffer_changes;
 	}
 	*data_len = writepos;
+	if (anything_changed) {
+		for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+			cur->is_dirty = true;
+		}
+	}
 }

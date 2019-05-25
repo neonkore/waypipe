@@ -309,7 +309,12 @@ int main(int argc, char **argv)
 				int offset = 0;
 				arglist[offset++] = "/usr/bin/ssh";
 				/* Force tty allocation. The user-override is a
-				 * -T flag */
+				 * -T flag. Unfortunately, -t disables newline
+				 * translation on the local side, so when using
+				 * debug messages, it is often nicer to store
+				 * stderr and display it somewhere else, to
+				 * avoid a staircasing effect when rendering
+				 */
 				arglist[offset++] = "-t";
 				arglist[offset++] = "-R";
 				arglist[offset++] = linkage;

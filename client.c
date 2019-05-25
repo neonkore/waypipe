@@ -133,8 +133,9 @@ static int run_client_child(int chanfd, const char *socket_path)
 			untranslate_ids(&fdtransmap, nids, ids, fds);
 
 			if (waymsg) {
-				parse_and_prune_messages(&mtracker, true,
-						waymsg, &waylen, fds, &nids);
+				parse_and_prune_messages(&mtracker, &fdtransmap,
+						true, waymsg, &waylen, fds,
+						&nids);
 			}
 
 			if (waylen > 0) {
@@ -173,8 +174,9 @@ static int run_client_child(int chanfd, const char *socket_path)
 			}
 			if (rc > 0) {
 				int nrc = (int)rc;
-				parse_and_prune_messages(&mtracker, false,
-						buffer, &nrc, fdbuf, &nfds);
+				parse_and_prune_messages(&mtracker, &fdtransmap,
+						false, buffer, &nrc, fdbuf,
+						&nfds);
 				rc = nrc;
 			}
 			if (rc > 0) {
