@@ -190,6 +190,8 @@ struct wp_object {
 	// client and server.
 	uint32_t obj_id;
 	const struct wl_interface *type; // Use to lookup the message handler
+
+	uint32_t is_callback_from_id;
 };
 
 struct obj_list {
