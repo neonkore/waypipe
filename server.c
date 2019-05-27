@@ -124,6 +124,7 @@ static int run_server_child(int chanfd, int appfd)
 			if (waymsg) {
 				ssize_t wc = iovec_write(appfd, waymsg, waylen,
 						fds, nids);
+				decref_transferred_fds(&fdtransmap, nids, fds);
 				free(tmpbuf);
 				if (wc == -1) {
 					wp_log(WP_ERROR,
@@ -185,6 +186,7 @@ static int run_server_child(int chanfd, int appfd)
 			size_t msglen;
 			pack_pipe_message(&msglen, &msg, nfds, ids, ntransfers,
 					transfers);
+			decref_transferred_rids(&fdtransmap, nfds, ids);
 			wp_log(WP_DEBUG,
 					"Packed message size (%d fds, %d blobs): %ld\n",
 					nfds, ntransfers, msglen);

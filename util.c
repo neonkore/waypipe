@@ -204,33 +204,36 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 	return ret;
 }
 
+static void destroy_unlinked_sfd(struct shadow_fd *shadow)
+{
+	close(shadow->fd_local);
+	if (shadow->type == FDC_FILE) {
+		munmap(shadow->file_mem_local, shadow->file_size);
+		free(shadow->file_mem_mirror);
+		free(shadow->file_diff_buffer);
+		if (shadow->file_shm_buf_name[0]) {
+			shm_unlink(shadow->file_shm_buf_name);
+		}
+	} else if (fdcat_ispipe(shadow->type)) {
+		close(shadow->pipe_fd);
+		if (shadow->pipe_fd != shadow->fd_local) {
+			close(shadow->fd_local);
+		}
+		free(shadow->pipe_recv.data);
+		free(shadow->pipe_send.data);
+	}
+	free(shadow);
+}
+
 void cleanup_translation_map(struct fd_translation_map *map)
 {
 	struct shadow_fd *cur = map->list;
 	map->list = NULL;
 	while (cur) {
 		struct shadow_fd *shadow = cur;
-
-		close(shadow->fd_local);
-		if (shadow->type == FDC_FILE) {
-			munmap(shadow->file_mem_local, shadow->file_size);
-			free(shadow->file_mem_mirror);
-			free(shadow->file_diff_buffer);
-			if (shadow->file_shm_buf_name[0]) {
-				shm_unlink(shadow->file_shm_buf_name);
-			}
-		} else if (fdcat_ispipe(shadow->type)) {
-			close(shadow->pipe_fd);
-			if (shadow->pipe_fd != shadow->fd_local) {
-				close(shadow->fd_local);
-			}
-			free(shadow->pipe_recv.data);
-			free(shadow->pipe_send.data);
-		}
-
 		cur = shadow->next;
 		shadow->next = NULL;
-		free(shadow);
+		destroy_unlinked_sfd(shadow);
 	}
 }
 static int translate_fd(struct fd_translation_map *map, int fd)
@@ -256,6 +259,9 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 	// File changes must be propagated
 	shadow->is_dirty = true;
 	shadow->has_owner = false;
+	/* Start object reference at one; will be decremented once RID is sent
+	 */
+	shadow->refcount = 1;
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d\n", fd);
 
@@ -329,6 +335,15 @@ struct shadow_fd *get_shadow_for_local_fd(
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
 		if (cur->fd_local == lfd) {
+			return cur;
+		}
+	}
+	return NULL;
+}
+struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
+{
+	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+		if (cur->remote_id == rid) {
 			return cur;
 		}
 	}
@@ -719,6 +734,10 @@ static void apply_update(
 	shadow->fd_local = -1;
 	shadow->type = transf->type;
 	shadow->is_dirty = false;
+	/* Start the object reference at one, so that, if it is owned by
+	 * some known protocol object, it can not be deleted until the fd
+	 * has at least be transferred over the Wayland connection */
+	shadow->refcount = 1;
 	if (shadow->type == FDC_FILE) {
 		shadow->file_mem_local = NULL;
 		shadow->file_size = transf->size;
@@ -854,6 +873,43 @@ void wait_on_children(struct kstack **children, int options)
 			prv = &cur->nxt;
 			cur = cur->nxt;
 		}
+	}
+}
+bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *sfd)
+{
+	sfd->refcount--;
+	if (sfd->refcount == 0 && sfd->has_owner) {
+		for (struct shadow_fd *cur = map->list, *prev = NULL; cur;
+				prev = cur, cur = cur->next) {
+			if (cur == sfd) {
+				if (!prev) {
+					map->list = cur->next;
+				} else {
+					prev->next = cur->next;
+				}
+				break;
+			}
+		}
+
+		destroy_unlinked_sfd(sfd);
+		return true;
+	}
+	return false;
+}
+
+void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
+{
+	for (int i = 0; i < nfds; i++) {
+		struct shadow_fd *sfd = get_shadow_for_local_fd(map, fds[i]);
+		shadow_decref(map, sfd);
+	}
+}
+void decref_transferred_rids(
+		struct fd_translation_map *map, int nids, int ids[])
+{
+	for (int i = 0; i < nids; i++) {
+		struct shadow_fd *sfd = get_shadow_for_rid(map, ids[i]);
+		shadow_decref(map, sfd);
 	}
 }
 
@@ -1029,6 +1085,11 @@ void parse_and_prune_messages(struct message_tracker *mt,
 				from_client, &data[pos], *data_len - pos,
 				&consumed_bytes, &fds[fdpos], *fds_len - fdpos,
 				&consumed_fds, &effect_unknown);
+		if (consumed_bytes == 0) {
+			wp_log(WP_ERROR,
+					"Message consumed zero bytes, probable parsing error\n");
+			return;
+		}
 		if (consumed_fds > 0 && !keep) {
 			wp_log(WP_ERROR,
 					"Dropping a message with send fds -- unimplemented\n");

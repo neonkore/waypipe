@@ -141,6 +141,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 			if (waylen > 0) {
 				ssize_t wc = iovec_write(dispfd, waymsg, waylen,
 						fds, nids);
+				decref_transferred_fds(&fdtransmap, nids, fds);
 				free(tmpbuf);
 				if (wc == -1) {
 					wp_log(WP_ERROR,
@@ -199,6 +200,7 @@ static int run_client_child(int chanfd, const char *socket_path)
 			size_t msglen;
 			pack_pipe_message(&msglen, &msg, nfds, ids, ntransfers,
 					transfers);
+			decref_transferred_rids(&fdtransmap, nfds, ids);
 			wp_log(WP_DEBUG,
 					"Packed message size (%d fds, %d blobs): %ld\n",
 					nfds, ntransfers, msglen);

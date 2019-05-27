@@ -87,6 +87,15 @@ static void event_wl_display_delete_id(
 	if (obj) {
 		listset_remove(&context->mt->objects, obj);
 		// object specific cleanup goes here
+		if (obj->owned_buffer) {
+			/* We only dereference now, because the object is not
+			 * truly deleted (and its linked buffers inaccessible)
+			 * until the compositor says so. (Technically, for
+			 * waypipe server (application-side), we could drop the
+			 * refcount at a given object's "destroy".) */
+			shadow_decref(context->map, obj->owned_buffer);
+			obj->owned_buffer = NULL;
+		}
 		free(obj);
 	}
 }
@@ -166,8 +175,6 @@ static void request_wl_buffer_destroy(
 {
 
 	struct context *context = get_context(client, resource);
-	// User requests surface destruction
-	// TODO: free backing store?
 	(void)context;
 }
 void request_wl_surface_attach(struct wl_client *client,
@@ -188,11 +195,7 @@ void request_wl_surface_attach(struct wl_client *client,
 		return;
 	}
 	if (context->obj->owned_buffer) {
-		context->obj->owned_buffer->refcount--;
-		if (context->obj->owned_buffer->refcount == 0) {
-			wp_log(WP_ERROR,
-					"TODO: unhandled shadow refcount zero\n");
-		}
+		shadow_decref(context->map, context->obj->owned_buffer);
 	}
 	context->obj->owned_buffer = bufobj->owned_buffer;
 	context->obj->owned_buffer->refcount++;
@@ -219,7 +222,6 @@ static void request_wl_surface_destroy(
 		struct wl_client *client, struct wl_resource *resource)
 {
 	struct context *context = get_context(client, resource);
-	// User requests surface destruction
 	(void)context;
 }
 static void request_wl_surface_damage(struct wl_client *client,

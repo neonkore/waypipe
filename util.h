@@ -177,8 +177,20 @@ void close_local_pipe_ends(struct fd_translation_map *map);
 /** If a pipe is remotely closed, but not locally closed, then close it too */
 void close_rclosed_pipes(struct fd_translation_map *map);
 
+/** Get the shadow structure matching lfd, if one exists, else NULL */
 struct shadow_fd *get_shadow_for_local_fd(
 		struct fd_translation_map *map, int lfd);
+struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
+/** Reduce the reference count for a surface which is owned. The surface
+ * should not be used by the caller after this point. Returns true if pointer
+ * deleted. */
+bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *);
+/** Decrease reference count for all objects in the given list, deleting
+ * iff they are owned by protocol objects and have refcount zero */
+void decref_transferred_fds(
+		struct fd_translation_map *map, int nfds, int fds[]);
+void decref_transferred_rids(
+		struct fd_translation_map *map, int nids, int ids[]);
 
 struct kstack {
 	struct kstack *nxt;
