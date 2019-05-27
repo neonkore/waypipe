@@ -134,8 +134,8 @@ static int run_client_child(int chanfd, const char *socket_path)
 
 			if (waymsg) {
 				parse_and_prune_messages(&mtracker, &fdtransmap,
-						true, waymsg, &waylen, fds,
-						&nids);
+						true, true, waymsg, &waylen,
+						fds, &nids);
 			}
 
 			if (waylen > 0) {
@@ -173,10 +173,12 @@ static int run_client_child(int chanfd, const char *socket_path)
 				break;
 			}
 			if (rc > 0) {
+				translate_fds(&fdtransmap, nfds, fdbuf, ids);
+
 				int nrc = (int)rc;
 				parse_and_prune_messages(&mtracker, &fdtransmap,
-						false, buffer, &nrc, fdbuf,
-						&nfds);
+						true, false, buffer, &nrc,
+						fdbuf, &nfds);
 				rc = nrc;
 			}
 			if (rc > 0) {
@@ -185,8 +187,6 @@ static int run_client_child(int chanfd, const char *socket_path)
 				transfers[0].data = buffer;
 				transfers[0].type = FDC_UNKNOWN;
 				ntransfers = 1;
-
-				translate_fds(&fdtransmap, nfds, fdbuf, ids);
 			} else {
 				wp_log(WP_DEBUG, "The display shut down\n");
 				break;

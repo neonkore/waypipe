@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -93,14 +94,19 @@ struct shadow_fd {
 	fdcat_t type;
 	int remote_id; // + if created serverside; - if created clientside
 	int fd_local;
-	// Dirty state. Should this file be scanned for updates?
-	bool is_dirty;
+	// Dirty state.
+	bool has_owner; // Are there protocol handlers which control the
+			// is_dirty flag?
+	bool is_dirty;  // If so, should this file be scanned for updates?
+	int refcount;   // Number of references from parsing logic
+
 	// File data
 	size_t file_size;
 	char *file_mem_local;   // mmap'd
 	char *file_mem_mirror;  // malloc'd
 	char *file_diff_buffer; // malloc'd
 	char file_shm_buf_name[256];
+
 	// Pipe data
 	struct pipe_buffer pipe_send;
 	struct pipe_buffer pipe_recv;
@@ -171,6 +177,9 @@ void close_local_pipe_ends(struct fd_translation_map *map);
 /** If a pipe is remotely closed, but not locally closed, then close it too */
 void close_rclosed_pipes(struct fd_translation_map *map);
 
+struct shadow_fd *get_shadow_for_local_fd(
+		struct fd_translation_map *map, int lfd);
+
 struct kstack {
 	struct kstack *nxt;
 	pid_t pid;
@@ -183,7 +192,6 @@ struct msg_handler {
 	// these are structs packed densely with function pointers
 	const void *event_handlers;
 	const void *request_handlers;
-	enum { FDEFFECT_NEVER = 1, FDEFFECT_MAYBE = 2 } effect;
 };
 struct wp_object {
 	// basically a 'wl_object', except that we need to watch/modify both
@@ -191,7 +199,9 @@ struct wp_object {
 	uint32_t obj_id;
 	const struct wl_interface *type; // Use to lookup the message handler
 
-	uint32_t is_callback_from_id;
+	// TODO: an actual type system/buffer inheritance.
+	struct shadow_fd *owned_buffer; // If the type has a reference to an fd
+					// buffer
 };
 
 struct obj_list {
@@ -205,16 +215,25 @@ struct message_tracker {
 	// registry. each type produces 'callbacks'
 	struct obj_list objects;
 };
+struct context {
+	struct message_tracker *mt;
+	struct fd_translation_map *map;
+	struct wp_object *obj;
+	bool drop_this_msg;
+	/* If true, running as waypipe client, and interfacing with compositor's
+	 * buffers */
+	bool on_display_side;
+};
 
 /**
  * Given a set of messages and fds, parse the messages, and if indicated by
  * parsing logic, compact the message buffer by removing selected messages.
  */
 void parse_and_prune_messages(struct message_tracker *mt,
-		struct fd_translation_map *map, bool from_client, char *data,
-		int *len, int *fds, int *nfds);
+		struct fd_translation_map *map, bool on_display_side,
+		bool from_client, char *data, int *len, int *fds, int *nfds);
 
-// util.c ; returns add or delete
+// parsing.c
 
 void listset_insert(struct obj_list *lst, struct wp_object *obj);
 void listset_remove(struct obj_list *lst, struct wp_object *obj);
@@ -222,8 +241,18 @@ struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
 void init_message_tracker(struct message_tracker *mt);
 void cleanup_message_tracker(struct message_tracker *mt);
-bool handle_message(struct message_tracker *mt, bool from_client, void *data,
+/**
+ * The return value is false iff the given message should be dropped.
+ * The flag `unidentified_changes` is set to true if the message does
+ * not correspond to a known protocol.
+ */
+bool handle_message(struct message_tracker *mt, struct fd_translation_map *map,
+		bool on_display_side, bool from_client, void *data,
 		int data_len, int *consumed_length, int *fds, int fds_len,
-		int *n_consumed_fds, bool *buffer_changes);
+		int *n_consumed_fds, bool *unidentified_changes);
+struct wl_interface;
+struct wp_object *make_wp_object(uint32_t id, const struct wl_interface *type);
+extern const struct msg_handler handlers[];
+extern const struct wl_interface *the_display_interface;
 
 #endif // WAYPIPE_UTIL_H

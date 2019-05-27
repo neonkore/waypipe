@@ -255,6 +255,7 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 	shadow->type = FDC_UNKNOWN;
 	// File changes must be propagated
 	shadow->is_dirty = true;
+	shadow->has_owner = false;
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d\n", fd);
 
@@ -323,6 +324,17 @@ void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
 		ids[i] = translate_fd(map, fds[i]);
 	}
 }
+struct shadow_fd *get_shadow_for_local_fd(
+		struct fd_translation_map *map, int lfd)
+{
+	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+		if (cur->fd_local == lfd) {
+			return cur;
+		}
+	}
+	return NULL;
+}
+
 /** Construct a very simple binary diff format, designed to be fast for small
  * changes in big files, and entire-file changes in essentially random files.
  * Tries not to read beyond the end of the input buffers, because they are often
@@ -436,7 +448,6 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				continue;
 			}
 			cur->is_dirty = false;
-
 			if (!cur->file_mem_mirror) {
 				cur->file_mem_mirror =
 						calloc(cur->file_size, 1);
@@ -1004,19 +1015,25 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 }
 
 void parse_and_prune_messages(struct message_tracker *mt,
-		struct fd_translation_map *map, bool from_client, char *data,
-		int *data_len, int *fds, int *fds_len)
+		struct fd_translation_map *map, bool on_display_side,
+		bool from_client, char *data, int *data_len, int *fds,
+		int *fds_len)
 {
-	bool anything_changed = false;
+	bool anything_unknown = false;
 	int fdpos = 0;
 	int writepos = 0;
 	for (int pos = 0; pos < *data_len;) {
 		int consumed_bytes = 0, consumed_fds = 0;
-		bool buffer_changes = false;
-		bool keep = handle_message(mt, from_client, &data[pos],
-				*data_len - pos, &consumed_bytes, &fds[fdpos],
-				*fds_len - fdpos, &consumed_fds,
-				&buffer_changes);
+		bool effect_unknown = true;
+		bool keep = handle_message(mt, map, on_display_side,
+				from_client, &data[pos], *data_len - pos,
+				&consumed_bytes, &fds[fdpos], *fds_len - fdpos,
+				&consumed_fds, &effect_unknown);
+		if (consumed_fds > 0 && !keep) {
+			wp_log(WP_ERROR,
+					"Dropping a message with send fds -- unimplemented\n");
+		}
+		fdpos += consumed_fds;
 		if (pos != writepos) {
 			memmove(&data[writepos], &data[pos],
 					(size_t)consumed_bytes);
@@ -1028,12 +1045,18 @@ void parse_and_prune_messages(struct message_tracker *mt,
 			// I.e, forget that it was appended to the stream
 			wp_log(WP_DEBUG, "Dropping a message\n");
 		}
-		anything_changed |= buffer_changes;
+		anything_unknown |= effect_unknown;
 	}
 	*data_len = writepos;
-	if (anything_changed) {
+	if (anything_unknown) {
+		// All-un-owned buffers are assumed to have changed.
+		// (Note that in some cases, a new protocol could imply a change
+		// for an existing buffer; it may make sense to mark everything
+		// dirty, then.)
 		for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-			cur->is_dirty = true;
+			if (!cur->has_owner) {
+				cur->is_dirty = true;
+			}
 		}
 	}
 }

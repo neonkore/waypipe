@@ -28,274 +28,9 @@
 #include <ffi.h>
 #include <wayland-util.h>
 
-/* TODO: eventually, create a mode for wayland-scanner that produces just the
- * needed information (constants, and listener structs)
- *
- * Also, make this bundle its own header.
- */
-struct wl_proxy;
-void wl_proxy_destroy(struct wl_proxy *proxy);
-int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
-		void *data);
-void wl_proxy_set_user_data(struct wl_proxy *proxy, void *user_data);
-void *wl_proxy_get_user_data(struct wl_proxy *proxy);
-uint32_t wl_proxy_get_version(struct wl_proxy *proxy);
-struct wl_proxy *wl_proxy_marshal_constructor(struct wl_proxy *proxy,
-		uint32_t opcode, const struct wl_interface *interface, ...);
-struct wl_proxy *wl_proxy_marshal_constructor_versioned(struct wl_proxy *proxy,
-		uint32_t opcode, const struct wl_interface *interface,
-		uint32_t version, ...);
-void wl_proxy_marshal(struct wl_proxy *p, uint32_t opcode, ...);
-struct wl_resource;
-void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
-#define WAYLAND_CLIENT_H
-#define WAYLAND_SERVER_H
-#include <presentation-time-client-defs.h>
-#include <presentation-time-server-defs.h>
-#include <viewporter-client-defs.h>
-#include <viewporter-server-defs.h>
-#include <wayland-client-defs.h>
-#include <wayland-server-defs.h>
-#include <xdg-output-unstable-v1-client-defs.h>
-#include <xdg-output-unstable-v1-server-defs.h>
-#include <xdg-shell-client-defs.h>
-#include <xdg-shell-server-defs.h>
-#undef WAYLAND_CLIENT_H
-#undef WAYLAND_SERVER_H
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-struct context {
-	struct message_tracker *mt;
-	struct wp_object *obj;
-	bool drop_this_msg;
-	bool can_buffer_changes_result; // unless otherwise indicated by the
-					// protocol
-};
-static void event_wl_display_error(void *data, struct wl_display *wl_display,
-		void *object_id, uint32_t code, const char *message)
-{
-	struct context *context = (struct context *)data;
-	(void)context;
-	(void)wl_display;
-	(void)object_id;
-	(void)code;
-	(void)message;
-}
-static void event_wl_display_delete_id(
-		void *data, struct wl_display *wl_display, uint32_t id)
-{
-	struct context *context = (struct context *)data;
-	struct wp_object *obj = listset_get(&context->mt->objects, id);
-	if (obj) {
-		listset_remove(&context->mt->objects, obj);
-		// object specific cleanup goes here
-		free(obj);
-	}
-
-	(void)wl_display;
-}
-static void request_wl_display_get_registry(struct wl_client *client,
-		struct wl_resource *resource, uint32_t registry)
-{
-	struct context *context = (struct context *)client;
-	(void)context;
-	(void)resource;
-	(void)registry;
-}
-static void request_wl_display_sync(struct wl_client *client,
-		struct wl_resource *resource, uint32_t callback)
-{
-	struct context *context = (struct context *)client;
-	(void)resource;
-	struct wp_object *the_object =
-			listset_get(&context->mt->objects, callback);
-	// When callback done is invoked, know what the callback signifies
-	the_object->is_callback_from_id = context->obj->obj_id;
-}
-
-static void event_wl_registry_global(void *data,
-		struct wl_registry *wl_registry, uint32_t name,
-		const char *interface, uint32_t version)
-{
-	struct context *context = (struct context *)data;
-	if (!strcmp(interface, "wl_drm")) {
-		wp_log(WP_DEBUG, "Hiding wl_drm advertisement\n");
-		context->drop_this_msg = true;
-	}
-	if (!strcmp(interface, "zwp_linux_dmabuf_v1")) {
-		wp_log(WP_DEBUG, "Hiding zwp_linux_dmabuf_v1 advertisement\n");
-		context->drop_this_msg = true;
-	}
-	if (!strcmp(interface, "zwlr_export_dmabuf_manager_v1")) {
-		wp_log(WP_DEBUG,
-				"Hiding zwlr_export_dmabuf_manager_v1 advertisement\n");
-		context->drop_this_msg = true;
-	}
-
-	(void)wl_registry;
-	(void)name;
-	(void)version;
-}
-static void event_wl_registry_global_remove(
-		void *data, struct wl_registry *wl_registry, uint32_t name)
-{
-	struct context *context = (struct context *)data;
-	(void)context;
-	(void)wl_registry;
-	(void)name;
-}
-
-static struct wp_object *make_wp_object(
-		uint32_t id, const struct wl_interface *type)
-{
-	struct wp_object *new_obj = calloc(1, sizeof(struct wp_object));
-	new_obj->obj_id = id;
-	new_obj->type = type;
-	return new_obj;
-}
-
-static const struct msg_handler handlers[];
-void request_wl_registry_bind(struct wl_client *client,
-		struct wl_resource *resource, uint32_t name,
-		const char *interface, uint32_t version, uint32_t id)
-{
-	struct context *context = (struct context *)client;
-	(void)resource;
-	/* The object has already been created, but its type is NULL */
-	struct wp_object *the_object = listset_get(&context->mt->objects, id);
-	for (int i = 0; handlers[i].interface; i++) {
-		if (!strcmp(interface, handlers[i].interface->name)) {
-			// Set the object type
-			the_object->type = handlers[i].interface;
-			return;
-		}
-	}
-	listset_remove(&context->mt->objects, the_object);
-	free(the_object);
-
-	wp_log(WP_DEBUG, "Binding fail name=%d %s id=%d (v%d)\n", name,
-			interface, id, version);
-	(void)name;
-	(void)version;
-}
-
-static void event_wl_buffer_release(void *data, struct wl_buffer *wl_buffer)
-{
-	struct context *context = (struct context *)data;
-	// This event only signifies that the wl_buffer is no longer being
-	// used by the compositor
-	context->can_buffer_changes_result = false;
-	(void)wl_buffer;
-}
-static void request_wl_buffer_destroy(
-		struct wl_client *client, struct wl_resource *resource)
-{
-
-	struct context *context = (struct context *)client;
-	// User requests surface destruction
-	(void)context;
-	(void)resource;
-}
-static void request_wl_surface_destroy(
-		struct wl_client *client, struct wl_resource *resource)
-{
-	struct context *context = (struct context *)client;
-	// User requests surface destruction
-	(void)context;
-	(void)resource;
-}
-static void request_wl_surface_damage(struct wl_client *client,
-		struct wl_resource *resource, int32_t x, int32_t y,
-		int32_t width, int32_t height)
-{
-	struct context *context = (struct context *)client;
-	// A rectangle of the buffer was damaged, hence backing buffers
-	// may be updated.
-	(void)context;
-	(void)resource;
-	(void)x;
-	(void)y;
-	(void)width;
-	(void)height;
-}
-static void request_wl_surface_frame(struct wl_client *client,
-		struct wl_resource *resource, uint32_t callback)
-{
-	struct context *context = (struct context *)client;
-	(void)context;
-	(void)resource;
-	struct wp_object *the_object =
-			listset_get(&context->mt->objects, callback);
-	the_object->is_callback_from_id = context->obj->obj_id;
-}
-static void event_wl_keyboard_keymap(void *data,
-		struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd,
-		uint32_t size)
-{
-	struct context *context = (struct context *)data;
-	(void)wl_keyboard;
-	// Exception to the default lack of changes.
-	// (Technically a no-op, since the fd should always be new/dirty;
-	//  but what happens if the file is recycled?)
-	context->can_buffer_changes_result = true;
-	(void)format;
-	(void)fd;
-	(void)size;
-}
-void event_wl_callback_done(void *data, struct wl_callback *wl_callback,
-		uint32_t callback_data)
-{
-	struct context *context = (struct context *)data;
-	(void)wl_callback;
-	(void)callback_data;
-	uint32_t src = context->obj->is_callback_from_id;
-	struct wp_object *source = listset_get(&context->mt->objects, src);
-	if (source) {
-		if (source->type == &wl_display_interface) {
-			// Callback for sync roundtrip
-			context->can_buffer_changes_result = false;
-		}
-		if (source->type == &wl_surface_interface) {
-			// Repeated callback as frame throttling hint
-			context->can_buffer_changes_result = false;
-		}
-	}
-}
-
-static const struct wl_display_listener wl_display_event_handler = {
-		.error = event_wl_display_error,
-		.delete_id = event_wl_display_delete_id};
-
-static const struct wl_display_interface wl_display_request_handler = {
-		.get_registry = request_wl_display_get_registry,
-		.sync = request_wl_display_sync};
-static const struct wl_registry_listener wl_registry_event_handler = {
-		.global = event_wl_registry_global,
-		.global_remove = event_wl_registry_global_remove};
-
-static const struct wl_registry_interface wl_registry_request_handler = {
-		.bind = request_wl_registry_bind};
-
-static const struct wl_buffer_listener wl_buffer_event_handler = {
-		.release = event_wl_buffer_release};
-
-static const struct wl_buffer_interface wl_buffer_request_handler = {
-		.destroy = request_wl_buffer_destroy};
-
-static const struct wl_surface_listener wl_surface_event_handler = {
-		.enter = NULL, .leave = NULL};
-
-static const struct wl_surface_interface wl_surface_request_handler = {
-		.destroy = request_wl_surface_destroy,
-		.damage = request_wl_surface_damage,
-		.frame = request_wl_surface_frame};
-static const struct wl_keyboard_listener wl_keyboard_event_handler = {
-		.keymap = event_wl_keyboard_keymap};
-static const struct wl_callback_listener wl_callback_event_handler = {
-		.done = event_wl_callback_done};
 
 void listset_insert(struct obj_list *lst, struct wp_object *obj)
 {
@@ -353,42 +88,20 @@ struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
 	return NULL;
 }
 
-static const struct msg_handler handlers[] = {
-		{&wl_display_interface, &wl_display_event_handler,
-				&wl_display_request_handler, FDEFFECT_NEVER},
-		{&wl_registry_interface, &wl_registry_event_handler,
-				&wl_registry_request_handler, FDEFFECT_NEVER},
-		{&wl_buffer_interface, &wl_buffer_event_handler,
-				&wl_buffer_request_handler, FDEFFECT_MAYBE},
-		{&wl_surface_interface, &wl_surface_event_handler,
-				&wl_surface_request_handler, FDEFFECT_MAYBE},
-
-		// List all other known global object interface types
-		{&wl_compositor_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wl_subcompositor_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wl_data_device_manager_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wl_shm_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wl_shm_pool_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&xdg_wm_base_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wp_presentation_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wl_seat_interface, NULL, NULL, FDEFFECT_MAYBE},
-		{&wl_output_interface, NULL, NULL, FDEFFECT_MAYBE},
-
-		// List all interfaces with additional guidance
-		{&wl_pointer_interface, NULL, NULL, FDEFFECT_NEVER},
-		{&wl_keyboard_interface, &wl_keyboard_event_handler, NULL,
-				FDEFFECT_NEVER},
-		{&wl_touch_interface, NULL, NULL, FDEFFECT_NEVER},
-		{&wl_callback_interface, &wl_callback_event_handler, NULL,
-				FDEFFECT_MAYBE},
-
-		{NULL, NULL, NULL, FDEFFECT_MAYBE}};
+struct wp_object *make_wp_object(uint32_t id, const struct wl_interface *type)
+{
+	struct wp_object *new_obj = calloc(1, sizeof(struct wp_object));
+	new_obj->obj_id = id;
+	new_obj->type = type;
+	new_obj->owned_buffer = NULL;
+	return new_obj;
+}
 
 void init_message_tracker(struct message_tracker *mt)
 {
 	memset(mt, 0, sizeof(*mt));
 
-	listset_insert(&mt->objects, make_wp_object(1, &wl_display_interface));
+	listset_insert(&mt->objects, make_wp_object(1, the_display_interface));
 }
 void cleanup_message_tracker(struct message_tracker *mt)
 {
@@ -425,6 +138,7 @@ struct uarg {
 
 static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 		const uint32_t *const payload, const int paylen,
+		const int *const fd_list, const int fdlen, int *fds_used,
 		void (*const func)(void), struct context *ctx,
 		struct message_tracker *mt)
 {
@@ -483,8 +197,10 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 			i += ((len + 3) / 4);
 		} break;
 		case 'h': {
-			// Consume an fd; TODO
-			call_args_val[nargs].si = 9999;
+			if (*fds_used >= fdlen) {
+				goto len_overflow;
+			}
+			call_args_val[nargs].si = fd_list[(*fds_used)++];
 			call_args_ptr[nargs] = &call_args_val[nargs].si;
 			call_types[nargs] = &ffi_type_sint32; // see typedef
 			nargs++;
@@ -579,8 +295,8 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 		continue;
 	len_overflow:
 		wp_log(WP_ERROR,
-				"Message parse length overflow, i=%d, len=%d, c=%c\n",
-				i, paylen, *c);
+				"Message parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c\n",
+				4 * i, 4 * paylen, *fds_used, fdlen, *c);
 		return;
 	}
 	if (i != paylen) {
@@ -597,9 +313,10 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 	}
 }
 
-bool handle_message(struct message_tracker *mt, bool from_client, void *data,
-		int data_len, int *consumed_length, int *fds, int fds_len,
-		int *n_consumed_fds, bool *buffer_changes)
+bool handle_message(struct message_tracker *mt, struct fd_translation_map *map,
+		bool display_side, bool from_client, void *data, int data_len,
+		int *consumed_length, int *fds, int fds_len,
+		int *n_consumed_fds, bool *unidentified_changes)
 {
 	const uint32_t *const header = (uint32_t *)data;
 	uint32_t obj = header[0];
@@ -656,32 +373,30 @@ bool handle_message(struct message_tracker *mt, bool from_client, void *data,
 
 			struct context ctx;
 			ctx.mt = mt;
+			ctx.map = map;
 			ctx.obj = objh;
+			ctx.on_display_side = display_side;
 			ctx.drop_this_msg = false;
-			ctx.can_buffer_changes_result = true;
-			if (handler && handler->effect == FDEFFECT_NEVER) {
-				// Change the default value; handler function
-				// may yet override
-				ctx.can_buffer_changes_result = false;
-			}
 
 			const uint32_t *payload = header + 2;
 			invoke_msg_handler(msg, !from_client, payload,
-					len / 4 - 2, fn, &ctx, mt);
+					len / 4 - 2, &fds[*n_consumed_fds],
+					fds_len - *n_consumed_fds,
+					n_consumed_fds, fn, &ctx, mt);
 			// Flag set by the protocol handler function
 			if (ctx.drop_this_msg) {
 				return false; // DROP
 			}
-			*buffer_changes = ctx.can_buffer_changes_result;
+			*unidentified_changes = false;
 		} else {
 			wp_log(WP_DEBUG, "Unidentified %s from known object\n",
 					from_client ? "request" : "event");
-			*buffer_changes = true;
+			*unidentified_changes = true;
 		}
 	} else {
 		wp_log(WP_DEBUG, "Unidentified object %d with %s\n", obj,
 				from_client ? "request" : "event");
-		*buffer_changes = true;
+		*unidentified_changes = true;
 	}
 	(void)fds;
 	(void)fds_len;

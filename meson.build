@@ -46,7 +46,7 @@ subdir('protocols')
 
 executable(
 	'waypipe',
-	['waypipe.c', 'client.c', 'parsing.c', 'server.c', 'util.c'],
+	['waypipe.c', 'client.c', 'handlers.c', 'parsing.c', 'server.c', 'util.c'],
 	dependencies : [
 		libffi,          # To call wayland protocol functions
 		protos,          # Wayland protocol data
