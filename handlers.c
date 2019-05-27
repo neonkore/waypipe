@@ -203,7 +203,12 @@ void request_wl_surface_commit(
 {
 	struct context *context = get_context(client, resource);
 	if (!context->obj->owned_buffer) {
-		wp_log(WP_ERROR, "Surface to be committed owns no buffer\n");
+		/* The wl_surface.commit operation applies all "pending state",
+		 * much of which we don't care about. Typically, when a
+		 * wl_surface is first created, it is soon committed to
+		 * atomically update state variables. An attached wl_buffer is
+		 * not required.
+		 */
 		return;
 	}
 	if (!context->on_display_side) {
@@ -269,7 +274,11 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 	the_shm_pool->owned_buffer = sfd;
 	sfd->has_owner = true;
 	sfd->refcount++;
-	if (sfd->type != FDC_FILE || (int32_t)sfd->file_size != size) {
+	/* It may be valid for the file descriptor size to be larger than the
+	 * immediately advertised size, since the call to wl_shm.create_pool
+	 * may be followed by wl_shm_pool.resize, which then increases the size
+	 */
+	if (sfd->type != FDC_FILE || (int32_t)sfd->file_size < size) {
 		wp_log(WP_ERROR,
 				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d\n",
 				sfd->remote_id, sfd->type, FDC_FILE,
@@ -280,7 +289,15 @@ static void request_wl_shm_pool_resize(struct wl_client *client,
 		struct wl_resource *resource, int32_t size)
 {
 	struct context *context = get_context(client, resource);
-	(void)context;
+	if (!context->obj->owned_buffer) {
+		wp_log(WP_ERROR, "Pool to be resize owns no buffer\n");
+		return;
+	}
+	if ((int32_t)context->obj->owned_buffer->file_size >= size) {
+		// The underlying buffer was already resized by the time
+		// this protocol message was received
+		return;
+	}
 	wp_log(WP_ERROR, "Pool resize to %d\n", size);
 }
 static void request_wl_shm_pool_create_buffer(struct wl_client *client,
