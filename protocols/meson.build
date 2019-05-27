@@ -42,7 +42,7 @@ endforeach
 lib_protocols = static_library(
 	'protocols',
 	protocols_src,
-	dependencies: []
+	dependencies: [wayland_client] # for the header files, only
 )
 protos = declare_dependency(
 	link_with: lib_protocols,
