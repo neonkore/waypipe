@@ -1,6 +1,7 @@
 wl_protocol_dir = wayland_protos.get_pkgconfig_variable('pkgdatadir')
 wayland_dir = wayland_client.get_pkgconfig_variable('pkgdatadir')
 
+# require >= 1.14.91 for 'public-code' option
 wayland_scanner = find_program('wayland-scanner')
 
 wayland_scanner_data = generator(

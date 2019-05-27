@@ -38,8 +38,8 @@ else
 endif
 
 wayland_client = dependency('wayland-client', version: '>=1.15') # WAYLAND_DISPLAY=path
-wayland_protos = dependency('wayland-protocols', version: '>=1.15') # WAYLAND_DISPLAY=path
-wayland_server = dependency('wayland-server', version: '>=1.12') # xdg-shell
+wayland_server = dependency('wayland-server', version: '>=1.15') # WAYLAND_DISPLAY=path
+wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
 libffi         = dependency('libffi')
 rt             = cc.find_library('rt')
 
