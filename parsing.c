@@ -136,7 +136,8 @@ struct uarg {
 	};
 };
 
-static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
+static void invoke_msg_handler(const struct wl_interface *intf,
+		const struct wl_message *msg, bool is_event,
 		const uint32_t *const payload, const int paylen,
 		const int *const fd_list, const int fdlen, int *fds_used,
 		void (*const func)(void), struct context *ctx,
@@ -145,7 +146,8 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 	ffi_type *call_types[30];
 	void *call_args_ptr[30];
 	if (strlen(msg->signature) > 30) {
-		wp_log(WP_ERROR, "Overly long signature: %s\n", msg->signature);
+		wp_log(WP_ERROR, "Overly long signature for %s.%s: %s\n",
+				intf->name, msg->name, msg->signature);
 	}
 	struct uarg call_args_val[30];
 
@@ -288,22 +290,24 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 		} break;
 
 		default:
-			wp_log(WP_DEBUG, "Unidentified message type %c,\n", *c);
+			wp_log(WP_DEBUG,
+					"For %s.%s, unidentified message type %c,\n",
+					intf->name, msg->name, *c);
 			break;
 		}
 
 		continue;
 	len_overflow:
 		wp_log(WP_ERROR,
-				"Message '%s' parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c\n",
-				msg->name, 4 * i, 4 * paylen, *fds_used, fdlen,
-				*c);
+				"Message %s.%s parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c\n",
+				intf->name, msg->name, 4 * i, 4 * paylen,
+				*fds_used, fdlen, *c);
 		return;
 	}
 	if (i != paylen) {
 		wp_log(WP_ERROR,
-				"Parse error length mismatch for %s: used %d expected %d\n",
-				msg->name, i * 4, paylen * 4);
+				"Parse error length mismatch for %s.%s: used %d expected %d\n",
+				intf->name, msg->name, i * 4, paylen * 4);
 	}
 
 	if (func) {
@@ -397,7 +401,7 @@ enum message_action handle_message(struct message_tracker *mt,
 	ctx.drop_this_msg = false;
 
 	const uint32_t *payload = header + 2;
-	invoke_msg_handler(msg, !from_client, payload, len / 4 - 2,
+	invoke_msg_handler(intf, msg, !from_client, payload, len / 4 - 2,
 			&fds[*n_consumed_fds], fds_len - *n_consumed_fds,
 			n_consumed_fds, fn, &ctx, mt);
 	// Flag set by the protocol handler function

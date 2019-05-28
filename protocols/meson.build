@@ -25,9 +25,11 @@ wayland_scanner_server = generator(
 protocols = [
     [wayland_dir, 'wayland.xml'],
     [wl_protocol_dir, 'stable/xdg-shell/xdg-shell.xml'],
-    [wl_protocol_dir, 'stable/viewporter/viewporter.xml'],
     [wl_protocol_dir, 'stable/presentation-time/presentation-time.xml'],
-    [wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
+    [wl_protocol_dir, 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml'],
+    ['gtk-primary-selection.xml'],
+    ['input-method-unstable-v2.xml'],
+    ['virtual-keyboard-unstable-v1.xml'],
 ]
 
 protocols_src = []

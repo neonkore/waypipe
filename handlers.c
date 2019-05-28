@@ -46,14 +46,19 @@ struct wl_resource;
 void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #define WAYLAND_CLIENT_H
 #define WAYLAND_SERVER_H
-#include <presentation-time-client-defs.h>
-#include <presentation-time-server-defs.h>
-#include <viewporter-client-defs.h>
-#include <viewporter-server-defs.h>
 #include <wayland-client-defs.h>
 #include <wayland-server-defs.h>
-#include <xdg-output-unstable-v1-client-defs.h>
-#include <xdg-output-unstable-v1-server-defs.h>
+// Include order required as some require e.g. &wl_buffer_interface
+#include <gtk-primary-selection-client-defs.h>
+#include <gtk-primary-selection-server-defs.h>
+#include <input-method-unstable-v2-client-defs.h>
+#include <input-method-unstable-v2-server-defs.h>
+#include <linux-dmabuf-unstable-v1-client-defs.h>
+#include <linux-dmabuf-unstable-v1-server-defs.h>
+#include <presentation-time-client-defs.h>
+#include <presentation-time-server-defs.h>
+#include <virtual-keyboard-unstable-v1-client-defs.h>
+#include <virtual-keyboard-unstable-v1-server-defs.h>
 #include <xdg-shell-client-defs.h>
 #include <xdg-shell-server-defs.h>
 #undef WAYLAND_CLIENT_H
@@ -377,16 +382,28 @@ const struct msg_handler handlers[] = {
 				&wl_surface_request_handler},
 		{&wl_keyboard_interface, &wl_keyboard_event_handler, NULL},
 
-		// List all other known global object interface types
+		/* List all other known global object interface types, so
+		 * that the parsing code can identify all fd usages */
+		// wayland
 		{&wl_compositor_interface, NULL, NULL},
 		{&wl_subcompositor_interface, NULL, NULL},
 		{&wl_data_device_manager_interface, NULL, NULL},
 		{&wl_shm_interface, NULL, &wl_shm_request_handler},
 		{&wl_shm_pool_interface, NULL, &wl_shm_pool_request_handler},
-		{&xdg_wm_base_interface, NULL, NULL},
-		{&wp_presentation_interface, NULL, NULL},
 		{&wl_seat_interface, NULL, NULL},
 		{&wl_output_interface, NULL, NULL},
+		// xdg-shell
+		{&xdg_wm_base_interface, NULL, NULL},
+		// presentation-time
+		{&wp_presentation_interface, NULL, NULL},
+		// gtk-primary-selection
+		{&gtk_primary_selection_device_manager_interface, NULL, NULL},
+		// virtual-keyboard
+		{&zwp_virtual_keyboard_manager_v1_interface, NULL, NULL},
+		// input-method
+		{&zwp_input_method_manager_v2_interface, NULL, NULL},
+		// linux-dmabuf
+		{&zwp_linux_dmabuf_v1_interface, NULL, NULL},
 
 		{NULL, NULL, NULL}};
 const struct wl_interface *the_display_interface = &wl_display_interface;
