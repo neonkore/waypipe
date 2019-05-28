@@ -48,6 +48,8 @@ ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds,
 ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		int numfds);
 
+int main_interface_loop(int chanfd, int progfd, bool display_side);
+
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
 
 extern char waypipe_log_mode;
@@ -160,9 +162,12 @@ ssize_t read_size_then_buf(int fd, char **msg);
 
 /** Count the number of pipe fds being maintained by the translation map */
 int count_npipes(const struct fd_translation_map *map);
-/** Fill in pollfd entries, with POLL_IN | POLLOUT */
+/** Fill in pollfd entries, with POLL_IN | POLLOUT, for applicable pipe objects.
+ * Specifically, if check_read is true, indicate all readable pipes.
+ * Also, indicate all writeable pipes for which we also something to write. */
 struct pollfd;
-void fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds);
+int fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds,
+		bool check_read);
 
 /** mark pipe shadows as being ready to read or write */
 void mark_pipe_object_statuses(
@@ -240,8 +245,11 @@ struct context {
 /**
  * Given a set of messages and fds, parse the messages, and if indicated by
  * parsing logic, compact the message buffer by removing selected messages.
+ *
+ * Returns the number of trailing bytes which were originally part of a
+ * truncated message and should be reused for the next read cycle.
  */
-void parse_and_prune_messages(struct message_tracker *mt,
+int parse_and_prune_messages(struct message_tracker *mt,
 		struct fd_translation_map *map, bool on_display_side,
 		bool from_client, char *data, int *len, int *fds, int *nfds);
 
@@ -253,14 +261,22 @@ struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
 void init_message_tracker(struct message_tracker *mt);
 void cleanup_message_tracker(struct message_tracker *mt);
+
+enum message_action {
+	MESSACT_KEEP,
+	MESSACT_DROP,
+	MESSACT_ERROR,
+	MESSACT_DELAY
+};
 /**
  * The return value is false iff the given message should be dropped.
  * The flag `unidentified_changes` is set to true if the message does
  * not correspond to a known protocol.
  */
-bool handle_message(struct message_tracker *mt, struct fd_translation_map *map,
-		bool on_display_side, bool from_client, void *data,
-		int data_len, int *consumed_length, int *fds, int fds_len,
+enum message_action handle_message(struct message_tracker *mt,
+		struct fd_translation_map *map, bool on_display_side,
+		bool from_client, void *data, int data_len,
+		int *consumed_length, int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes);
 struct wl_interface;
 struct wp_object *make_wp_object(uint32_t id, const struct wl_interface *type);

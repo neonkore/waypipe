@@ -295,8 +295,9 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 		continue;
 	len_overflow:
 		wp_log(WP_ERROR,
-				"Message parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c\n",
-				4 * i, 4 * paylen, *fds_used, fdlen, *c);
+				"Message '%s' parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c\n",
+				msg->name, 4 * i, 4 * paylen, *fds_used, fdlen,
+				*c);
 		return;
 	}
 	if (i != paylen) {
@@ -313,8 +314,9 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 	}
 }
 
-bool handle_message(struct message_tracker *mt, struct fd_translation_map *map,
-		bool display_side, bool from_client, void *data, int data_len,
+enum message_action handle_message(struct message_tracker *mt,
+		struct fd_translation_map *map, bool display_side,
+		bool from_client, void *data, int data_len,
 		int *consumed_length, int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes)
 {
@@ -322,84 +324,86 @@ bool handle_message(struct message_tracker *mt, struct fd_translation_map *map,
 	uint32_t obj = header[0];
 	int meth = (int)((header[1] << 16) >> 16);
 	int len = (int)(header[1] >> 16);
-	*consumed_length = len;
 	if (len > data_len) {
 		wp_log(WP_ERROR,
-				"Message length overflow: %d claimed vs %d available. Keeping message, uninterpreted",
+				"Message length overflow: %d claimed vs %d available. Keeping message, uninterpreted\n",
 				len, data_len);
-		return false;
+		*consumed_length = 0;
+		return MESSACT_DELAY;
 	}
+	if (len < 2 * (int)sizeof(uint32_t)) {
+		wp_log(WP_ERROR,
+				"Message length underflow (%d), probably parsing error\n",
+				len);
+		*consumed_length = 0;
+		return MESSACT_ERROR;
+	}
+	*consumed_length = len;
 
 	// display: object = 0?
 	struct wp_object *objh = listset_get(&mt->objects, obj);
 
-	if (objh && objh->type) {
-		const struct wl_interface *intf = objh->type;
-		const struct wl_message *msg = NULL;
-		if (from_client) {
-			if (meth < intf->method_count && meth >= 0) {
-				msg = &intf->methods[meth];
-			} else {
-				wp_log(WP_DEBUG,
-						"Unidentified request #%d (of %d) on interface %s\n",
-						meth, intf->method_count,
-						intf->name);
-			}
-		} else {
-			if (meth < intf->event_count && meth >= 0) {
-				msg = &intf->events[meth];
-			} else {
-				wp_log(WP_ERROR,
-						"Unidentified event #%d on interface %s\n",
-						meth, intf->name);
-			}
-		}
-		if (msg) {
-			const struct msg_handler *handler =
-					get_handler_for_interface(objh->type);
-			void (*fn)(void) = NULL;
-			if (handler) {
-				if (from_client && handler->request_handlers) {
-					fn = ((void (*const *)(
-							void))handler->request_handlers)
-							[meth];
-				}
-				if (!from_client && handler->event_handlers) {
-					fn = ((void (*const *)(
-							void))handler->event_handlers)
-							[meth];
-				}
-			}
-
-			struct context ctx;
-			ctx.mt = mt;
-			ctx.map = map;
-			ctx.obj = objh;
-			ctx.on_display_side = display_side;
-			ctx.drop_this_msg = false;
-
-			const uint32_t *payload = header + 2;
-			invoke_msg_handler(msg, !from_client, payload,
-					len / 4 - 2, &fds[*n_consumed_fds],
-					fds_len - *n_consumed_fds,
-					n_consumed_fds, fn, &ctx, mt);
-			// Flag set by the protocol handler function
-			if (ctx.drop_this_msg) {
-				return false; // DROP
-			}
-			*unidentified_changes = false;
-		} else {
-			wp_log(WP_DEBUG, "Unidentified %s from known object\n",
-					from_client ? "request" : "event");
-			*unidentified_changes = true;
-		}
-	} else {
+	if (!objh || !objh->type) {
 		wp_log(WP_DEBUG, "Unidentified object %d with %s\n", obj,
 				from_client ? "request" : "event");
 		*unidentified_changes = true;
+		return MESSACT_KEEP;
 	}
-	(void)fds;
-	(void)fds_len;
-	(void)n_consumed_fds;
-	return true; // keep
+	const struct wl_interface *intf = objh->type;
+	const struct wl_message *msg = NULL;
+	if (from_client) {
+		if (meth < intf->method_count && meth >= 0) {
+			msg = &intf->methods[meth];
+		} else {
+			wp_log(WP_DEBUG,
+					"Unidentified request #%d (of %d) on interface %s\n",
+					meth, intf->method_count, intf->name);
+		}
+	} else {
+		if (meth < intf->event_count && meth >= 0) {
+			msg = &intf->events[meth];
+		} else {
+			wp_log(WP_ERROR,
+					"Unidentified event #%d on interface %s\n",
+					meth, intf->name);
+		}
+	}
+	if (!msg) {
+		wp_log(WP_DEBUG, "Unidentified %s from known object\n",
+				from_client ? "request" : "event");
+		*unidentified_changes = true;
+		return MESSACT_KEEP;
+	}
+
+	*unidentified_changes = false;
+	const struct msg_handler *handler =
+			get_handler_for_interface(objh->type);
+	void (*fn)(void) = NULL;
+	if (handler) {
+		if (from_client && handler->request_handlers) {
+			fn = ((void (*const *)(
+					void))handler->request_handlers)[meth];
+		}
+		if (!from_client && handler->event_handlers) {
+			fn = ((void (*const *)(
+					void))handler->event_handlers)[meth];
+		}
+	}
+
+	struct context ctx;
+	ctx.mt = mt;
+	ctx.map = map;
+	ctx.obj = objh;
+	ctx.on_display_side = display_side;
+	ctx.drop_this_msg = false;
+
+	const uint32_t *payload = header + 2;
+	invoke_msg_handler(msg, !from_client, payload, len / 4 - 2,
+			&fds[*n_consumed_fds], fds_len - *n_consumed_fds,
+			n_consumed_fds, fn, &ctx, mt);
+	// Flag set by the protocol handler function
+	if (ctx.drop_this_msg) {
+		return MESSACT_DROP;
+	}
+	return MESSACT_KEEP;
 }
