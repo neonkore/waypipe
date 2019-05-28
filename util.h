@@ -100,7 +100,11 @@ struct shadow_fd {
 	bool has_owner; // Are there protocol handlers which control the
 			// is_dirty flag?
 	bool is_dirty;  // If so, should this file be scanned for updates?
-	int refcount;   // Number of references from parsing logic
+	/* Very simple damage tracking. This [min,max) interval contains all
+	 * expected changes since the last synchronization. */
+	int dirty_interval_min, dirty_interval_max;
+
+	int refcount; // Number of references from parsing logic
 
 	// File data
 	size_t file_size;
@@ -211,14 +215,10 @@ struct msg_handler {
 	const void *request_handlers;
 };
 struct wp_object {
-	// basically a 'wl_object', except that we need to watch/modify both
-	// client and server.
-	uint32_t obj_id;
+	/* An object used by the wayland protocol. Specific types may extend
+	 * this struct, using the following data as a header */
 	const struct wl_interface *type; // Use to lookup the message handler
-
-	// TODO: an actual type system/buffer inheritance.
-	struct shadow_fd *owned_buffer; // If the type has a reference to an fd
-					// buffer
+	uint32_t obj_id;
 };
 
 struct obj_list {
@@ -264,7 +264,8 @@ void listset_remove(struct obj_list *lst, struct wp_object *obj);
 struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
 void init_message_tracker(struct message_tracker *mt);
-void cleanup_message_tracker(struct message_tracker *mt);
+void cleanup_message_tracker(
+		struct fd_translation_map *map, struct message_tracker *mt);
 
 enum message_action {
 	MESSACT_KEEP,
@@ -282,8 +283,13 @@ enum message_action handle_message(struct message_tracker *mt,
 		bool from_client, const void *data, int data_len,
 		int *consumed_length, const int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes);
+
+// handlers.c
 struct wl_interface;
-struct wp_object *make_wp_object(uint32_t id, const struct wl_interface *type);
+struct wp_object *create_wp_object(
+		uint32_t it, const struct wl_interface *type);
+void destroy_wp_object(
+		struct fd_translation_map *map, struct wp_object *object);
 extern const struct msg_handler handlers[];
 extern const struct wl_interface *the_display_interface;
 

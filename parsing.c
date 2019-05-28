@@ -88,25 +88,18 @@ struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
 	return NULL;
 }
 
-struct wp_object *make_wp_object(uint32_t id, const struct wl_interface *type)
-{
-	struct wp_object *new_obj = calloc(1, sizeof(struct wp_object));
-	new_obj->obj_id = id;
-	new_obj->type = type;
-	new_obj->owned_buffer = NULL;
-	return new_obj;
-}
-
 void init_message_tracker(struct message_tracker *mt)
 {
 	memset(mt, 0, sizeof(*mt));
 
-	listset_insert(&mt->objects, make_wp_object(1, the_display_interface));
+	listset_insert(&mt->objects,
+			create_wp_object(1, the_display_interface));
 }
-void cleanup_message_tracker(struct message_tracker *mt)
+void cleanup_message_tracker(
+		struct fd_translation_map *map, struct message_tracker *mt)
 {
 	for (int i = 0; i < mt->objects.nobj; i++) {
-		free(mt->objects.objs[i]);
+		destroy_wp_object(map, mt->objects.objs[i]);
 	}
 	free(mt->objects.objs);
 }
@@ -247,7 +240,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			/* We create the object unconditionally, although
 			 * while server requests are handled with the object id,
 			 * the client's events are fed the object pointer. */
-			struct wp_object *new_obj = make_wp_object(v, type);
+			struct wp_object *new_obj = create_wp_object(v, type);
 			listset_insert(&mt->objects, new_obj);
 			if (is_event) {
 				call_args_val[nargs].obj = new_obj;

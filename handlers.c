@@ -75,6 +75,88 @@ static inline struct context *get_context(void *first_arg, void *second_arg)
 	return (struct context *)first_arg;
 }
 
+struct wp_shm_pool {
+	struct wp_object base;
+	struct shadow_fd *owned_buffer;
+};
+
+struct wp_buffer {
+	struct wp_object base;
+	struct shadow_fd *owned_buffer;
+
+	int32_t shm_offset;
+	int32_t shm_width;
+	int32_t shm_height;
+	int32_t shm_stride;
+	uint32_t shm_format;
+};
+
+struct wp_keyboard {
+	struct wp_object base;
+	struct shadow_fd *owned_buffer;
+};
+
+struct damage_record {
+	struct damage_record *next;
+	int x, y, width, height;
+	bool buffer_coordinates;
+};
+
+struct wp_surface {
+	struct wp_object base;
+
+	struct damage_record *damage_stack;
+	uint32_t attached_buffer_id;
+};
+
+void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
+{
+	if (object->type == &wl_shm_pool_interface) {
+		struct wp_shm_pool *r = (struct wp_shm_pool *)object;
+		if (r->owned_buffer) {
+			shadow_decref(map, r->owned_buffer);
+		}
+	} else if (object->type == &wl_buffer_interface) {
+		struct wp_buffer *r = (struct wp_buffer *)object;
+		if (r->owned_buffer) {
+			shadow_decref(map, r->owned_buffer);
+		}
+	} else if (object->type == &wl_surface_interface) {
+		struct wp_surface *r = (struct wp_surface *)object;
+		while (r->damage_stack) {
+			struct damage_record *nxt = r->damage_stack->next;
+			free(r->damage_stack);
+			r->damage_stack = nxt;
+		}
+	} else if (object->type == &wl_keyboard_interface) {
+		struct wp_keyboard *r = (struct wp_keyboard *)object;
+		if (r->owned_buffer) {
+			shadow_decref(map, r->owned_buffer);
+		}
+	}
+	free(object);
+}
+struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
+{
+	/* Note: if custom types are ever implemented for globals, they would
+	 * need special replacement logic when the type is set */
+	struct wp_object *new_obj;
+	if (type == &wl_shm_pool_interface) {
+		new_obj = calloc(1, sizeof(struct wp_shm_pool));
+	} else if (type == &wl_buffer_interface) {
+		new_obj = calloc(1, sizeof(struct wp_buffer));
+	} else if (type == &wl_surface_interface) {
+		new_obj = calloc(1, sizeof(struct wp_surface));
+	} else if (type == &wl_keyboard_interface) {
+		new_obj = calloc(1, sizeof(struct wp_keyboard));
+	} else {
+		new_obj = calloc(1, sizeof(struct wp_object));
+	}
+	new_obj->obj_id = id;
+	new_obj->type = type;
+	return new_obj;
+}
+
 static void event_wl_display_error(void *data, struct wl_display *wl_display,
 		void *object_id, uint32_t code, const char *message)
 {
@@ -91,17 +173,7 @@ static void event_wl_display_delete_id(
 	struct wp_object *obj = listset_get(&context->mt->objects, id);
 	if (obj) {
 		listset_remove(&context->mt->objects, obj);
-		// object specific cleanup goes here
-		if (obj->owned_buffer) {
-			/* We only dereference now, because the object is not
-			 * truly deleted (and its linked buffers inaccessible)
-			 * until the compositor says so. (Technically, for
-			 * waypipe server (application-side), we could drop the
-			 * refcount at a given object's "destroy".) */
-			shadow_decref(context->map, obj->owned_buffer);
-			obj->owned_buffer = NULL;
-		}
-		free(obj);
+		destroy_wp_object(context->map, obj);
 	}
 }
 static void request_wl_display_get_registry(struct wl_client *client,
@@ -195,22 +267,20 @@ void request_wl_surface_attach(struct wl_client *client,
 		wp_log(WP_ERROR, "Buffer to be attached is null\n");
 		return;
 	}
-	if (!bufobj->owned_buffer) {
-		wp_log(WP_ERROR, "Buffer to be attached does not own an fd\n");
+	if (bufobj->type != &wl_buffer_interface) {
+		wp_log(WP_ERROR, "Buffer to be attached has the wrong type\n");
 		return;
 	}
-	if (context->obj->owned_buffer) {
-		shadow_decref(context->map, context->obj->owned_buffer);
-	}
-	context->obj->owned_buffer = bufobj->owned_buffer;
-	context->obj->owned_buffer->refcount++;
+	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	surface->attached_buffer_id = bufobj->obj_id;
 }
 
 void request_wl_surface_commit(
 		struct wl_client *client, struct wl_resource *resource)
 {
 	struct context *context = get_context(client, resource);
-	if (!context->obj->owned_buffer) {
+	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	if (!surface->attached_buffer_id) {
 		/* The wl_surface.commit operation applies all "pending state",
 		 * much of which we don't care about. Typically, when a
 		 * wl_surface is first created, it is soon committed to
@@ -219,8 +289,58 @@ void request_wl_surface_commit(
 		 */
 		return;
 	}
+	struct wp_object *obj = listset_get(
+			&context->mt->objects, surface->attached_buffer_id);
+	if (!obj) {
+		wp_log(WP_ERROR, "Attached buffer no longer exists\n");
+		return;
+	}
+	if (obj->type != &wl_buffer_interface) {
+		wp_log(WP_ERROR,
+				"Buffer to commit has the wrong type, and may have been recycled\n");
+		return;
+	}
+	struct wp_buffer *buf = (struct wp_buffer *)obj;
+	struct shadow_fd *sfd = buf->owned_buffer;
+	if (!sfd) {
+		wp_log(WP_ERROR, "wp_buffer to be committed  has no fd\n");
+		return;
+	}
+	if (sfd->type != FDC_FILE) {
+		wp_log(WP_ERROR,
+				"fd associated with surface is not file-like\n");
+		return;
+	}
 	if (!context->on_display_side) {
-		context->obj->owned_buffer->is_dirty = true;
+		sfd->is_dirty = true;
+		int intv_max = INT32_MIN, intv_min = INT32_MAX;
+
+		// Translate damage stack into damage records for the fd buffer
+		struct damage_record *rec = surface->damage_stack;
+		while (rec) {
+			// TODO: take into account transformations
+			int low = buf->shm_offset + buf->shm_stride * rec->y +
+				  rec->x;
+			int high = buf->shm_offset +
+				   buf->shm_stride * (rec->y + rec->height) +
+				   (rec->x + rec->width);
+			intv_max = intv_max > high ? intv_max : high;
+			intv_min = intv_min < low ? intv_min : low;
+
+			struct damage_record *nxt = rec->next;
+			free(rec);
+			rec = nxt;
+		}
+		surface->damage_stack = NULL;
+
+		sfd->dirty_interval_max =
+				intv_max > sfd->dirty_interval_max
+						? intv_max
+						: sfd->dirty_interval_max;
+		sfd->dirty_interval_min =
+				intv_min < sfd->dirty_interval_min
+						? intv_min
+						: sfd->dirty_interval_min;
 	}
 }
 static void request_wl_surface_destroy(
@@ -236,51 +356,53 @@ static void request_wl_surface_damage(struct wl_client *client,
 	struct context *context = get_context(client, resource);
 	// A rectangle of the buffer was damaged, hence backing buffers
 	// may be updated.
-	(void)context;
-	(void)x;
-	(void)y;
-	(void)width;
-	(void)height;
+	struct damage_record *damage = calloc(1, sizeof(struct damage_record));
+	damage->buffer_coordinates = true;
+	damage->x = x;
+	damage->y = y;
+	damage->width = width;
+	damage->height = height;
+
+	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	damage->next = surface->damage_stack;
+	surface->damage_stack = damage;
 }
 static void event_wl_keyboard_keymap(void *data,
 		struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd,
 		uint32_t size)
 {
 	struct context *context = get_context(data, wl_keyboard);
-	(void)context;
 
 	struct shadow_fd *sfd = get_shadow_for_local_fd(context->map, fd);
 	if (!sfd) {
 		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d\n", fd);
 		return;
 	}
-	context->obj->owned_buffer = sfd;
+	if (sfd->type != FDC_FILE || sfd->file_size != size) {
+		wp_log(WP_ERROR,
+				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d\n",
+				sfd->remote_id, sfd->type, sfd->file_size,
+				size);
+		return;
+	}
+	struct wp_keyboard *keyboard = (struct wp_keyboard *)context->obj;
+	keyboard->owned_buffer = sfd;
 	sfd->has_owner = true;
 	sfd->refcount++;
-
 	(void)format;
-
-	if (sfd->type != FDC_FILE || (uint32_t)sfd->file_size != size) {
-		wp_log(WP_ERROR,
-				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d\n",
-				sfd->remote_id, sfd->type, FDC_FILE,
-				sfd->file_size, size);
-	}
 }
 static void request_wl_shm_create_pool(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id, int32_t fd,
 		int32_t size)
 {
 	struct context *context = get_context(client, resource);
-	struct wp_object *the_shm_pool = listset_get(&context->mt->objects, id);
+	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)listset_get(
+			&context->mt->objects, id);
 	struct shadow_fd *sfd = get_shadow_for_local_fd(context->map, fd);
 	if (!sfd) {
 		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d\n", fd);
 		return;
 	}
-	the_shm_pool->owned_buffer = sfd;
-	sfd->has_owner = true;
-	sfd->refcount++;
 	/* It may be valid for the file descriptor size to be larger than the
 	 * immediately advertised size, since the call to wl_shm.create_pool
 	 * may be followed by wl_shm_pool.resize, which then increases the size
@@ -290,46 +412,55 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d\n",
 				sfd->remote_id, sfd->type, FDC_FILE,
 				sfd->file_size, size);
+		return;
 	}
+
+	the_shm_pool->owned_buffer = sfd;
+	sfd->has_owner = true;
+	sfd->refcount++;
 }
 static void request_wl_shm_pool_resize(struct wl_client *client,
 		struct wl_resource *resource, int32_t size)
 {
 	struct context *context = get_context(client, resource);
-	if (!context->obj->owned_buffer) {
+	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
+
+	if (!the_shm_pool->owned_buffer) {
 		wp_log(WP_ERROR, "Pool to be resize owns no buffer\n");
 		return;
 	}
-	if ((int32_t)context->obj->owned_buffer->file_size >= size) {
+	if ((int32_t)the_shm_pool->owned_buffer->file_size >= size) {
 		// The underlying buffer was already resized by the time
 		// this protocol message was received
 		return;
 	}
-	wp_log(WP_ERROR, "Pool resize to %d\n", size);
+	wp_log(WP_ERROR, "Pool resize to %d, TODO\n", size);
 }
 static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id, int32_t offset,
 		int32_t width, int32_t height, int32_t stride, uint32_t format)
 {
 	struct context *context = get_context(client, resource);
-	struct wp_object *the_buffer = listset_get(&context->mt->objects, id);
+	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
+	struct wp_buffer *the_buffer = (struct wp_buffer *)listset_get(
+			&context->mt->objects, id);
 	if (!the_buffer) {
 		wp_log(WP_ERROR, "No buffer available");
 		return;
 	}
-	(void)offset;
-	(void)width;
-	(void)height;
-	(void)stride;
-	(void)format;
-	if (!context->obj->owned_buffer) {
+	if (!the_shm_pool->owned_buffer) {
 		wp_log(WP_ERROR,
 				"Creating a wl_buffer from a pool that does not own an fd");
 		return;
 	}
 
-	the_buffer->owned_buffer = context->obj->owned_buffer;
+	the_buffer->owned_buffer = the_shm_pool->owned_buffer;
 	the_buffer->owned_buffer->refcount++;
+	the_buffer->shm_offset = offset;
+	the_buffer->shm_width = width;
+	the_buffer->shm_height = height;
+	the_buffer->shm_stride = stride;
+	the_buffer->shm_format = format;
 }
 
 static const struct wl_display_listener wl_display_event_handler = {

@@ -734,8 +734,8 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 		close_rclosed_pipes(&fdtransmap);
 	}
 
+	cleanup_message_tracker(&fdtransmap, &mtracker);
 	cleanup_translation_map(&fdtransmap);
-	cleanup_message_tracker(&mtracker);
 	free(way_msg.dbuffer);
 	free(way_msg.fbuffer);
 	free(way_msg.rbuffer);
@@ -804,6 +804,8 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 	shadow->type = FDC_UNKNOWN;
 	// File changes must be propagated
 	shadow->is_dirty = true;
+	shadow->dirty_interval_max = INT32_MAX;
+	shadow->dirty_interval_min = INT32_MIN;
 	shadow->has_owner = false;
 	/* Start object reference at one; will be decremented once RID is sent
 	 */
@@ -903,9 +905,9 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
  *
  * Requires that `diff` point to a memory buffer of size `size + 8`.
  */
-static void construct_diff(size_t size, const char *__restrict__ base,
-		const char *__restrict__ changed, size_t *diffsize,
-		char *__restrict__ diff)
+static void construct_diff(size_t size, size_t range_min, size_t range_max,
+		const char *__restrict__ base, const char *__restrict__ changed,
+		size_t *diffsize, char *__restrict__ diff)
 {
 	uint64_t nblocks = size / 8;
 	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
@@ -914,13 +916,18 @@ static void construct_diff(size_t size, const char *__restrict__ base,
 	uint64_t ntrailing = size - 8 * nblocks;
 	uint64_t nskip = 0, ncopy = 0;
 	uint64_t cursor = 0;
+	uint64_t blockrange_min = range_min / 8;
+	uint64_t blockrange_max = (range_max + 7) / 8;
+	if (blockrange_max > nblocks) {
+		blockrange_max = nblocks;
+	}
 	diff_blocks[0] = 0;
 	bool skipping = true;
 	/* we paper over gaps of a given window size, to avoid fine grained
 	 * context switches */
 	const uint64_t window_size = 128;
 	uint64_t last_header = 0;
-	for (uint64_t i = 0; i < nblocks; i++) {
+	for (uint64_t i = blockrange_min; i < blockrange_max; i++) {
 		if (skipping) {
 			if (base_blocks[i] != changed_blocks[i]) {
 				skipping = false;
@@ -953,7 +960,7 @@ static void construct_diff(size_t size, const char *__restrict__ base,
 	}
 	// We do not add a final 'skip' block, because the unpacking routine
 	if (!skipping) {
-		diff_blocks[last_header] |= nblocks - nskip;
+		diff_blocks[last_header] |= blockrange_max - nskip;
 		cursor -= nskip;
 	}
 	if (ntrailing > 0) {
@@ -1008,7 +1015,17 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				// that its contents could have changed
 				continue;
 			}
+			// Clear dirty state
 			cur->is_dirty = false;
+			int intv_min = cur->dirty_interval_min > 0
+						       ? cur->dirty_interval_min
+						       : 0;
+			int intv_max = cur->dirty_interval_max < (int)cur->file_size
+						       ? cur->dirty_interval_max
+						       : (int)cur->file_size;
+			cur->dirty_interval_min = INT32_MAX;
+			cur->dirty_interval_max = INT32_MIN;
+
 			if (!cur->file_mem_mirror) {
 				cur->file_mem_mirror =
 						calloc(cur->file_size, 1);
@@ -1025,14 +1042,23 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				transfers[nt].type = cur->type;
 				transfers[nt].obj_id = cur->remote_id;
 				transfers[nt].special = 0;
-			} else if (memcmp(cur->file_mem_local,
-						   cur->file_mem_mirror,
-						   cur->file_size) == 0) {
+			}
+			if (intv_min == intv_max) {
+				continue;
+			}
+			bool delta = memcmp(cur->file_mem_local + intv_min,
+						     (cur->file_mem_mirror +
+								     intv_min),
+						     (size_t)(intv_max -
+								     intv_min)) !=
+				     0;
+			if (!delta) {
 				continue;
 			}
 			size_t diffsize;
 			wp_log(WP_DEBUG, "Diff construction start\n");
-			construct_diff(cur->file_size, cur->file_mem_mirror,
+			construct_diff(cur->file_size, (size_t)intv_min,
+					(size_t)intv_max, cur->file_mem_mirror,
 					cur->file_mem_local, &diffsize,
 					cur->file_diff_buffer);
 			// update mirror
@@ -1301,6 +1327,8 @@ static void apply_update(
 	shadow->fd_local = -1;
 	shadow->type = transf->type;
 	shadow->is_dirty = false;
+	shadow->dirty_interval_max = INT32_MIN;
+	shadow->dirty_interval_min = INT32_MAX;
 	/* Start the object reference at one, so that, if it is owned by
 	 * some known protocol object, it can not be deleted until the fd
 	 * has at least be transferred over the Wayland connection */
