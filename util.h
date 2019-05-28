@@ -246,12 +246,16 @@ struct context {
  * Given a set of messages and fds, parse the messages, and if indicated by
  * parsing logic, compact the message buffer by removing selected messages.
  *
- * Returns the number of trailing bytes which were originally part of a
- * truncated message and should be reused for the next read cycle.
+ * Messages with file descriptors should not be compacted.
+ *
+ * The amount of the message buffer read is written to `data_used`
+ * The new size of the message buffer, after compaction, is `data_newsize`
+ * The number of file descriptors read by the protocol is `fds_used`.
  */
-int parse_and_prune_messages(struct message_tracker *mt,
+void parse_and_prune_messages(struct message_tracker *mt,
 		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, char *data, int *len, int *fds, int *nfds);
+		bool from_client, int data_len, char *data, int *data_used,
+		int *data_newsize, int fds_len, const int *fds, int *fds_used);
 
 // parsing.c
 
@@ -275,8 +279,8 @@ enum message_action {
  */
 enum message_action handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, void *data, int data_len,
-		int *consumed_length, int *fds, int fds_len,
+		bool from_client, const void *data, int data_len,
+		int *consumed_length, const int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes);
 struct wl_interface;
 struct wp_object *make_wp_object(uint32_t id, const struct wl_interface *type);

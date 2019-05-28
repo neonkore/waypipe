@@ -211,11 +211,13 @@ enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL };
 struct way_msg_state {
 	// These aren't quite a ring-buffer
 	int dbuffer_maxsize;
-	int dbuffer_start;
 	int dbuffer_end;
+	int dbuffer_carryover_start;
+	int dbuffer_carryover_end;
+	// Somewhat like a queue
 	int fbuffer_maxsize;
-	int fbuffer_start;
 	int fbuffer_end;
+
 	int rbuffer_count;
 	int cmsg_size;
 	int cmsg_written;
@@ -239,9 +241,11 @@ struct chan_msg_state {
 	int dbuffer_end;
 	int fbuffer_maxsize;
 	int fbuffer_count;
+	int tfbuffer_count;
 	int rbuffer_count;
 	int *rbuffer;  // rids
-	int *fbuffer;  // fds
+	int *tfbuffer; // fds to be immediately transferred
+	int *fbuffer;  // fds for use
 	char *dbuffer; // messages
 	char *cmsg_buffer;
 };
@@ -309,6 +313,7 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 			if (cmsg->cmsg_end == cmsg->cmsg_size) {
 				// Parsing decomposition
 				cmsg->rbuffer_count = 0;
+				cmsg->tfbuffer_count = 0;
 
 				cmsg->dbuffer = NULL;
 				cmsg->dbuffer_start = 0;
@@ -336,24 +341,53 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 
 				apply_updates(map, ntransfers, transfers);
 
-				cmsg->fbuffer_count = cmsg->rbuffer_count;
 				untranslate_ids(map, cmsg->rbuffer_count,
-						cmsg->rbuffer, cmsg->fbuffer);
+						cmsg->rbuffer, cmsg->tfbuffer);
+				cmsg->tfbuffer_count = cmsg->rbuffer_count;
+				if (cmsg->tfbuffer_count > 0) {
+					// Append the new file descriptors to
+					// the parsing queue
+					memcpy(cmsg->fbuffer + cmsg->fbuffer_count,
+							cmsg->tfbuffer,
+							sizeof(int) * (size_t)cmsg->tfbuffer_count);
+					cmsg->fbuffer_count +=
+							cmsg->tfbuffer_count;
+				}
 
 				if (cmsg->dbuffer) {
-					int nfds = cmsg->fbuffer_count;
-					int ndelayed = parse_and_prune_messages(
-							mt, map, display_side,
+					/* While by construction, the provided
+					 * message buffer should be aligned with
+					 * individual message boundaries, it is
+					 * not guaranteed that all file
+					 * descriptors provided will be used by
+					 * the messages */
+					int dbuf_used = 0, dbuf_newsize = 0,
+					    fds_used = 0;
+					parse_and_prune_messages(mt, map,
 							display_side,
+							display_side,
+							cmsg->dbuffer_end,
 							cmsg->dbuffer,
-							&cmsg->dbuffer_end,
-							cmsg->fbuffer, &nfds);
-					if (ndelayed > 0) {
+							&dbuf_used,
+							&dbuf_newsize,
+							cmsg->fbuffer_count,
+							cmsg->fbuffer,
+							&fds_used);
+					if (dbuf_used != cmsg->dbuffer_end) {
 						wp_log(WP_ERROR,
-								"did not expect partial messages (len %d) over channel\n",
-								ndelayed);
+								"did not expect partial messages over channel, only parsed %d/%d bytes\n",
+								dbuf_used,
+								cmsg->dbuffer_end);
 						return -1;
 					}
+					/* Update file descriptor queue */
+					if (cmsg->fbuffer_count > fds_used) {
+						memmove(cmsg->fbuffer,
+								cmsg->fbuffer + fds_used,
+								sizeof(int) * (size_t)(cmsg->fbuffer_count -
+											      fds_used));
+					}
+					cmsg->fbuffer_count -= fds_used;
 				}
 
 				cmsg->state = CM_WAITING_FOR_PROGRAM;
@@ -366,7 +400,7 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 					cmsg->dbuffer + cmsg->dbuffer_start,
 					(size_t)(cmsg->dbuffer_end -
 							cmsg->dbuffer_start),
-					cmsg->fbuffer, cmsg->fbuffer_count);
+					cmsg->tfbuffer, cmsg->tfbuffer_count);
 			if (wc == -1 && errno == EWOULDBLOCK) {
 				wp_log(WP_DEBUG,
 						"Write to the %s would block\n",
@@ -386,9 +420,10 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 						cmsg->dbuffer_start,
 						cmsg->dbuffer_end, wc);
 				// We send all fds with the very first batch
-				decref_transferred_fds(map, cmsg->fbuffer_count,
-						cmsg->fbuffer);
-				cmsg->fbuffer_count = 0;
+				decref_transferred_fds(map,
+						cmsg->tfbuffer_count,
+						cmsg->tfbuffer);
+				cmsg->tfbuffer_count = 0;
 			}
 		}
 		if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
@@ -447,12 +482,13 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 		if (progsock_readable) {
 			// Read /once/
 			int nmaxfds = wmsg->fbuffer_maxsize - wmsg->fbuffer_end;
+			int old_fbuffer_end = wmsg->fbuffer_end;
 			ssize_t rc = iovec_read(progfd,
 					wmsg->dbuffer + wmsg->dbuffer_end,
 					(size_t)(wmsg->dbuffer_maxsize -
 							wmsg->dbuffer_end),
-					wmsg->fbuffer + wmsg->fbuffer_end,
-					&wmsg->fbuffer_end, nmaxfds);
+					wmsg->fbuffer, &wmsg->fbuffer_end,
+					nmaxfds);
 			if (rc == -1 && errno == EWOULDBLOCK) {
 				// do nothing
 			} else if (rc == -1) {
@@ -463,30 +499,56 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 				wp_log(WP_ERROR, "%s has closed\n", progdesc);
 				return 0;
 			} else {
-				// We have successfully read some data
+				// We have successfully read some data.
+				rc += wmsg->dbuffer_end;
+
 				if (rc > 0) {
 					wp_log(WP_DEBUG,
-							"Translating %d file descriptors\n",
-							wmsg->fbuffer_end);
-					translate_fds(map, wmsg->fbuffer_end,
-							wmsg->fbuffer,
+							"Translating %d new file descriptors\n",
+							wmsg->fbuffer_end -
+									old_fbuffer_end);
+					wmsg->rbuffer_count =
+							wmsg->fbuffer_end -
+							old_fbuffer_end;
+					translate_fds(map, wmsg->rbuffer_count,
+							wmsg->fbuffer + old_fbuffer_end,
 							wmsg->rbuffer);
-					wmsg->rbuffer_count = wmsg->fbuffer_end;
 
 					wp_log(WP_DEBUG, "Parsing messages\n");
-					int nrc = (int)rc;
-					int nfds = wmsg->fbuffer_end -
-						   wmsg->fbuffer_start;
-					int nleftover = parse_and_prune_messages(
-							mt, map, display_side,
-							!display_side,
-							wmsg->dbuffer, &nrc,
-							wmsg->fbuffer, &nfds);
-					if (nleftover > 0) {
-						wp_log(WP_ERROR,
-								"TODO, leftover recycling\n");
+					int dbuf_used = 0, dbuf_newsize = 0,
+					    fds_used = 0;
+					parse_and_prune_messages(mt, map,
+							display_side,
+							!display_side, (int)rc,
+							wmsg->dbuffer,
+							&dbuf_used,
+							&dbuf_newsize,
+							wmsg->fbuffer_end,
+							wmsg->fbuffer,
+							&fds_used);
+					/* Specify the range of recycled bytes
+					 */
+					if (rc > dbuf_used) {
+						wmsg->dbuffer_carryover_start =
+								dbuf_used;
+						wmsg->dbuffer_carryover_end =
+								(int)rc;
+					} else {
+						wmsg->dbuffer_carryover_start =
+								0;
+						wmsg->dbuffer_carryover_end = 0;
 					}
-					rc = nrc;
+					/* Because we have already translated
+					 * the fds to rids, we can shift the
+					 * remaining fds now */
+					if (wmsg->fbuffer_end > fds_used) {
+						memmove(wmsg->fbuffer,
+								wmsg->fbuffer + fds_used,
+								sizeof(int) * (size_t)(wmsg->fbuffer_end -
+											      fds_used));
+					}
+					wmsg->fbuffer_end -= fds_used;
+					rc = dbuf_newsize;
 				}
 
 				if (rc > 0) {
@@ -521,11 +583,21 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 					wmsg->rbuffer_count, ntransfers,
 					wmsg->cmsg_size);
 
+			// Introduce carryover data
+			if (wmsg->dbuffer_carryover_end > 0) {
+				memmove(wmsg->dbuffer,
+						wmsg->dbuffer + wmsg->dbuffer_carryover_start,
+						(size_t)(wmsg->dbuffer_carryover_end -
+								wmsg->dbuffer_carryover_start));
+				wmsg->dbuffer_end =
+						wmsg->dbuffer_carryover_end -
+						wmsg->dbuffer_carryover_start;
+			} else {
+				wmsg->dbuffer_end = 0;
+			}
+			wmsg->dbuffer_carryover_end = 0;
+			wmsg->dbuffer_carryover_start = 0;
 			wmsg->rbuffer_count = 0;
-			wmsg->fbuffer_end = 0;
-			wmsg->fbuffer_start = 0;
-			wmsg->dbuffer_end = 0;
-			wmsg->dbuffer_start = 0;
 			wmsg->state = WM_WAITING_FOR_CHANNEL;
 		}
 	}
@@ -551,13 +623,16 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 
 	struct way_msg_state way_msg;
 	way_msg.state = WM_WAITING_FOR_PROGRAM;
-	way_msg.dbuffer_maxsize =
-			8192; // maximum message size; never actually made clear
-	way_msg.dbuffer_start = 0;
+	/* AFAIK, there is not documented upper bound for the size of a Wayland
+	 * protocol message, but libwayland (in wl_buffer_put) effectively
+	 * limits message sizes to 4096 bytes. We must therefore adopt a limit
+	 * as least as large. */
+	way_msg.dbuffer_maxsize = 4096;
+	way_msg.dbuffer_carryover_end = 0;
+	way_msg.dbuffer_carryover_start = 0;
 	way_msg.dbuffer_end = 0;
 	way_msg.dbuffer = malloc((size_t)way_msg.dbuffer_maxsize);
 	way_msg.fbuffer_maxsize = 128;
-	way_msg.fbuffer_start = 0;
 	way_msg.fbuffer_end = 0;
 	way_msg.fbuffer = malloc((size_t)way_msg.fbuffer_maxsize * sizeof(int));
 	way_msg.rbuffer = malloc((size_t)way_msg.fbuffer_maxsize * sizeof(int));
@@ -575,6 +650,9 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 	chan_msg.rbuffer_count = 0;
 	chan_msg.rbuffer =
 			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
+	chan_msg.tfbuffer =
+			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
+	chan_msg.tfbuffer_count = 0;
 	chan_msg.cmsg_size = 0;
 	chan_msg.cmsg_end = 0;
 	chan_msg.cmsg_buffer = NULL;
@@ -663,6 +741,7 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 	free(way_msg.rbuffer);
 	free(way_msg.cmsg_buffer);
 	// We do not free chan_msg.dbuffer, as it is a subset of cmsg_buffer
+	free(chan_msg.tfbuffer);
 	free(chan_msg.fbuffer);
 	free(chan_msg.rbuffer);
 	free(chan_msg.cmsg_buffer);
@@ -736,11 +815,11 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 	memset(&fsdata, 0, sizeof(fsdata));
 	int ret = fstat(fd, &fsdata);
 	if (ret == -1) {
-		wp_log(WP_ERROR, "The fd %d is not file-like\n", fd);
+		wp_log(WP_ERROR, "The fd %d is not file-like: %s\n", fd,
+				strerror(errno));
 		return shadow->remote_id;
 	}
 	if (S_ISREG(fsdata.st_mode)) {
-
 		// We have a file-like object
 		shadow->file_size = fsdata.st_size;
 		// both r/w permissions, because the size the allocates
@@ -1560,40 +1639,36 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 	}
 }
 
-int parse_and_prune_messages(struct message_tracker *mt,
+void parse_and_prune_messages(struct message_tracker *mt,
 		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, char *data, int *data_len, int *fds,
-		int *fds_len)
+		bool from_client, int data_len, char *data, int *data_used,
+		int *data_newsize, int fds_len, const int *fds, int *fds_used)
 {
 	bool anything_unknown = false;
 	int fdpos = 0;
 	int writepos = 0;
-	int delayed_bytes = 0;
-	for (int pos = 0; pos < *data_len;) {
+	int pos = 0;
+	for (; pos < data_len;) {
 		int consumed_bytes = 0, consumed_fds = 0;
 		bool effect_unknown = true;
-		if (*data_len - pos < 8) {
+		if (data_len - pos < 8) {
 			// Not enough remaining bytes to parse the header
-			int nleft = *data_len - pos;
-			*data_len = pos;
-			return nleft;
+			break;
 		}
 		enum message_action action = handle_message(mt, map,
 				on_display_side, from_client, &data[pos],
-				*data_len - pos, &consumed_bytes, &fds[fdpos],
-				*fds_len - fdpos, &consumed_fds,
+				data_len - pos, &consumed_bytes, &fds[fdpos],
+				fds_len - fdpos, &consumed_fds,
 				&effect_unknown);
 		if (action == MESSACT_DELAY) {
-			// Not enough space for the message
-			int nleft = *data_len - pos;
-			*data_len = pos;
-			return nleft;
+			break;
 		} else if (action == MESSACT_ERROR) {
-			return 0;
+			break;
 		}
 		if (consumed_fds > 0 && action == MESSACT_DROP) {
 			wp_log(WP_ERROR,
-					"Dropping a message with send fds -- unimplemented\n");
+					"Dropping a message with sent fds -- unimplemented\n");
+			break;
 		}
 		fdpos += consumed_fds;
 		if (pos != writepos) {
@@ -1609,7 +1684,10 @@ int parse_and_prune_messages(struct message_tracker *mt,
 		}
 		anything_unknown |= effect_unknown;
 	}
-	*data_len = writepos;
+	*data_newsize = writepos;
+	*data_used = pos;
+	*fds_used = fdpos;
+
 	if (anything_unknown) {
 		// All-un-owned buffers are assumed to have changed.
 		// (Note that in some cases, a new protocol could imply a change
@@ -1621,5 +1699,5 @@ int parse_and_prune_messages(struct message_tracker *mt,
 			}
 		}
 	}
-	return delayed_bytes;
+	return;
 }

@@ -316,8 +316,8 @@ static void invoke_msg_handler(const struct wl_message *msg, bool is_event,
 
 enum message_action handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool display_side,
-		bool from_client, void *data, int data_len,
-		int *consumed_length, int *fds, int fds_len,
+		bool from_client, const void *data, int data_len,
+		int *consumed_length, const int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes)
 {
 	const uint32_t *const header = (uint32_t *)data;
@@ -325,9 +325,8 @@ enum message_action handle_message(struct message_tracker *mt,
 	int meth = (int)((header[1] << 16) >> 16);
 	int len = (int)(header[1] >> 16);
 	if (len > data_len) {
-		wp_log(WP_ERROR,
-				"Message length overflow: %d claimed vs %d available. Keeping message, uninterpreted\n",
-				len, data_len);
+		// This buffer containing this message was truncated before the
+		// end of the message
 		*consumed_length = 0;
 		return MESSACT_DELAY;
 	}
