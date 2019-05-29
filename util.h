@@ -36,6 +36,14 @@ extern bool shutdown_flag;
 
 void handle_sigint(int sig);
 
+/** Basic mathematical operations */
+static inline int max(int a, int b) { return a > b ? a : b; }
+static inline int min(int a, int b) { return a < b ? a : b; }
+static inline int clamp(int v, int lower, int upper)
+{
+	return max(min(v, upper), lower);
+}
+
 /** Set the given flag with fcntl. Silently return -1 on failure. */
 int set_fnctl_flag(int fd, int the_flag);
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with

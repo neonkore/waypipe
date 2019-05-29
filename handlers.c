@@ -318,13 +318,22 @@ void request_wl_surface_commit(
 		struct damage_record *rec = surface->damage_stack;
 		while (rec) {
 			// TODO: take into account transformations
-			int low = buf->shm_offset + buf->shm_stride * rec->y +
-				  rec->x;
-			int high = buf->shm_offset +
-				   buf->shm_stride * (rec->y + rec->height) +
-				   (rec->x + rec->width);
-			intv_max = intv_max > high ? intv_max : high;
-			intv_min = intv_min < low ? intv_min : low;
+
+			/* Clip the damage rectangle to the containing buffer.
+			 */
+			int xlow = clamp(rec->x, 0, buf->shm_width);
+			int xhigh = clamp(
+					rec->x + rec->width, 0, buf->shm_width);
+			int ylow = clamp(rec->y, 0, buf->shm_height);
+			int yhigh = clamp(rec->y + rec->height, 0,
+					buf->shm_height);
+
+			int low = buf->shm_offset + buf->shm_stride * ylow +
+				  xlow;
+			int high = buf->shm_offset + buf->shm_stride * yhigh +
+				   xhigh;
+			intv_max = max(intv_max, high);
+			intv_min = min(intv_min, low);
 
 			struct damage_record *nxt = rec->next;
 			free(rec);
@@ -333,13 +342,9 @@ void request_wl_surface_commit(
 		surface->damage_stack = NULL;
 
 		sfd->dirty_interval_max =
-				intv_max > sfd->dirty_interval_max
-						? intv_max
-						: sfd->dirty_interval_max;
+				max(sfd->dirty_interval_max, intv_max);
 		sfd->dirty_interval_min =
-				intv_min < sfd->dirty_interval_min
-						? intv_min
-						: sfd->dirty_interval_min;
+				min(sfd->dirty_interval_min, intv_min);
 	}
 }
 static void request_wl_surface_destroy(

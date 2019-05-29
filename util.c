@@ -1041,12 +1041,10 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			}
 			// Clear dirty state
 			cur->is_dirty = false;
-			int intv_min = cur->dirty_interval_min > 0
-						       ? cur->dirty_interval_min
-						       : 0;
-			int intv_max = cur->dirty_interval_max < (int)cur->file_size
-						       ? cur->dirty_interval_max
-						       : (int)cur->file_size;
+			int intv_min = clamp(cur->dirty_interval_min, 0,
+					(int)cur->file_size);
+			int intv_max = clamp(cur->dirty_interval_max, 0,
+					(int)cur->file_size);
 			cur->dirty_interval_min = INT32_MAX;
 			cur->dirty_interval_max = INT32_MIN;
 
@@ -1067,7 +1065,7 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				transfers[nt].obj_id = cur->remote_id;
 				transfers[nt].special = 0;
 			}
-			if (intv_min == intv_max) {
+			if (intv_min >= intv_max) {
 				continue;
 			}
 			bool delta = memcmp(cur->file_mem_local + intv_min,
