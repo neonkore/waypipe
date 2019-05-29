@@ -204,7 +204,7 @@ static void event_wl_registry_global(void *data,
 	hide_me |= !strcmp(interface, "wl_shell");
 
 	if (hide_me) {
-		wp_log(WP_DEBUG, "Hiding %s advertisement\n", interface);
+		wp_log(WP_DEBUG, "Hiding %s advertisement", interface);
 		context->drop_this_msg = true;
 	}
 
@@ -236,8 +236,8 @@ void request_wl_registry_bind(struct wl_client *client,
 	listset_remove(&context->mt->objects, the_object);
 	free(the_object);
 
-	wp_log(WP_DEBUG, "Binding fail name=%d %s id=%d (v%d)\n", name,
-			interface, id, version);
+	wp_log(WP_DEBUG, "Binding fail name=%d %s id=%d (v%d)", name, interface,
+			id, version);
 	(void)name;
 	(void)version;
 }
@@ -264,11 +264,11 @@ void request_wl_surface_attach(struct wl_client *client,
 	struct wp_object *bufobj = (struct wp_object *)buffer;
 	if (!bufobj) {
 		// todo: if nullable, handle error/abort earlier in the chain
-		wp_log(WP_ERROR, "Buffer to be attached is null\n");
+		wp_log(WP_ERROR, "Buffer to be attached is null");
 		return;
 	}
 	if (bufobj->type != &wl_buffer_interface) {
-		wp_log(WP_ERROR, "Buffer to be attached has the wrong type\n");
+		wp_log(WP_ERROR, "Buffer to be attached has the wrong type");
 		return;
 	}
 	struct wp_surface *surface = (struct wp_surface *)context->obj;
@@ -292,23 +292,22 @@ void request_wl_surface_commit(
 	struct wp_object *obj = listset_get(
 			&context->mt->objects, surface->attached_buffer_id);
 	if (!obj) {
-		wp_log(WP_ERROR, "Attached buffer no longer exists\n");
+		wp_log(WP_ERROR, "Attached buffer no longer exists");
 		return;
 	}
 	if (obj->type != &wl_buffer_interface) {
 		wp_log(WP_ERROR,
-				"Buffer to commit has the wrong type, and may have been recycled\n");
+				"Buffer to commit has the wrong type, and may have been recycled");
 		return;
 	}
 	struct wp_buffer *buf = (struct wp_buffer *)obj;
 	struct shadow_fd *sfd = buf->owned_buffer;
 	if (!sfd) {
-		wp_log(WP_ERROR, "wp_buffer to be committed  has no fd\n");
+		wp_log(WP_ERROR, "wp_buffer to be committed  has no fd");
 		return;
 	}
 	if (sfd->type != FDC_FILE) {
-		wp_log(WP_ERROR,
-				"fd associated with surface is not file-like\n");
+		wp_log(WP_ERROR, "fd associated with surface is not file-like");
 		return;
 	}
 	if (!context->on_display_side) {
@@ -375,12 +374,12 @@ static void event_wl_keyboard_keymap(void *data,
 
 	struct shadow_fd *sfd = get_shadow_for_local_fd(context->map, fd);
 	if (!sfd) {
-		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d\n", fd);
+		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d", fd);
 		return;
 	}
 	if (sfd->type != FDC_FILE || sfd->file_size != size) {
 		wp_log(WP_ERROR,
-				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d\n",
+				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d",
 				sfd->remote_id, sfd->type, sfd->file_size,
 				size);
 		return;
@@ -400,7 +399,7 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 			&context->mt->objects, id);
 	struct shadow_fd *sfd = get_shadow_for_local_fd(context->map, fd);
 	if (!sfd) {
-		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d\n", fd);
+		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d", fd);
 		return;
 	}
 	/* It may be valid for the file descriptor size to be larger than the
@@ -409,7 +408,7 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 	 */
 	if (sfd->type != FDC_FILE || (int32_t)sfd->file_size < size) {
 		wp_log(WP_ERROR,
-				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d\n",
+				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d",
 				sfd->remote_id, sfd->type, FDC_FILE,
 				sfd->file_size, size);
 		return;
@@ -426,7 +425,7 @@ static void request_wl_shm_pool_resize(struct wl_client *client,
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
 
 	if (!the_shm_pool->owned_buffer) {
-		wp_log(WP_ERROR, "Pool to be resize owns no buffer\n");
+		wp_log(WP_ERROR, "Pool to be resize owns no buffer");
 		return;
 	}
 	if ((int32_t)the_shm_pool->owned_buffer->file_size >= size) {
@@ -434,7 +433,7 @@ static void request_wl_shm_pool_resize(struct wl_client *client,
 		// this protocol message was received
 		return;
 	}
-	wp_log(WP_ERROR, "Pool resize to %d, TODO\n", size);
+	wp_log(WP_ERROR, "Pool resize to %d, TODO", size);
 }
 static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id, int32_t offset,

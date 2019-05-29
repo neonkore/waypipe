@@ -60,10 +60,10 @@ struct pidstack {
 
 static int run_client_child(int chanfd, const char *socket_path)
 {
-	wp_log(WP_DEBUG, "I'm a client on %s!\n", socket_path);
+	wp_log(WP_DEBUG, "I'm a client on %s!", socket_path);
 	struct wl_display *display = wl_display_connect(NULL);
 	if (!display) {
-		wp_log(WP_ERROR, "Failed to connect to a wayland server.\n");
+		wp_log(WP_ERROR, "Failed to connect to a wayland server.");
 		return EXIT_FAILURE;
 	}
 	int dispfd = wl_display_get_fd(display);
@@ -75,14 +75,13 @@ static int run_client_child(int chanfd, const char *socket_path)
 int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 {
 	if (verify_connection() == -1) {
-		wp_log(WP_ERROR,
-				"Failed to connect to a wayland compositor.\n");
+		wp_log(WP_ERROR, "Failed to connect to a wayland compositor.");
 		if (eol_pid) {
 			waitpid(eol_pid, NULL, 0);
 		}
 		return EXIT_FAILURE;
 	}
-	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.\n");
+	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.");
 
 	int nmaxclients = oneshot ? 1 : 3; // << todo, increase
 	int channelsock = setup_nb_socket(socket_path, nmaxclients);
@@ -109,7 +108,7 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 		if (eol_pid) {
 			int wp = waitpid(eol_pid, NULL, WNOHANG);
 			if (wp > 0) {
-				wp_log(WP_DEBUG, "Child (ssh) died, exiting\n");
+				wp_log(WP_DEBUG, "Child (ssh) died, exiting");
 				eol_pid = 0; // < recycled
 				retcode = EXIT_SUCCESS;
 				break;
@@ -139,7 +138,7 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 				// The wakeup may have been spurious
 				continue;
 			}
-			wp_log(WP_ERROR, "Connection failure: %s\n",
+			wp_log(WP_ERROR, "Connection failure: %s",
 					strerror(errno));
 			retcode = EXIT_FAILURE;
 			break;
@@ -167,7 +166,7 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 					// exit path?
 					return EXIT_SUCCESS;
 				} else if (npid == -1) {
-					wp_log(WP_DEBUG, "Fork failure\n");
+					wp_log(WP_DEBUG, "Fork failure");
 					retcode = EXIT_FAILURE;
 					break;
 				} else {

@@ -73,7 +73,7 @@ void listset_remove(struct obj_list *lst, struct wp_object *obj)
 		}
 	}
 
-	wp_log(WP_ERROR, "Object not in list\n");
+	wp_log(WP_ERROR, "Object not in list");
 	return;
 }
 struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
@@ -139,7 +139,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 	ffi_type *call_types[30];
 	void *call_args_ptr[30];
 	if (strlen(msg->signature) > 30) {
-		wp_log(WP_ERROR, "Overly long signature for %s.%s: %s\n",
+		wp_log(WP_ERROR, "Overly long signature for %s.%s: %s",
 				intf->name, msg->name, msg->signature);
 	}
 	struct uarg call_args_val[30];
@@ -284,7 +284,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 
 		default:
 			wp_log(WP_DEBUG,
-					"For %s.%s, unidentified message type %c,\n",
+					"For %s.%s, unidentified message type %c,",
 					intf->name, msg->name, *c);
 			break;
 		}
@@ -292,14 +292,14 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 		continue;
 	len_overflow:
 		wp_log(WP_ERROR,
-				"Message %s.%s parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c\n",
+				"Message %s.%s parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c",
 				intf->name, msg->name, 4 * i, 4 * paylen,
 				*fds_used, fdlen, *c);
 		return;
 	}
 	if (i != paylen) {
 		wp_log(WP_ERROR,
-				"Parse error length mismatch for %s.%s: used %d expected %d\n",
+				"Parse error length mismatch for %s.%s: used %d expected %d",
 				intf->name, msg->name, i * 4, paylen * 4);
 	}
 
@@ -329,7 +329,7 @@ enum message_action handle_message(struct message_tracker *mt,
 	}
 	if (len < 2 * (int)sizeof(uint32_t)) {
 		wp_log(WP_ERROR,
-				"Message length underflow (%d), probably parsing error\n",
+				"Message length underflow (%d), probably parsing error",
 				len);
 		*consumed_length = 0;
 		return MESSACT_ERROR;
@@ -340,7 +340,7 @@ enum message_action handle_message(struct message_tracker *mt,
 	struct wp_object *objh = listset_get(&mt->objects, obj);
 
 	if (!objh || !objh->type) {
-		wp_log(WP_DEBUG, "Unidentified object %d with %s\n", obj,
+		wp_log(WP_DEBUG, "Unidentified object %d with %s", obj,
 				from_client ? "request" : "event");
 		*unidentified_changes = true;
 		return MESSACT_KEEP;
@@ -352,7 +352,7 @@ enum message_action handle_message(struct message_tracker *mt,
 			msg = &intf->methods[meth];
 		} else {
 			wp_log(WP_DEBUG,
-					"Unidentified request #%d (of %d) on interface %s\n",
+					"Unidentified request #%d (of %d) on interface %s",
 					meth, intf->method_count, intf->name);
 		}
 	} else {
@@ -360,12 +360,12 @@ enum message_action handle_message(struct message_tracker *mt,
 			msg = &intf->events[meth];
 		} else {
 			wp_log(WP_ERROR,
-					"Unidentified event #%d on interface %s\n",
+					"Unidentified event #%d on interface %s",
 					meth, intf->name);
 		}
 	}
 	if (!msg) {
-		wp_log(WP_DEBUG, "Unidentified %s from known object\n",
+		wp_log(WP_DEBUG, "Unidentified %s from known object",
 				from_client ? "request" : "event");
 		*unidentified_changes = true;
 		return MESSACT_KEEP;

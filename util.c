@@ -29,6 +29,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,7 +86,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 
 	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
 		wp_log(WP_ERROR,
-				"Socket path is too long and would be truncated: %s\n",
+				"Socket path is too long and would be truncated: %s",
 				socket_path);
 		return -1;
 	}
@@ -94,23 +95,22 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
 	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (sock == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s\n",
-				strerror(errno));
+		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
 		return -1;
 	}
 	if (set_fnctl_flag(sock, O_NONBLOCK | O_CLOEXEC) == -1) {
-		wp_log(WP_ERROR, "Error making socket nonblocking: %s\n",
+		wp_log(WP_ERROR, "Error making socket nonblocking: %s",
 				strerror(errno));
 		close(sock);
 		return -1;
 	}
 	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error binding socket: %s\n", strerror(errno));
+		wp_log(WP_ERROR, "Error binding socket: %s", strerror(errno));
 		close(sock);
 		return -1;
 	}
 	if (listen(sock, nmaxclients) == -1) {
-		wp_log(WP_ERROR, "Error listening to socket: %s\n",
+		wp_log(WP_ERROR, "Error listening to socket: %s",
 				strerror(errno));
 		close(sock);
 		unlink(socket_path);
@@ -119,14 +119,41 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	return sock;
 }
 
-const char *static_timestamp(void)
+void wp_log_handler(const char *file, int line, log_cat_t level,
+		const char *fmt, ...)
 {
-	static char msg[64];
 	struct timespec ts;
 	clock_gettime(CLOCK_REALTIME, &ts);
 	double time = (ts.tv_sec % 100) * 1. + ts.tv_nsec * 1e-9;
-	sprintf(msg, "%9.6f", time);
-	return msg;
+	int pid = getpid();
+
+	char mode;
+	if (waypipe_log_mode == 'S') {
+		mode = level == WP_DEBUG ? 's' : 'S';
+	} else {
+		mode = level == WP_DEBUG ? 'c' : 'C';
+	}
+
+	char msg[1024];
+	int nwri = sprintf(msg, "%c%d:%9.6f [%s:%3d] ", mode, pid, time, file,
+			line);
+	va_list args;
+	va_start(args, fmt);
+	nwri += vsnprintf(msg + nwri, (size_t)(1020 - nwri), fmt, args);
+	va_end(args);
+
+	if (waypipe_log_mode == 'c') {
+		/* to avoid 'staircase' rendering when using the ssh helper
+		 * mode, and -t argument */
+		msg[nwri++] = '\r';
+		msg[nwri++] = '\n';
+		msg[nwri++] = 0;
+	} else {
+		msg[nwri++] = '\n';
+		msg[nwri++] = 0;
+	}
+	// single short writes are atomic for pipes, at least
+	write(STDERR_FILENO, msg, (size_t)nwri);
 }
 
 ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds,
@@ -198,7 +225,7 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		memcpy(CMSG_DATA(frst), fds, numfds * sizeof(int));
 		frst->cmsg_len = CMSG_LEN(numfds * sizeof(int));
 		msg.msg_controllen = CMSG_SPACE(numfds * sizeof(int));
-		wp_log(WP_DEBUG, "Writing %d fds to cmsg data\n", numfds);
+		wp_log(WP_DEBUG, "Writing %d fds to cmsg data", numfds);
 	}
 
 	ssize_t ret = sendmsg(conn, &msg, 0);
@@ -265,23 +292,23 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 			uint64_t size = 0;
 			ssize_t r = read(chanfd, &size, sizeof(size));
 			if (r == -1 && errno == EWOULDBLOCK) {
-				wp_log(WP_DEBUG, "Read would block\n");
+				wp_log(WP_DEBUG, "Read would block");
 				return 0;
 			} else if (r == -1) {
-				wp_log(WP_ERROR, "chanfd read failure: %s\n",
+				wp_log(WP_ERROR, "chanfd read failure: %s",
 						strerror(errno));
 				return -1;
 			} else if (r == 0) {
-				wp_log(WP_ERROR, "chanfd closed\n");
+				wp_log(WP_ERROR, "chanfd closed");
 				return -1;
 			} else if (r < (ssize_t)sizeof(uint64_t)) {
 				wp_log(WP_ERROR,
-						"insufficient starting read block %ld of 8 bytes\n",
+						"insufficient starting read block %ld of 8 bytes",
 						r);
 				return -1;
 			} else if (size > (1 << 30)) {
 				wp_log(WP_ERROR,
-						"Invalid transfer block size %ld\n",
+						"Invalid transfer block size %ld",
 						size);
 				return -1;
 			} else {
@@ -300,11 +327,11 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 					return 0;
 				} else if (r == -1) {
 					wp_log(WP_ERROR,
-							"chanfd read failure: %s\n",
+							"chanfd read failure: %s",
 							strerror(errno));
 					return -1;
 				} else if (r == 0) {
-					wp_log(WP_ERROR, "chanfd closed\n");
+					wp_log(WP_ERROR, "chanfd closed");
 					return -1;
 				} else {
 					cmsg->cmsg_end += r;
@@ -319,8 +346,7 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 				cmsg->dbuffer_start = 0;
 				cmsg->dbuffer_end = 0;
 
-				wp_log(WP_DEBUG,
-						"Read %d byte msg, unpacking\n",
+				wp_log(WP_DEBUG, "Read %d byte msg, unpacking",
 						cmsg->cmsg_size);
 
 				int ntransfers = 0;
@@ -334,7 +360,7 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 						transfers);
 
 				wp_log(WP_DEBUG,
-						"Read %d byte msg, %d fds, %d transfers. Data buffer has %d bytes\n",
+						"Read %d byte msg, %d fds, %d transfers. Data buffer has %d bytes",
 						cmsg->cmsg_size,
 						cmsg->rbuffer_count, ntransfers,
 						cmsg->dbuffer_end);
@@ -375,7 +401,7 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 							&fds_used);
 					if (dbuf_used != cmsg->dbuffer_end) {
 						wp_log(WP_ERROR,
-								"did not expect partial messages over channel, only parsed %d/%d bytes\n",
+								"did not expect partial messages over channel, only parsed %d/%d bytes",
 								dbuf_used,
 								cmsg->dbuffer_end);
 						return -1;
@@ -402,21 +428,20 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 							cmsg->dbuffer_start),
 					cmsg->tfbuffer, cmsg->tfbuffer_count);
 			if (wc == -1 && errno == EWOULDBLOCK) {
-				wp_log(WP_DEBUG,
-						"Write to the %s would block\n",
+				wp_log(WP_DEBUG, "Write to the %s would block",
 						progdesc);
 				return 0;
 			} else if (wc == -1) {
-				wp_log(WP_ERROR, "%s write failure %ld: %s\n",
+				wp_log(WP_ERROR, "%s write failure %ld: %s",
 						progdesc, wc, strerror(errno));
 				return -1;
 			} else if (wc == 0) {
-				wp_log(WP_ERROR, "%s has closed\n", progdesc);
+				wp_log(WP_ERROR, "%s has closed", progdesc);
 				return -1;
 			} else {
 				cmsg->dbuffer_start += wc;
 				wp_log(WP_DEBUG,
-						"Wrote, have done %d/%d bytes in chunk %ld\n",
+						"Wrote, have done %d/%d bytes in chunk %ld",
 						cmsg->dbuffer_start,
 						cmsg->dbuffer_end, wc);
 				// We send all fds with the very first batch
@@ -427,8 +452,7 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 			}
 		}
 		if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
-			wp_log(WP_DEBUG, "Write to the %s succeeded\n",
-					progdesc);
+			wp_log(WP_DEBUG, "Write to the %s succeeded", progdesc);
 			close_local_pipe_ends(map);
 			cmsg->state = CM_WAITING_FOR_CHANNEL;
 			free(cmsg->cmsg_buffer);
@@ -458,18 +482,18 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 			} else if (wr == -1 && errno == EAGAIN) {
 				continue;
 			} else if (wr == -1) {
-				wp_log(WP_ERROR, "chanfd write failure: %s\n",
+				wp_log(WP_ERROR, "chanfd write failure: %s",
 						strerror(errno));
 				return -1;
 			} else if (wr == 0) {
-				wp_log(WP_ERROR, "chanfd has closed\n");
+				wp_log(WP_ERROR, "chanfd has closed");
 				return 0;
 			}
 			wmsg->cmsg_written += wr;
 		}
 		if (wmsg->cmsg_written == wmsg->cmsg_size) {
 			wp_log(WP_DEBUG,
-					"The %d-byte message from %s to channel has been written\n",
+					"The %d-byte message from %s to channel has been written",
 					wmsg->cmsg_size, progdesc);
 			free(wmsg->cmsg_buffer);
 			wmsg->cmsg_buffer = NULL;
@@ -492,11 +516,11 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 			if (rc == -1 && errno == EWOULDBLOCK) {
 				// do nothing
 			} else if (rc == -1) {
-				wp_log(WP_ERROR, "%s read failure: %s\n",
+				wp_log(WP_ERROR, "%s read failure: %s",
 						progdesc, strerror(errno));
 				return -1;
 			} else if (rc == 0) {
-				wp_log(WP_ERROR, "%s has closed\n", progdesc);
+				wp_log(WP_ERROR, "%s has closed", progdesc);
 				return 0;
 			} else {
 				// We have successfully read some data.
@@ -504,7 +528,7 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 
 				if (rc > 0) {
 					wp_log(WP_DEBUG,
-							"Translating %d new file descriptors\n",
+							"Translating %d new file descriptors",
 							wmsg->fbuffer_end -
 									old_fbuffer_end);
 					wmsg->rbuffer_count =
@@ -514,7 +538,7 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 							wmsg->fbuffer + old_fbuffer_end,
 							wmsg->rbuffer);
 
-					wp_log(WP_DEBUG, "Parsing messages\n");
+					wp_log(WP_DEBUG, "Parsing messages");
 					int dbuf_used = 0, dbuf_newsize = 0,
 					    fds_used = 0;
 					parse_and_prune_messages(mt, map,
@@ -553,7 +577,7 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 
 				if (rc > 0) {
 					wp_log(WP_DEBUG,
-							"We are transferring a data buffer with %ld bytes\n",
+							"We are transferring a data buffer with %ld bytes",
 							rc);
 					transfers[0].obj_id = 0;
 					transfers[0].size = (size_t)rc;
@@ -579,7 +603,7 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 			decref_transferred_rids(map, wmsg->rbuffer_count,
 					wmsg->rbuffer);
 			wp_log(WP_DEBUG,
-					"Packed message size (%d fds, %d blobs): %d\n",
+					"Packed message size (%d fds, %d blobs): %d",
 					wmsg->rbuffer_count, ntransfers,
 					wmsg->cmsg_size);
 
@@ -609,13 +633,13 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_fnctl_flag(chanfd, O_NONBLOCK | O_CLOEXEC) == -1) {
 		wp_log(WP_ERROR,
-				"Error making channel connection nonblocking: %s\n",
+				"Error making channel connection nonblocking: %s",
 				strerror(errno));
 		close(chanfd);
 		return EXIT_FAILURE;
 	}
 	if (set_fnctl_flag(progfd, O_NONBLOCK | O_CLOEXEC) == -1) {
-		wp_log(WP_ERROR, "Error making %s connection nonblocking: %s\n",
+		wp_log(WP_ERROR, "Error making %s connection nonblocking: %s",
 				progdesc, strerror(errno));
 		close(chanfd);
 		return EXIT_FAILURE;
@@ -694,12 +718,12 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 			free(pfds);
 			if (errno == EINTR) {
 				wp_log(WP_ERROR,
-						"poll interrupted: shutdown=%c\n",
+						"poll interrupted: shutdown=%c",
 						shutdown_flag ? 'Y' : 'n');
 				continue;
 			} else {
 				wp_log(WP_ERROR,
-						"poll failed due to, stopping: %s\n",
+						"poll failed due to, stopping: %s",
 						strerror(errno));
 				break;
 			}
@@ -713,7 +737,7 @@ int main_interface_loop(int chanfd, int progfd, bool display_side)
 			       (pfds[1].revents & POLLHUP);
 		free(pfds);
 		if (hang_up) {
-			wp_log(WP_ERROR, "Connection hang-up detected\n");
+			wp_log(WP_ERROR, "Connection hang-up detected");
 			break;
 		}
 
@@ -811,13 +835,13 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 	 */
 	shadow->refcount = 1;
 
-	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d\n", fd);
+	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
 
 	struct stat fsdata;
 	memset(&fsdata, 0, sizeof(fsdata));
 	int ret = fstat(fd, &fsdata);
 	if (ret == -1) {
-		wp_log(WP_ERROR, "The fd %d is not file-like: %s\n", fd,
+		wp_log(WP_ERROR, "The fd %d is not file-like: %s", fd,
 				strerror(errno));
 		return shadow->remote_id;
 	}
@@ -830,7 +854,7 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 		shadow->file_mem_local = mmap(NULL, shadow->file_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (!shadow->file_mem_local) {
-			wp_log(WP_ERROR, "Mmap failed!\n");
+			wp_log(WP_ERROR, "Mmap failed!");
 			return shadow->remote_id;
 		}
 		// This will be created at the first transfer
@@ -842,12 +866,12 @@ static int translate_fd(struct fd_translation_map *map, int fd)
 			 * connection of the terminal which was acquired with
 			 * forkpty; it probably links to a character device */
 			wp_log(WP_ERROR,
-					"The fd %d, size %ld, mode %x is neither a pipe nor a regular file. Proceeding under the assumption that it is pipe-like.\n",
+					"The fd %d, size %ld, mode %x is neither a pipe nor a regular file. Proceeding under the assumption that it is pipe-like.",
 					fd, fsdata.st_size, fsdata.st_mode);
 		}
 		int flags = fcntl(fd, F_GETFL, 0);
 		if (flags == -1) {
-			wp_log(WP_ERROR, "fctnl F_GETFL failed!\n");
+			wp_log(WP_ERROR, "fctnl F_GETFL failed!");
 		}
 		if ((flags & O_ACCMODE) == O_RDONLY) {
 			shadow->type = FDC_PIPE_IR;
@@ -989,7 +1013,7 @@ static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		if (nto > nblocks || nfrom >= nto ||
 				i + (nto - nfrom) >= ndiffblocks) {
 			wp_log(WP_ERROR,
-					"Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks\n",
+					"Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks",
 					nfrom, nto, nblocks, i + 1,
 					i + 1 + (nto - nfrom), ndiffblocks);
 			return;
@@ -1056,7 +1080,7 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				continue;
 			}
 			size_t diffsize;
-			wp_log(WP_DEBUG, "Diff construction start\n");
+			wp_log(WP_DEBUG, "Diff construction start");
 			construct_diff(cur->file_size, (size_t)intv_min,
 					(size_t)intv_max, cur->file_mem_mirror,
 					cur->file_mem_local, &diffsize,
@@ -1064,7 +1088,7 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			// update mirror
 			apply_diff(cur->file_size, cur->file_mem_mirror,
 					diffsize, cur->file_diff_buffer);
-			wp_log(WP_DEBUG, "Diff construction end: %ld/%ld\n",
+			wp_log(WP_DEBUG, "Diff construction end: %ld/%ld",
 					diffsize, cur->file_size);
 			if (diffsize > 0) {
 				int nt = (*ntransfers)++;
@@ -1082,7 +1106,7 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 							!cur->pipe_rclosed)) {
 				cur->pipe_onlyhere = false;
 				wp_log(WP_DEBUG,
-						"Adding update to pipe RID=%d, with %ld bytes, close %c\n",
+						"Adding update to pipe RID=%d, with %ld bytes, close %c",
 						cur->remote_id,
 						cur->pipe_recv.used,
 						(cur->pipe_lclosed &&
@@ -1170,8 +1194,7 @@ void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 		struct transfer transfers[])
 {
 	if (msglen % 8 != 0) {
-		wp_log(WP_ERROR,
-				"Unpacking uneven message, size %ld=%ld mod 8\n",
+		wp_log(WP_ERROR, "Unpacking uneven message, size %ld=%ld mod 8",
 				msglen, msglen % 8);
 		*nids = 0;
 		*ntransfers = 0;
@@ -1200,7 +1223,7 @@ void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 			size_t nlongs = ((size_t)sd->size + 7) / 8;
 			if (nlongs > msglen / 8) {
 				wp_log(WP_ERROR,
-						"Excessively long buffer: length: %ld x uint64_t\n",
+						"Excessively long buffer: length: %ld x uint64_t",
 						nlongs);
 				return;
 			}
@@ -1237,7 +1260,7 @@ void untranslate_ids(struct fd_translation_map *map, int nids, const int ids[],
 		}
 		if (!found) {
 			wp_log(WP_ERROR,
-					"Could not untranslate remote id %d in map. Application will probably crash.\n",
+					"Could not untranslate remote id %d in map. Application will probably crash.",
 					the_id);
 			fds[i] = -1;
 		}
@@ -1260,15 +1283,14 @@ static void apply_update(
 	if (found) {
 		if (cur->type == FDC_FILE) {
 			if (transf->type != cur->type) {
-				wp_log(WP_ERROR,
-						"Transfer type mismatch %d %d\n",
+				wp_log(WP_ERROR, "Transfer type mismatch %d %d",
 						transf->type, cur->type);
 			}
 
 			// `memsize+8` is the worst-case diff expansion
 			if (transf->size > cur->file_size + 8) {
 				wp_log(WP_ERROR,
-						"Transfer size mismatch %ld %ld\n",
+						"Transfer size mismatch %ld %ld",
 						transf->size, cur->file_size);
 			}
 			apply_diff(cur->file_size, cur->file_mem_mirror,
@@ -1284,7 +1306,7 @@ static void apply_update(
 					transf->type == FDC_PIPE_IW;
 			if (!rw_match && !iw_match && !ir_match) {
 				wp_log(WP_ERROR,
-						"Transfer type contramismatch %d %d\n",
+						"Transfer type contramismatch %d %d",
 						transf->type, cur->type);
 			}
 
@@ -1319,7 +1341,7 @@ static void apply_update(
 		return;
 	}
 
-	wp_log(WP_DEBUG, "Introducing new fd, remoteid=%d\n", transf->obj_id);
+	wp_log(WP_DEBUG, "Introducing new fd, remoteid=%d", transf->obj_id);
 	struct shadow_fd *shadow = calloc(1, sizeof(struct shadow_fd));
 	shadow->next = map->list;
 	map->list = shadow;
@@ -1348,13 +1370,13 @@ static void apply_update(
 				O_RDWR | O_CREAT | O_TRUNC, 0644);
 		if (shadow->fd_local == -1) {
 			wp_log(WP_ERROR,
-					"Failed to create shm file for object %d: %s\n",
+					"Failed to create shm file for object %d: %s",
 					shadow->remote_id, strerror(errno));
 			return;
 		}
 		if (ftruncate(shadow->fd_local, shadow->file_size) == -1) {
 			wp_log(WP_ERROR,
-					"Failed to resize shm file %s to size %ld for reason: %s\n",
+					"Failed to resize shm file %s to size %ld for reason: %s",
 					shadow->file_shm_buf_name,
 					shadow->file_size, strerror(errno));
 			return;
@@ -1370,14 +1392,13 @@ static void apply_update(
 			if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipedes) ==
 					-1) {
 				wp_log(WP_ERROR,
-						"Failed to create a socketpair: %s\n",
+						"Failed to create a socketpair: %s",
 						strerror(errno));
 				return;
 			}
 		} else {
 			if (pipe(pipedes) == -1) {
-				wp_log(WP_ERROR,
-						"Failed to create a pipe: %s\n",
+				wp_log(WP_ERROR, "Failed to create a pipe: %s",
 						strerror(errno));
 				return;
 			}
@@ -1404,7 +1425,7 @@ static void apply_update(
 
 		if (set_fnctl_flag(shadow->pipe_fd, O_NONBLOCK) == -1) {
 			wp_log(WP_ERROR,
-					"Failed to make private pipe end nonblocking: %s\n",
+					"Failed to make private pipe end nonblocking: %s",
 					strerror(errno));
 			return;
 		}
@@ -1414,7 +1435,7 @@ static void apply_update(
 		shadow->pipe_recv.data = calloc(shadow->pipe_recv.size, 1);
 		shadow->pipe_onlyhere = false;
 	} else {
-		wp_log(WP_ERROR, "Creating unknown file type updates\n");
+		wp_log(WP_ERROR, "Creating unknown file type updates");
 	}
 }
 void apply_updates(struct fd_translation_map *map, int ntransfers,
@@ -1458,8 +1479,7 @@ void wait_on_children(struct kstack **children, int options)
 	struct kstack **prv = children;
 	while (cur) {
 		if (waitpid(cur->pid, NULL, options) > 0) {
-			wp_log(WP_DEBUG, "Child handler %d has died\n",
-					cur->pid);
+			wp_log(WP_DEBUG, "Child handler %d has died", cur->pid);
 			struct kstack *nxt = cur->nxt;
 			free(cur);
 			cur = nxt;
@@ -1561,7 +1581,7 @@ void mark_pipe_object_statuses(
 		struct shadow_fd *sfd = get_shadow_for_pipe_fd(map, lfd);
 		if (!sfd) {
 			wp_log(WP_ERROR,
-					"Failed to find shadow struct for .pipe_fd=%d\n",
+					"Failed to find shadow struct for .pipe_fd=%d",
 					lfd);
 			continue;
 		}
@@ -1583,7 +1603,7 @@ void flush_writable_pipes(struct fd_translation_map *map)
 		if (fdcat_ispipe(cur->type) && cur->pipe_writable &&
 				cur->pipe_send.used > 0) {
 			cur->pipe_writable = false;
-			wp_log(WP_DEBUG, "Flushing %ld bytes into RID=%d\n",
+			wp_log(WP_DEBUG, "Flushing %ld bytes into RID=%d",
 					cur->pipe_send.used, cur->remote_id);
 			ssize_t changed =
 					write(cur->pipe_fd, cur->pipe_send.data,
@@ -1591,11 +1611,11 @@ void flush_writable_pipes(struct fd_translation_map *map)
 
 			if (changed == -1) {
 				wp_log(WP_ERROR,
-						"Failed to write into pipe with remote_id=%d: %s\n",
+						"Failed to write into pipe with remote_id=%d: %s",
 						cur->remote_id,
 						strerror(errno));
 			} else if (changed == 0) {
-				wp_log(WP_DEBUG, "Zero write event\n");
+				wp_log(WP_DEBUG, "Zero write event");
 			} else {
 				cur->pipe_send.used -= changed;
 				if (cur->pipe_send.used) {
@@ -1626,14 +1646,14 @@ void read_readable_pipes(struct fd_translation_map *map)
 							cur->pipe_recv.used);
 			if (changed == -1) {
 				wp_log(WP_ERROR,
-						"Failed to read from pipe with remote_id=%d: %s\n",
+						"Failed to read from pipe with remote_id=%d: %s",
 						cur->remote_id,
 						strerror(errno));
 			} else if (changed == 0) {
-				wp_log(WP_DEBUG, "Zero write event\n");
+				wp_log(WP_DEBUG, "Zero write event");
 			} else {
 				wp_log(WP_DEBUG,
-						"Read %ld more bytes from RID=%d\n",
+						"Read %ld more bytes from RID=%d",
 						changed, cur->remote_id);
 				cur->pipe_recv.used += changed;
 			}
@@ -1695,7 +1715,7 @@ void parse_and_prune_messages(struct message_tracker *mt,
 		}
 		if (consumed_fds > 0 && action == MESSACT_DROP) {
 			wp_log(WP_ERROR,
-					"Dropping a message with sent fds -- unimplemented\n");
+					"Dropping a message with sent fds -- unimplemented");
 			break;
 		}
 		fdpos += consumed_fds;
@@ -1708,7 +1728,7 @@ void parse_and_prune_messages(struct message_tracker *mt,
 			writepos += consumed_bytes;
 		} else {
 			// I.e, forget that it was appended to the stream
-			wp_log(WP_DEBUG, "Dropping a message\n");
+			wp_log(WP_DEBUG, "Dropping a message");
 		}
 		anything_unknown |= effect_unknown;
 	}

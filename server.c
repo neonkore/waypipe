@@ -56,13 +56,12 @@ static int connect_to_channel(const char *socket_path)
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
 	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (chanfd == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s\n",
-				strerror(errno));
+		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
 		return -1;
 	}
 
 	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error connecting to socket (%s): %s\n",
+		wp_log(WP_ERROR, "Error connecting to socket (%s): %s",
 				socket_path, strerror(errno));
 		close(chanfd);
 		return -1;
@@ -73,13 +72,13 @@ static int connect_to_channel(const char *socket_path)
 int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 		char *const app_argv[])
 {
-	wp_log(WP_DEBUG, "I'm a server on %s, running: %s\n", socket_path,
+	wp_log(WP_DEBUG, "I'm a server on %s, running: %s", socket_path,
 			app_argv[0]);
 
 	if (strlen(socket_path) >=
 			sizeof(((struct sockaddr_un *)NULL)->sun_path)) {
 		wp_log(WP_ERROR,
-				"Socket path is too long and would be truncated: %s\n",
+				"Socket path is too long and would be truncated: %s",
 				socket_path);
 		return EXIT_FAILURE;
 	}
@@ -91,12 +90,12 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 	if (oneshot) {
 		int csockpair[2];
 		if (socketpair(AF_UNIX, SOCK_STREAM, 0, csockpair) == -1) {
-			wp_log(WP_ERROR, "Socketpair failed: %s\n",
+			wp_log(WP_ERROR, "Socketpair failed: %s",
 					strerror(errno));
 			return EXIT_FAILURE;
 		}
 		if (set_fnctl_flag(csockpair[0], FD_CLOEXEC) == -1) {
-			wp_log(WP_ERROR, "Fnctl failed: %s\n", strerror(errno));
+			wp_log(WP_ERROR, "Fnctl failed: %s", strerror(errno));
 			return EXIT_FAILURE;
 		}
 		wayland_socket = csockpair[1];
@@ -114,7 +113,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 	// Launch program
 	pid_t pid = fork();
 	if (pid == -1) {
-		wp_log(WP_ERROR, "Fork failed\n");
+		wp_log(WP_ERROR, "Fork failed");
 		if (!oneshot) {
 			unlink(displaypath);
 		}
@@ -137,7 +136,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 		}
 
 		execvp(app_argv[0], app_argv);
-		wp_log(WP_ERROR, "Failed to execvp \'%s\': %s\n", app_argv[0],
+		wp_log(WP_ERROR, "Failed to execvp \'%s\': %s", app_argv[0],
 				strerror(errno));
 		return EXIT_FAILURE;
 	}
@@ -146,7 +145,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 		close(wayland_socket);
 	}
 
-	wp_log(WP_DEBUG, "Server main!\n");
+	wp_log(WP_DEBUG, "Server main!");
 
 	int retval = EXIT_SUCCESS;
 	if (oneshot) {
@@ -155,7 +154,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 			unlink(socket_path);
 		}
 
-		wp_log(WP_DEBUG, "Oneshot connected\n");
+		wp_log(WP_DEBUG, "Oneshot connected");
 		if (chanfd != -1) {
 			retval = run_server_child(chanfd, server_link);
 		} else {
@@ -175,11 +174,11 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 			int wp = waitpid(pid, NULL, WNOHANG);
 			if (wp > 0) {
 				wp_log(WP_DEBUG,
-						"Child program has died, exiting\n");
+						"Child program has died, exiting");
 				retval = EXIT_SUCCESS;
 				break;
 			} else if (wp == -1) {
-				wp_log(WP_ERROR, "Failed in waitpid: %s\n",
+				wp_log(WP_ERROR, "Failed in waitpid: %s",
 						strerror(errno));
 				retval = EXIT_FAILURE;
 				break;
@@ -194,7 +193,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 					// If SIGINT, the loop ends
 					continue;
 				}
-				fprintf(stderr, "Poll failed: %s\n",
+				fprintf(stderr, "Poll failed: %s",
 						strerror(errno));
 				retval = EXIT_FAILURE;
 				break;
@@ -208,7 +207,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 					// The wakeup may have been spurious
 					continue;
 				}
-				wp_log(WP_ERROR, "Connection failure: %s\n",
+				wp_log(WP_ERROR, "Connection failure: %s",
 						strerror(errno));
 				retval = EXIT_FAILURE;
 				break;
@@ -232,7 +231,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 					run_server_child(chanfd, appfd);
 					return EXIT_SUCCESS;
 				} else if (npid == -1) {
-					wp_log(WP_DEBUG, "Fork failure\n");
+					wp_log(WP_DEBUG, "Fork failure");
 					retval = EXIT_FAILURE;
 					break;
 				} else {
@@ -254,7 +253,7 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 		}
 		close(wdisplay_socket);
 		// Wait for child processes to exit
-		wp_log(WP_DEBUG, "Waiting for child handlers\n");
+		wp_log(WP_DEBUG, "Waiting for child handlers");
 		wait_on_children(&children, shutdown_flag ? WNOHANG : 0);
 		// Free stack, in case we suddenly shutdown and fail to clean up
 		// children
@@ -269,8 +268,8 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 		unlink(displaypath);
 	}
 	// todo: scope manipulation, to ensure all cleanups are done
-	wp_log(WP_DEBUG, "Waiting for child process\n");
+	wp_log(WP_DEBUG, "Waiting for child process");
 	waitpid(pid, NULL, shutdown_flag ? WNOHANG : 0);
-	wp_log(WP_DEBUG, "Program ended\n");
+	wp_log(WP_DEBUG, "Program ended");
 	return retval;
 }

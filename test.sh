@@ -7,7 +7,7 @@ waypipe=`which waypipe`
 program=`which ${1:-weston-terminal}`
 
 debug=
-#debug=-d
+debug=-d
 
 # Orange=client, purple=server
 

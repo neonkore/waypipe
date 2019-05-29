@@ -28,7 +28,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -55,8 +54,8 @@ typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
 extern char waypipe_log_mode;
 extern log_cat_t waypipe_loglevel;
 
-// mutates a static local, hence can only be called singlethreaded
-const char *static_timestamp(void);
+void wp_log_handler(const char *file, int line, log_cat_t level,
+		const char *fmt, ...);
 
 #ifndef WAYPIPE_SRC_DIR_LENGTH
 #define WAYPIPE_SRC_DIR_LENGTH 0
@@ -64,10 +63,8 @@ const char *static_timestamp(void);
 // no trailing ;, user must supply
 #define wp_log(level, fmt, ...)                                                \
 	if ((level) >= waypipe_loglevel)                                       \
-	fprintf(stderr, "%c%d:%s [%s:%3d] " fmt, waypipe_log_mode, getpid(),   \
-			static_timestamp(),                                    \
-			((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,     \
-			__LINE__, ##__VA_ARGS__)
+	wp_log_handler(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,      \
+			__LINE__, (level), fmt, ##__VA_ARGS__)
 
 struct fd_translation_map {
 	struct shadow_fd *list;

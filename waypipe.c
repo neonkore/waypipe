@@ -242,7 +242,7 @@ int main(int argc, char **argv)
 		argc--;
 	}
 	waypipe_loglevel = debug ? WP_DEBUG : WP_ERROR;
-	waypipe_log_mode = is_client ? 'C' : 'S';
+	waypipe_log_mode = setup_ssh ? 'c' : (is_client ? 'C' : 'S');
 
 	// Setup signals
 	struct sigaction ia; // SIGINT: abort operations, and set a flag
@@ -254,11 +254,11 @@ int main(int argc, char **argv)
 	sigemptyset(&ca.sa_mask);
 	ca.sa_flags = SA_RESTART | SA_NOCLDSTOP;
 	if (sigaction(SIGINT, &ia, NULL) == -1) {
-		wp_log(WP_ERROR, "Failed to set signal action for SIGINT\n");
+		wp_log(WP_ERROR, "Failed to set signal action for SIGINT");
 		return EXIT_FAILURE;
 	}
 	if (sigaction(SIGCHLD, &ca, NULL) == -1) {
-		wp_log(WP_ERROR, "Failed to set signal action for SIGCHLD\n");
+		wp_log(WP_ERROR, "Failed to set signal action for SIGCHLD");
 		return EXIT_FAILURE;
 	}
 
@@ -292,7 +292,7 @@ int main(int argc, char **argv)
 
 			pid_t conn_pid = fork();
 			if (conn_pid == -1) {
-				wp_log(WP_ERROR, "Fork failure\n");
+				wp_log(WP_ERROR, "Fork failure");
 				return EXIT_FAILURE;
 			} else if (conn_pid == 0) {
 				int dstidx = locate_openssh_cmd_hostname(
@@ -310,10 +310,8 @@ int main(int argc, char **argv)
 				arglist[offset++] = "/usr/bin/ssh";
 				/* Force tty allocation. The user-override is a
 				 * -T flag. Unfortunately, -t disables newline
-				 * translation on the local side, so when using
-				 * debug messages, it is often nicer to store
-				 * stderr and display it somewhere else, to
-				 * avoid a staircasing effect when rendering
+				 * translation on the local side; see
+				 * `wp_log_handler`.
 				 */
 				arglist[offset++] = "-t";
 				arglist[offset++] = "-R";
@@ -341,7 +339,7 @@ int main(int argc, char **argv)
 
 				// execvp effectively frees arglist
 				execvp(arglist[0], arglist);
-				wp_log(WP_ERROR, "Fork failed\n");
+				wp_log(WP_ERROR, "Fork failed");
 				free(arglist);
 				return EXIT_FAILURE;
 
