@@ -1,7 +1,7 @@
 waypipe
 ================================================================================
 
-waypipe is a proxy for Wayland[0] clients. It forwards Wayland messages and
+`waypipe` is a proxy for Wayland[0] clients. It forwards Wayland messages and
 serializes changes to shared memory buffers over a single socket. This makes
 application forwarding similar to `ssh -X` [1] feasible.
 
@@ -10,42 +10,59 @@ application forwarding similar to `ssh -X` [1] feasible.
 
 ## Usage
 
-The invocation is currently somewhat complicated. Install `waypipe` on both
-systems. Use absolute paths for `waypipe` and `weston-terminal`, since PATH
-may not be the same on the remote system.
+`waypipe` should be installed on both the local and remote computers. There is
+a user-friendly command line pattern which prefixes a call to `ssh` and
+automatically sets up a reverse tunnel for protocol data. For example,
 
-    SRV=localhost
+    waypipe ssh -C user@theserver weston-terminal
+
+will run `ssh`, connect to `theserver`, and remotely run `weston-terminal`,
+using local and remote `waypipe` processes to synchronize the shared memory
+buffers used by Wayland clients between both computers. Command line arguments
+before `ssh` apply only to `waypipe`; those after `ssh` belong to `ssh`.
+
+Alternatively, one can set up the local and remote processes by hand, with the
+following set of shell commands:
 
     /usr/bin/waypipe -s /tmp/socket-local client &
-    ssh -R/tmp/socket-remote:/tmp/socket-local -t $SRV \
-        /usr/bin/waypipe -s /tmp/socket-remote server -- /usr/bin/weston-terminal
-    
+    ssh -R /tmp/socket-remote:/tmp/socket-local -t user@theserver \
+        /usr/bin/waypipe -s /tmp/socket-remote server -- \
+        /usr/bin/weston-terminal
     kill %1
-
-`waypipe` also provides a more abbreviated syntax for the above:
-
-    /usr/bin/waypipe ssh $SRV /usr/bin/weston-terminal
 
 ## Installing
 
-Build with meson[0]. Requirements:
+Build with meson[0]. A typical incantation is
 
+    cd /path/to/waypipe/..
+    mkdir build-waypipe
+    meson --buildtype debugoptimized waypipe build-waypipe
+    ninja -C build-waypipe install
+
+Requirements:
+
+* meson (>= 0.46 or possibly earlier. a backend for it (i.e, ninja) is
+  also needed)
 * wayland (>= 1.15, to support absolute paths in WAYLAND_DISPLAY)
-* scdoc (to generate a man page)
-* ssh (OpenSSH >= 6.7, for Unix domain socket forwarding)
+* wayland-protocols (>= 1.12, for the xdg-shell protocol, and others)
+* libffi
+* scdoc (optional, to generate a man page)
+* ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)
 
 [0] [https://mesonbuild.com/](https://mesonbuild.com/)
 [1] [https://git.sr.ht/~sircmpwn/scdoc](https://git.sr.ht/~sircmpwn/scdoc)
 
 ## Status
 
-This is just a prototype right now.[0] The source code, command-line interface,
-project name, primary branch, and git history may yet change completely. 
+This is just a prototype right now[0]. The source code[1], command-line
+interface, project name, primary branch, and git history may yet change
+completely. Bug reports and patches are always welcome.
 
 Any of the following will crash waypipe:
 
 * Different local/client and remote/server versions
-* Applications using non-shm-based protocols like linux_dmabuf
-* Differing byte orders 
+* Applications using unexpected protocols that pass file descriptors
+* Differing byte orders
 
 [0] [https://mstoeckl.com/notes/gsoc/blog.html](https://mstoeckl.com/notes/gsoc/blog.html)
+[1] [https://gitlab.freedesktop.org/mstoeckl/waypipe/](https://gitlab.freedesktop.org/mstoeckl/waypipe/)

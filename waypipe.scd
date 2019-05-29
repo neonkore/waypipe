@@ -27,10 +27,13 @@ like *ssh -X*.
 	Only permit a single connection, and exit when it is closed.
 
 *-s S, --socket S*
-	Use *S* as the path for the unix socket.
+	Use *S* as the path for the Unix socket.
+
+*-u, --unlink*
+	Only for server mode; unlink the Unix on shutdown.
 
 *-v, --version*
-	Show the version number and quit.
+	Print the version number and quit.
 
 # EXAMPLE 
 
