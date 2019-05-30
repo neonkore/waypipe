@@ -303,11 +303,85 @@ static void event_wl_buffer_release(void *data, struct wl_buffer *wl_buffer)
 static void request_wl_buffer_destroy(
 		struct wl_client *client, struct wl_resource *resource)
 {
-
 	struct context *context = get_context(client, resource);
 	(void)context;
 }
 
+static int get_shm_bytes_per_pixel(uint32_t format)
+{
+	switch (format) {
+	case WL_SHM_FORMAT_ARGB8888:
+	case WL_SHM_FORMAT_XRGB8888:
+		return 4;
+	case WL_SHM_FORMAT_C8:
+	case WL_SHM_FORMAT_RGB332:
+	case WL_SHM_FORMAT_BGR233:
+		return 1;
+	case WL_SHM_FORMAT_XRGB4444:
+	case WL_SHM_FORMAT_XBGR4444:
+	case WL_SHM_FORMAT_RGBX4444:
+	case WL_SHM_FORMAT_BGRX4444:
+	case WL_SHM_FORMAT_ARGB4444:
+	case WL_SHM_FORMAT_ABGR4444:
+	case WL_SHM_FORMAT_RGBA4444:
+	case WL_SHM_FORMAT_BGRA4444:
+	case WL_SHM_FORMAT_XRGB1555:
+	case WL_SHM_FORMAT_XBGR1555:
+	case WL_SHM_FORMAT_RGBX5551:
+	case WL_SHM_FORMAT_BGRX5551:
+	case WL_SHM_FORMAT_ARGB1555:
+	case WL_SHM_FORMAT_ABGR1555:
+	case WL_SHM_FORMAT_RGBA5551:
+	case WL_SHM_FORMAT_BGRA5551:
+	case WL_SHM_FORMAT_RGB565:
+	case WL_SHM_FORMAT_BGR565:
+		return 2;
+	case WL_SHM_FORMAT_RGB888:
+	case WL_SHM_FORMAT_BGR888:
+		return 3;
+	case WL_SHM_FORMAT_XBGR8888:
+	case WL_SHM_FORMAT_RGBX8888:
+	case WL_SHM_FORMAT_BGRX8888:
+	case WL_SHM_FORMAT_ABGR8888:
+	case WL_SHM_FORMAT_RGBA8888:
+	case WL_SHM_FORMAT_BGRA8888:
+	case WL_SHM_FORMAT_XRGB2101010:
+	case WL_SHM_FORMAT_XBGR2101010:
+	case WL_SHM_FORMAT_RGBX1010102:
+	case WL_SHM_FORMAT_BGRX1010102:
+	case WL_SHM_FORMAT_ARGB2101010:
+	case WL_SHM_FORMAT_ABGR2101010:
+	case WL_SHM_FORMAT_RGBA1010102:
+	case WL_SHM_FORMAT_BGRA1010102:
+		return 4;
+	case WL_SHM_FORMAT_YUYV:
+	case WL_SHM_FORMAT_YVYU:
+	case WL_SHM_FORMAT_UYVY:
+	case WL_SHM_FORMAT_VYUY:
+	case WL_SHM_FORMAT_AYUV:
+	case WL_SHM_FORMAT_NV12:
+	case WL_SHM_FORMAT_NV21:
+	case WL_SHM_FORMAT_NV16:
+	case WL_SHM_FORMAT_NV61:
+	case WL_SHM_FORMAT_YUV410:
+	case WL_SHM_FORMAT_YVU410:
+	case WL_SHM_FORMAT_YUV411:
+	case WL_SHM_FORMAT_YVU411:
+	case WL_SHM_FORMAT_YUV420:
+	case WL_SHM_FORMAT_YVU420:
+	case WL_SHM_FORMAT_YUV422:
+	case WL_SHM_FORMAT_YVU422:
+	case WL_SHM_FORMAT_YUV444:
+	case WL_SHM_FORMAT_YVU444:
+		wp_log(WP_ERROR,
+				"Encountered planar wl_shm format %x; marking entire buffer\n",
+				format);
+		return -1;
+	default:
+		wp_log(WP_ERROR, "Unidentified WL_SHM format %x\n", format);
+		return -1;
+	}
+}
 static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 		int *yhigh, const struct damage_record *rec, int buf_width,
 		int buf_height, int transform, int scale)
@@ -434,6 +508,19 @@ static void request_wl_surface_commit(
 	if (!context->on_display_side) {
 		sfd->is_dirty = true;
 		int intv_max = INT32_MIN, intv_min = INT32_MAX;
+		int bpp = get_shm_bytes_per_pixel(buf->shm_format);
+		if (bpp == -1) {
+			sfd->dirty_interval_max = INT32_MAX;
+			sfd->dirty_interval_min = INT32_MIN;
+			struct damage_record *rec = surface->damage_stack;
+			while (rec) {
+				struct damage_record *nxt = rec->next;
+				free(rec);
+				rec = nxt;
+			}
+			surface->damage_stack = NULL;
+			return;
+		}
 
 		// Translate damage stack into damage records for the fd buffer
 		struct damage_record *rec = surface->damage_stack;
@@ -453,9 +540,10 @@ static void request_wl_surface_commit(
 				yhigh = clamp(yhigh, 0, buf->shm_height);
 
 				int low = buf->shm_offset +
-					  buf->shm_stride * ylow + xlow;
+					  buf->shm_stride * ylow + bpp * xlow;
 				int high = buf->shm_offset +
-					   buf->shm_stride * yhigh + xhigh;
+					   buf->shm_stride * yhigh +
+					   bpp * xhigh;
 				intv_max = max(intv_max, high);
 				intv_min = min(intv_min, low);
 			}
