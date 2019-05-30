@@ -30,6 +30,7 @@ protocols = [
     ['gtk-primary-selection.xml'],
     ['input-method-unstable-v2.xml'],
     ['virtual-keyboard-unstable-v1.xml'],
+    ['wlr-screencopy-unstable-v1.xml'],
 ]
 
 protocols_src = []

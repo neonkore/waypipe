@@ -1077,6 +1077,13 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			if (!delta) {
 				continue;
 			}
+			if (!cur->file_diff_buffer) {
+				/* Create diff buffer by need for remote files
+				 */
+				cur->file_diff_buffer =
+						calloc(cur->file_size + 8, 1);
+			}
+
 			size_t diffsize;
 			wp_log(WP_DEBUG, "Diff construction start");
 			construct_diff(cur->file_size, (size_t)intv_min,

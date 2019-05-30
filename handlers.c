@@ -59,6 +59,8 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #include <presentation-time-server-defs.h>
 #include <virtual-keyboard-unstable-v1-client-defs.h>
 #include <virtual-keyboard-unstable-v1-server-defs.h>
+#include <wlr-screencopy-unstable-v1-client-defs.h>
+#include <wlr-screencopy-unstable-v1-server-defs.h>
 #include <xdg-shell-client-defs.h>
 #include <xdg-shell-server-defs.h>
 #undef WAYLAND_CLIENT_H
@@ -111,6 +113,16 @@ struct wp_surface {
 	int32_t transform;
 };
 
+struct wp_wlr_screencopy_frame {
+	struct wp_object base;
+	/* Link to a wp_buffer instead of its underlying data,
+	 * because if the buffer object is destroyed early, then
+	 * we do not want to accidentally write over a section of a shm_pool
+	 * which is now used for transport in the reverse direction.
+	 */
+	uint32_t buffer_id;
+};
+
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
 	if (object->type == &wl_shm_pool_interface) {
@@ -135,6 +147,10 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		if (r->owned_buffer) {
 			shadow_decref(map, r->owned_buffer);
 		}
+	} else if (object->type == &zwlr_screencopy_frame_v1_interface) {
+		struct wp_wlr_screencopy_frame *r =
+				(struct wp_wlr_screencopy_frame *)object;
+		(void)r;
 	}
 	free(object);
 }
@@ -152,6 +168,8 @@ struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
 		((struct wp_surface *)new_obj)->scale = 1;
 	} else if (type == &wl_keyboard_interface) {
 		new_obj = calloc(1, sizeof(struct wp_keyboard));
+	} else if (type == &zwlr_screencopy_frame_v1_interface) {
+		new_obj = calloc(1, sizeof(struct wp_wlr_screencopy_frame));
 	} else {
 		new_obj = calloc(1, sizeof(struct wp_object));
 	}
@@ -586,6 +604,69 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 	the_buffer->shm_format = format;
 }
 
+static void event_zwlr_screencopy_frame_v1_ready(void *data,
+		struct zwlr_screencopy_frame_v1 *zwlr_screencopy_frame_v1,
+		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
+{
+	struct context *context = get_context(data, zwlr_screencopy_frame_v1);
+	struct wp_wlr_screencopy_frame *frame =
+			(struct wp_wlr_screencopy_frame *)context->obj;
+	if (!frame->buffer_id) {
+		wp_log(WP_ERROR, "frame has no copy target");
+		return;
+	}
+	struct wp_object *obj = (struct wp_object *)listset_get(
+			&context->mt->objects, frame->buffer_id);
+	if (!obj) {
+		wp_log(WP_ERROR, "frame copy target no longer exists");
+		return;
+	}
+	if (obj->type != &wl_buffer_interface) {
+		wp_log(WP_ERROR, "frame copy target is not a wl_buffer");
+		return;
+	}
+	struct wp_buffer *buffer = (struct wp_buffer *)obj;
+	if (!buffer->owned_buffer) {
+		wp_log(WP_ERROR, "frame copy target does not own any buffers");
+		return;
+	}
+	struct shadow_fd *sfd = buffer->owned_buffer;
+	if (sfd->type != FDC_FILE) {
+		wp_log(WP_ERROR,
+				"rame copy target buffer file descriptor (RID=%d) was not file-like (type=%d)",
+				sfd->remote_id, sfd->type);
+		return;
+	}
+	if (!context->on_display_side) {
+		// The display side performs the update
+		return;
+	}
+	sfd->is_dirty = true;
+	/* The protocol guarantees that the buffer attributes match those of the
+	 * written frame */
+	int start = buffer->shm_offset;
+	int end = buffer->shm_offset + buffer->shm_height * buffer->shm_stride;
+	sfd->dirty_interval_min = min(start, sfd->dirty_interval_min);
+	sfd->dirty_interval_max = max(end, sfd->dirty_interval_max);
+
+	(void)tv_sec_lo;
+	(void)tv_sec_hi;
+	(void)tv_nsec;
+}
+static void request_zwlr_screencopy_frame_v1_copy(struct wl_client *client,
+		struct wl_resource *resource, struct wl_resource *buffer)
+{
+	struct context *context = get_context(client, resource);
+	struct wp_wlr_screencopy_frame *frame =
+			(struct wp_wlr_screencopy_frame *)context->obj;
+	struct wp_object *buf = (struct wp_object *)buffer;
+	if (buf->type != &wl_buffer_interface) {
+		wp_log(WP_ERROR, "frame copy destination is not a wl_buffer");
+		return;
+	}
+	frame->buffer_id = buf->obj_id;
+}
+
 static const struct wl_display_listener wl_display_event_handler = {
 		.error = event_wl_display_error,
 		.delete_id = event_wl_display_delete_id};
@@ -618,8 +699,13 @@ static const struct wl_shm_interface wl_shm_request_handler = {
 static const struct wl_shm_pool_interface wl_shm_pool_request_handler = {
 		.resize = request_wl_shm_pool_resize,
 		.create_buffer = request_wl_shm_pool_create_buffer,
-
 };
+static const struct zwlr_screencopy_frame_v1_listener
+		zwlr_screencopy_frame_v1_event_handler = {
+				.ready = event_zwlr_screencopy_frame_v1_ready};
+static const struct zwlr_screencopy_frame_v1_interface
+		zwlr_screencopy_frame_v1_request_handler = {
+				.copy = request_zwlr_screencopy_frame_v1_copy};
 
 const struct msg_handler handlers[] = {
 		{&wl_display_interface, &wl_display_event_handler,
@@ -630,6 +716,9 @@ const struct msg_handler handlers[] = {
 				&wl_buffer_request_handler},
 		{&wl_surface_interface, NULL, &wl_surface_request_handler},
 		{&wl_keyboard_interface, &wl_keyboard_event_handler, NULL},
+		{&zwlr_screencopy_frame_v1_interface,
+				&zwlr_screencopy_frame_v1_event_handler,
+				&zwlr_screencopy_frame_v1_request_handler},
 
 		/* List all other known global object interface types, so
 		 * that the parsing code can identify all fd usages */
@@ -653,6 +742,8 @@ const struct msg_handler handlers[] = {
 		{&zwp_input_method_manager_v2_interface, NULL, NULL},
 		// linux-dmabuf
 		{&zwp_linux_dmabuf_v1_interface, NULL, NULL},
+		// linux-dmabuf
+		{&zwlr_screencopy_manager_v1_interface, NULL, NULL},
 
 		{NULL, NULL, NULL}};
 const struct wl_interface *the_display_interface = &wl_display_interface;
