@@ -245,6 +245,7 @@ struct context {
 	/* If true, running as waypipe client, and interfacing with compositor's
 	 * buffers */
 	bool on_display_side;
+	uint32_t *payload;
 };
 
 /**
@@ -282,10 +283,12 @@ enum message_action {
  * The return value is false iff the given message should be dropped.
  * The flag `unidentified_changes` is set to true if the message does
  * not correspond to a known protocol.
+ *
+ * The message data payload may be modified.
  */
 enum message_action handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, const void *data, int data_len,
+		bool from_client, void *data, int data_len,
 		int *consumed_length, const int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes);
 

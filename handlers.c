@@ -22,6 +22,8 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+
+#define _XOPEN_SOURCE 700
 #include <wayland-util.h>
 
 /* TODO: eventually, create a mode for wayland-scanner that produces just the
@@ -70,6 +72,7 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static inline struct context *get_context(void *first_arg, void *second_arg)
 {
@@ -123,6 +126,18 @@ struct wp_wlr_screencopy_frame {
 	uint32_t buffer_id;
 };
 
+struct waypipe_presentation {
+	struct wp_object base;
+
+	int clock_id;
+	// reference clock - given clock
+	long clock_delta_nsec;
+};
+struct waypipe_presentation_feedback {
+	struct wp_object base;
+	long clock_delta_nsec;
+};
+
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
 	if (object->type == &wl_shm_pool_interface) {
@@ -151,6 +166,8 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		struct wp_wlr_screencopy_frame *r =
 				(struct wp_wlr_screencopy_frame *)object;
 		(void)r;
+	} else if (object->type == &wp_presentation_interface) {
+	} else if (object->type == &wp_presentation_feedback_interface) {
 	}
 	free(object);
 }
@@ -170,6 +187,11 @@ struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
 		new_obj = calloc(1, sizeof(struct wp_keyboard));
 	} else if (type == &zwlr_screencopy_frame_v1_interface) {
 		new_obj = calloc(1, sizeof(struct wp_wlr_screencopy_frame));
+	} else if (type == &wp_presentation_interface) {
+		new_obj = calloc(1, sizeof(struct waypipe_presentation));
+	} else if (type == &wp_presentation_feedback_interface) {
+		new_obj = calloc(1,
+				sizeof(struct waypipe_presentation_feedback));
 	} else {
 		new_obj = calloc(1, sizeof(struct wp_object));
 	}
@@ -250,6 +272,17 @@ static void request_wl_registry_bind(struct wl_client *client,
 		if (!strcmp(interface, handlers[i].interface->name)) {
 			// Set the object type
 			the_object->type = handlers[i].interface;
+			if (handlers[i].interface ==
+					&wp_presentation_interface) {
+				// Replace the object with a specialized version
+				listset_remove(&context->mt->objects,
+						the_object);
+				free(the_object);
+				the_object = create_wp_object(
+						id, &wp_presentation_interface);
+				listset_insert(&context->mt->objects,
+						the_object);
+			}
 			return;
 		}
 	}
@@ -281,19 +314,17 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 {
 	if (scale <= 0) {
 		wp_log(WP_ERROR,
-				"Not applying damage due to invalid buffer scale (%d)\n",
+				"Not applying damage due to invalid buffer scale (%d)",
 				scale);
 		return -1;
 	}
 	if (transform < 0 || transform > 8) {
 		wp_log(WP_ERROR,
-				"Not applying damage due to invalid buffer transform (%d)\n",
+				"Not applying damage due to invalid buffer transform (%d)",
 				transform);
 		return -1;
 	}
 	if (rec->buffer_coordinates) {
-		wp_log(WP_ERROR, "%d %d %d %d", rec->x, rec->y, rec->width,
-				rec->height);
 		*xlow = rec->x;
 		*xhigh = rec->x + rec->width;
 		*ylow = rec->y;
@@ -567,7 +598,7 @@ static void request_wl_shm_pool_resize(struct wl_client *client,
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
 
 	if (!the_shm_pool->owned_buffer) {
-		wp_log(WP_ERROR, "Pool to be resize owns no buffer");
+		wp_log(WP_ERROR, "Pool to be resized owns no buffer");
 		return;
 	}
 	if ((int32_t)the_shm_pool->owned_buffer->file_size >= size) {
@@ -667,6 +698,81 @@ static void request_zwlr_screencopy_frame_v1_copy(struct wl_client *client,
 	frame->buffer_id = buf->obj_id;
 }
 
+static long timespec_diff(struct timespec val, struct timespec sub)
+{
+	// Overflows only with 68 year error, insignificant
+	return (val.tv_sec - sub.tv_sec) * 1000000000L +
+	       (val.tv_nsec - sub.tv_nsec);
+}
+static void event_wp_presentation_clock_id(void *data,
+		struct wp_presentation *wp_presentation, uint32_t clk_id)
+{
+	struct context *context = get_context(data, wp_presentation);
+	struct waypipe_presentation *pres =
+			(struct waypipe_presentation *)context->obj;
+	pres->clock_id = (int)clk_id;
+	int reference_clock = CLOCK_REALTIME;
+
+	if (pres->clock_id == reference_clock) {
+		pres->clock_delta_nsec = 0;
+	} else {
+		/* Estimate the difference in baseline between clocks.
+		 * (TODO: Is there a syscall for this?) do median of 3? */
+		struct timespec t0, t1, t2;
+		clock_gettime(pres->clock_id, &t0);
+		clock_gettime(reference_clock, &t1);
+		clock_gettime(pres->clock_id, &t2);
+		long diff1m0 = timespec_diff(t1, t0);
+		long diff2m1 = timespec_diff(t2, t1);
+		pres->clock_delta_nsec = (diff1m0 - diff2m1) / 2;
+	}
+}
+static void request_wp_presentation_feedback(struct wl_client *client,
+		struct wl_resource *resource, struct wl_resource *surface,
+		uint32_t callback)
+{
+	struct context *context = get_context(client, resource);
+	struct waypipe_presentation *pres =
+			(struct waypipe_presentation *)context->obj;
+	struct waypipe_presentation_feedback *feedback =
+			(struct waypipe_presentation_feedback *)listset_get(
+					&context->mt->objects, callback);
+	(void)surface;
+
+	feedback->clock_delta_nsec = pres->clock_delta_nsec;
+}
+static void event_wp_presentation_feedback_presented(void *data,
+		struct wp_presentation_feedback *wp_presentation_feedback,
+		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec,
+		uint32_t refresh, uint32_t seq_hi, uint32_t seq_lo,
+		uint32_t flags)
+{
+	struct context *context = get_context(data, wp_presentation_feedback);
+	struct waypipe_presentation_feedback *feedback =
+			(struct waypipe_presentation_feedback *)context->obj;
+
+	(void)refresh;
+	(void)seq_hi;
+	(void)seq_lo;
+	(void)flags;
+
+	/* convert local to reference, on display side */
+	int dir = context->on_display_side ? 1 : -1;
+
+	uint64_t sec = tv_sec_lo + tv_sec_hi * 0x100000000L;
+	long nsec = tv_nsec;
+	nsec += dir * feedback->clock_delta_nsec;
+	sec = (uint64_t)((long)sec + nsec / 1000000000L);
+	nsec = nsec % 1000000000L;
+	if (nsec < 0) {
+		nsec += 1000000000L;
+		sec--;
+	}
+	context->payload[0] = (uint32_t)(sec / 0x100000000L);
+	context->payload[1] = (uint32_t)(sec % 0x100000000L);
+	context->payload[2] = (uint32_t)nsec;
+}
+
 static const struct wl_display_listener wl_display_event_handler = {
 		.error = event_wl_display_error,
 		.delete_id = event_wl_display_delete_id};
@@ -706,6 +812,13 @@ static const struct zwlr_screencopy_frame_v1_listener
 static const struct zwlr_screencopy_frame_v1_interface
 		zwlr_screencopy_frame_v1_request_handler = {
 				.copy = request_zwlr_screencopy_frame_v1_copy};
+static const struct wp_presentation_listener wp_presentation_event_handler = {
+		.clock_id = event_wp_presentation_clock_id};
+static const struct wp_presentation_interface wp_presentation_request_handler =
+		{.feedback = request_wp_presentation_feedback};
+static const struct wp_presentation_feedback_listener
+		wp_presentation_feedback_event_handler = {
+				.presented = event_wp_presentation_feedback_presented};
 
 const struct msg_handler handlers[] = {
 		{&wl_display_interface, &wl_display_event_handler,
@@ -719,6 +832,8 @@ const struct msg_handler handlers[] = {
 		{&zwlr_screencopy_frame_v1_interface,
 				&zwlr_screencopy_frame_v1_event_handler,
 				&zwlr_screencopy_frame_v1_request_handler},
+		{&wp_presentation_feedback_interface,
+				&wp_presentation_feedback_event_handler, NULL},
 
 		/* List all other known global object interface types, so
 		 * that the parsing code can identify all fd usages */
@@ -733,7 +848,8 @@ const struct msg_handler handlers[] = {
 		// xdg-shell
 		{&xdg_wm_base_interface, NULL, NULL},
 		// presentation-time
-		{&wp_presentation_interface, NULL, NULL},
+		{&wp_presentation_interface, &wp_presentation_event_handler,
+				&wp_presentation_request_handler},
 		// gtk-primary-selection
 		{&gtk_primary_selection_device_manager_interface, NULL, NULL},
 		// virtual-keyboard

@@ -313,7 +313,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 
 enum message_action handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool display_side,
-		bool from_client, const void *data, int data_len,
+		bool from_client, void *data, int data_len,
 		int *consumed_length, const int *fds, int fds_len,
 		int *n_consumed_fds, bool *unidentified_changes)
 {
@@ -392,8 +392,9 @@ enum message_action handle_message(struct message_tracker *mt,
 	ctx.obj = objh;
 	ctx.on_display_side = display_side;
 	ctx.drop_this_msg = false;
+	uint32_t *payload = ((uint32_t *)data) + 2;
+	ctx.payload = payload;
 
-	const uint32_t *payload = header + 2;
 	invoke_msg_handler(intf, msg, !from_client, payload, len / 4 - 2,
 			&fds[*n_consumed_fds], fds_len - *n_consumed_fds,
 			n_consumed_fds, fn, &ctx, mt);
