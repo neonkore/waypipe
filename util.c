@@ -1150,7 +1150,7 @@ void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
 	// TODO: network byte order everything, content aware, somewhere in the
 	// chain!
 
-	size_t size = sizeof(size_t); // including the header
+	size_t size = sizeof(uint64_t); // including the header
 	size += (size_t)nids * sizeof(struct pipe_elem_header);
 	for (int i = 0; i < ntransfers; i++) {
 		size_t num_longs = (transfers[i].size + 7) / 8;
@@ -1158,15 +1158,15 @@ void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
 	}
 
 	void *data = malloc(size);
-	size_t *cursor = data;
-	*cursor++ = size - sizeof(size_t); // size excluding this header
+	uint64_t *cursor = data;
+	*cursor++ = size - sizeof(uint64_t); // size excluding this header
 	for (int i = 0; i < nids; i++) {
 		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
 		sd->id = ids[i];
 		sd->type = -1;
 		sd->size = -1;
 		sd->special = 0;
-		cursor += sizeof(struct pipe_elem_header) / sizeof(size_t);
+		cursor += sizeof(struct pipe_elem_header) / sizeof(uint64_t);
 	}
 	for (int i = 0; i < ntransfers; i++) {
 		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
@@ -1186,7 +1186,7 @@ void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
 		}
 
 		size_t num_longs = (tsize + 7) / 8;
-		cursor += (sizeof(struct pipe_elem_header) / sizeof(size_t)) +
+		cursor += (sizeof(struct pipe_elem_header) / sizeof(uint64_t)) +
 			  num_longs;
 	}
 
@@ -1206,8 +1206,8 @@ void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 		return;
 	}
 	int ni = 0, nt = 0;
-	const size_t *cursor = (const size_t *)msg;
-	const size_t *end = (const size_t *)(msg + msglen);
+	const uint64_t *cursor = (const uint64_t *)msg;
+	const uint64_t *end = (const uint64_t *)(msg + msglen);
 	while (cursor < end) {
 		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
 		if (sd->size != -1) {
@@ -1233,14 +1233,14 @@ void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 				return;
 			}
 			cursor += (sizeof(struct pipe_elem_header) /
-						  sizeof(size_t)) +
+						  sizeof(uint64_t)) +
 				  nlongs;
 		} else {
 			// Add to list of file descriptors passed along
 			ids[ni++] = sd->id;
 
 			cursor += (sizeof(struct pipe_elem_header) /
-					sizeof(size_t));
+					sizeof(uint64_t));
 		}
 	}
 	*nids = ni;
@@ -1449,33 +1449,6 @@ void apply_updates(struct fd_translation_map *map, int ntransfers,
 	for (int i = 0; i < ntransfers; i++) {
 		apply_update(map, &transfers[i]);
 	}
-}
-ssize_t read_size_then_buf(int fd, char **msg)
-{
-	*msg = NULL;
-	ssize_t nbytes = 0;
-	ssize_t nrc = read(fd, &nbytes, sizeof(ssize_t));
-	if (nrc == 0) {
-		return 0;
-	}
-	if (nrc < (ssize_t)sizeof(ssize_t)) {
-		return -1;
-	}
-	char *tmpbuf = malloc((size_t)nbytes);
-	ssize_t nread = 0;
-	while (nread < nbytes) {
-		ssize_t nr = read(fd, tmpbuf + nread, (size_t)(nbytes - nread));
-		if (nr <= 0) {
-			break;
-		}
-		nread += nr;
-	}
-	if (nread < nbytes) {
-		free(tmpbuf);
-		return -1;
-	}
-	*msg = tmpbuf;
-	return nbytes;
 }
 
 void wait_on_children(struct kstack **children, int options)

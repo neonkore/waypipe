@@ -267,12 +267,12 @@ int main(int argc, char **argv)
 			if (!socketpath) {
 				socketpath = "/tmp/waypipe";
 			}
-			const size_t max_splen =
-					sizeof(((struct sockaddr_un *)NULL)
+			const int max_splen =
+					(int)sizeof(((struct sockaddr_un *)NULL)
 									->sun_path) -
 					22;
 			if (strlen(socketpath) > max_splen) {
-				fprintf(stderr, "Socket path prefix '%s' is too long (more than %ld bytes).\n",
+				fprintf(stderr, "Socket path prefix '%s' is too long (more than %d bytes).\n",
 						socketpath, max_splen);
 				return EXIT_FAILURE;
 			}
@@ -365,8 +365,8 @@ int main(int argc, char **argv)
 					strcpy(buf, shell);
 					default_server_argv[0] = buf;
 				} else {
-					fprintf(stderr, "Environment variable $SHELL is too long at %lu bytes\n",
-							strlen(shell));
+					fprintf(stderr, "Environment variable $SHELL is too long at %d bytes\n",
+							(int)strlen(shell));
 					return EXIT_FAILURE;
 				}
 			}
