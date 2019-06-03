@@ -994,17 +994,18 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
 /** Construct a very simple binary diff format, designed to be fast for small
  * changes in big files, and entire-file changes in essentially random files.
  * Tries not to read beyond the end of the input buffers, because they are often
- * mmap'd.
+ * mmap'd. Simultaneously updates the `base` buffer to match the `changed`
+ * buffer.
  *
  * Requires that `diff` point to a memory buffer of size `size + 8`.
  */
 static void construct_diff(size_t size, size_t range_min, size_t range_max,
-		const char *__restrict__ base, const char *__restrict__ changed,
+		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff)
 {
 	uint64_t nblocks = size / 8;
 	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
-	uint64_t *__restrict__ changed_blocks = (uint64_t *)changed;
+	const uint64_t *__restrict__ changed_blocks = (const uint64_t *)changed;
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
 	uint64_t ntrailing = size - 8 * nblocks;
 	uint64_t nskip = 0, ncopy = 0;
@@ -1021,24 +1022,28 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 	const uint64_t window_size = 128;
 	uint64_t last_header = 0;
 	for (uint64_t i = blockrange_min; i < blockrange_max; i++) {
+		uint64_t changed_val = changed_blocks[i];
+		uint64_t base_val = base_blocks[i];
 		if (skipping) {
-			if (base_blocks[i] != changed_blocks[i]) {
+			if (base_val != changed_val) {
 				skipping = false;
 				last_header = cursor++;
 				diff_blocks[last_header] = i << 32;
 				nskip = 0;
 
-				diff_blocks[cursor++] = changed_blocks[i];
+				diff_blocks[cursor++] = changed_val;
 				ncopy = 1;
+				base_blocks[i] = changed_val;
 			} else {
 				nskip++;
 			}
 		} else {
-			if (base_blocks[i] == changed_blocks[i]) {
+			if (base_val == changed_val) {
 				nskip++;
 			} else {
 				nskip = 0;
 			}
+			base_blocks[i] = changed_val;
 			if (nskip > window_size) {
 				skipping = true;
 				cursor -= (nskip - 1);
@@ -1046,7 +1051,7 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 				diff_blocks[last_header] |= i - (nskip - 1);
 				ncopy = 0;
 			} else {
-				diff_blocks[cursor++] = changed_blocks[i];
+				diff_blocks[cursor++] = changed_val;
 				ncopy++;
 			}
 		}
@@ -1059,6 +1064,7 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 	if (ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
 			diff[cursor * 8 + i] = changed[nblocks * 8 + i];
+			base[cursor * 8 + i] = changed[nblocks * 8 + i];
 		}
 	}
 	*diffsize = cursor * 8 + ntrailing;
@@ -1159,9 +1165,6 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 					(size_t)intv_max, cur->file_mem_mirror,
 					cur->file_mem_local, &diffsize,
 					cur->file_diff_buffer);
-			// update mirror
-			apply_diff(cur->file_size, cur->file_mem_mirror,
-					diffsize, cur->file_diff_buffer);
 			wp_log(WP_DEBUG, "Diff construction end: %ld/%ld",
 					diffsize, cur->file_size);
 			if (diffsize > 0) {
@@ -1225,10 +1228,6 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 							cur->dmabuf_size,
 							cur->dmabuf_mem_mirror,
 							data, &diffsize,
-							cur->dmabuf_diff_buffer);
-					apply_diff(cur->dmabuf_size,
-							cur->dmabuf_mem_mirror,
-							diffsize,
 							cur->dmabuf_diff_buffer);
 					wp_log(WP_DEBUG,
 							"Diff construction end: %ld/%ld",
