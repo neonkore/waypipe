@@ -1,23 +1,22 @@
 wl_protocol_dir = wayland_protos.get_pkgconfig_variable('pkgdatadir')
 wayland_dir = wayland_client.get_pkgconfig_variable('pkgdatadir')
 
-# require >= 1.14.91 for 'public-code' option
-wayland_scanner = find_program('wayland-scanner')
+wayland_scanner_prog = find_program(wayland_scanner.get_pkgconfig_variable('wayland_scanner'))
 
 wayland_scanner_data = generator(
-	wayland_scanner,
+	wayland_scanner_prog,
 	output: '@BASENAME@-data.c',
 	arguments: ['public-code', '@INPUT@', '@OUTPUT@'],
 )
 
 # TODO: modify wayland scanner to produce only the required information to trace the protocol
 wayland_scanner_client = generator(
-	wayland_scanner,
+	wayland_scanner_prog,
 	output: '@BASENAME@-client-defs.h',
 	arguments: ['client-header', '@INPUT@', '@OUTPUT@'],
 )
 wayland_scanner_server = generator(
-	wayland_scanner,
+	wayland_scanner_prog,
 	output: '@BASENAME@-server-defs.h',
 	arguments: ['server-header', '@INPUT@', '@OUTPUT@'],
 )
@@ -31,6 +30,7 @@ protocols = [
     ['input-method-unstable-v2.xml'],
     ['virtual-keyboard-unstable-v1.xml'],
     ['wlr-screencopy-unstable-v1.xml'],
+    ['wayland-drm.xml'],
 ]
 
 protocols_src = []

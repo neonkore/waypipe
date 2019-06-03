@@ -61,6 +61,8 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #include <presentation-time-server-defs.h>
 #include <virtual-keyboard-unstable-v1-client-defs.h>
 #include <virtual-keyboard-unstable-v1-server-defs.h>
+#include <wayland-drm-client-defs.h>
+#include <wayland-drm-server-defs.h>
 #include <wlr-screencopy-unstable-v1-client-defs.h>
 #include <wlr-screencopy-unstable-v1-server-defs.h>
 #include <xdg-shell-client-defs.h>
@@ -85,15 +87,31 @@ struct wp_shm_pool {
 	struct shadow_fd *owned_buffer;
 };
 
+enum buffer_type { BUF_SHM, BUF_DMA };
+
+// This should be a safe limit for the maximum number of dmabuf planes
+#define MAX_DMABUF_PLANES 8
+
 struct wp_buffer {
 	struct wp_object base;
-	struct shadow_fd *owned_buffer;
 
+	enum buffer_type type;
+	struct shadow_fd *shm_buffer;
 	int32_t shm_offset;
 	int32_t shm_width;
 	int32_t shm_height;
 	int32_t shm_stride;
 	uint32_t shm_format;
+
+	int dmabuf_nplanes;
+	int32_t dmabuf_width;
+	int32_t dmabuf_height;
+	uint32_t dmabuf_format;
+	uint32_t dmabuf_flags;
+	struct shadow_fd *dmabuf_buffers[MAX_DMABUF_PLANES];
+	uint32_t dmabuf_offsets[MAX_DMABUF_PLANES];
+	uint32_t dmabuf_strides[MAX_DMABUF_PLANES];
+	uint64_t dmabuf_modifiers[MAX_DMABUF_PLANES];
 };
 
 struct wp_keyboard {
@@ -129,15 +147,46 @@ struct wp_wlr_screencopy_frame {
 struct waypipe_presentation {
 	struct wp_object base;
 
-	int clock_id;
 	// reference clock - given clock
 	long clock_delta_nsec;
+	int clock_id;
 };
 struct waypipe_presentation_feedback {
 	struct wp_object base;
 	long clock_delta_nsec;
 };
 
+struct wp_linux_dmabuf_params {
+	struct wp_object base;
+
+	struct shadow_fd *sfds;
+
+	// These variables are set by 'params.create', and passed on in
+	// params.created
+	int32_t create_width;
+	int32_t create_height;
+	uint32_t create_format;
+	uint32_t create_flags;
+
+	struct shadow_fd *add_buffers[MAX_DMABUF_PLANES];
+	uint32_t add_offsets[MAX_DMABUF_PLANES];
+	uint32_t add_strides[MAX_DMABUF_PLANES];
+	uint64_t add_modifiers[MAX_DMABUF_PLANES];
+	int nplanes;
+};
+
+static void free_damage_stack(struct damage_record **root)
+{
+	if (root && *root) {
+		struct damage_record *r = *root;
+		while (r) {
+			struct damage_record *nxt = r->next;
+			free(r);
+			r = nxt;
+		}
+		*root = NULL;
+	}
+}
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
 	if (object->type == &wl_shm_pool_interface) {
@@ -147,16 +196,17 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		}
 	} else if (object->type == &wl_buffer_interface) {
 		struct wp_buffer *r = (struct wp_buffer *)object;
-		if (r->owned_buffer) {
-			shadow_decref(map, r->owned_buffer);
+		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
+			if (r->dmabuf_buffers[i]) {
+				shadow_decref(map, r->dmabuf_buffers[i]);
+			}
+		}
+		if (r->shm_buffer) {
+			shadow_decref(map, r->shm_buffer);
 		}
 	} else if (object->type == &wl_surface_interface) {
 		struct wp_surface *r = (struct wp_surface *)object;
-		while (r->damage_stack) {
-			struct damage_record *nxt = r->damage_stack->next;
-			free(r->damage_stack);
-			r->damage_stack = nxt;
-		}
+		free_damage_stack(&r->damage_stack);
 	} else if (object->type == &wl_keyboard_interface) {
 		struct wp_keyboard *r = (struct wp_keyboard *)object;
 		if (r->owned_buffer) {
@@ -168,6 +218,14 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		(void)r;
 	} else if (object->type == &wp_presentation_interface) {
 	} else if (object->type == &wp_presentation_feedback_interface) {
+	} else if (object->type == &zwp_linux_buffer_params_v1_interface) {
+		struct wp_linux_dmabuf_params *r =
+				(struct wp_linux_dmabuf_params *)object;
+		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
+			if (r->add_buffers[i]) {
+				shadow_decref(map, r->add_buffers[i]);
+			}
+		}
 	}
 	free(object);
 }
@@ -192,6 +250,8 @@ struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
 	} else if (type == &wp_presentation_feedback_interface) {
 		new_obj = calloc(1,
 				sizeof(struct waypipe_presentation_feedback));
+	} else if (type == &zwp_linux_buffer_params_v1_interface) {
+		new_obj = calloc(1, sizeof(struct wp_linux_dmabuf_params));
 	} else {
 		new_obj = calloc(1, sizeof(struct wp_object));
 	}
@@ -239,15 +299,32 @@ static void event_wl_registry_global(void *data,
 		const char *interface, uint32_t version)
 {
 	struct context *context = get_context(data, wl_registry);
-	bool hide_me = false;
-	hide_me |= !strcmp(interface, "wl_drm");
-	hide_me |= !strcmp(interface, "zwp_linux_dmabuf_v1");
-	hide_me |= !strcmp(interface, "zwlr_export_dmabuf_manager_v1");
-	// deprecated, and waypipe doesn't have logic for it anyway
-	hide_me |= !strcmp(interface, "wl_shell");
+	bool requires_rnode = false;
+	requires_rnode |= !strcmp(interface, "wl_drm");
+	requires_rnode |= !strcmp(interface, "zwp_linux_dmabuf_v1");
+	requires_rnode |= !strcmp(interface, "zwlr_export_dmabuf_manager_v1");
+	if (requires_rnode) {
+		if (init_render_data(&context->map->rdata) == -1) {
+			/* A gpu connection supported by waypipe is required on
+			 * both sides, since data transfers may occur in both
+			 * directions, and
+			 * modifying textures may require driver support */
+			wp_log(WP_DEBUG,
+					"Discarding protocol advertisement for %s, render node support disabled",
+					interface);
+			context->drop_this_msg = true;
+			return;
+		}
+	}
 
-	if (hide_me) {
-		wp_log(WP_DEBUG, "Hiding %s advertisement", interface);
+	bool unsupported = false;
+	// todo: needs a working and portable test client
+	unsupported |= !strcmp(interface, "zwlr_export_dmabuf_manager_v1");
+	// deprecated, and waypipe doesn't have logic for it anyway
+	unsupported |= !strcmp(interface, "wl_shell");
+	if (unsupported) {
+		wp_log(WP_DEBUG, "Hiding %s advertisement, unsupported",
+				interface);
 		context->drop_this_msg = true;
 	}
 
@@ -374,11 +451,11 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 	case WL_SHM_FORMAT_YUV444:
 	case WL_SHM_FORMAT_YVU444:
 		wp_log(WP_ERROR,
-				"Encountered planar wl_shm format %x; marking entire buffer\n",
+				"Encountered planar wl_shm format %x; marking entire buffer",
 				format);
 		return -1;
 	default:
-		wp_log(WP_ERROR, "Unidentified WL_SHM format %x\n", format);
+		wp_log(WP_ERROR, "Unidentified WL_SHM format %x", format);
 		return -1;
 	}
 }
@@ -459,8 +536,9 @@ static void request_wl_surface_attach(struct wl_client *client,
 	(void)y;
 	struct wp_object *bufobj = (struct wp_object *)buffer;
 	if (!bufobj) {
-		// todo: if nullable, handle error/abort earlier in the chain
-		wp_log(WP_ERROR, "Buffer to be attached is null");
+		/* A null buffer can legitimately be send to remove surface
+		 * contents, presumably with shell-defined semantics */
+		wp_log(WP_DEBUG, "Buffer to be attached is null");
 		return;
 	}
 	if (bufobj->type != &wl_buffer_interface) {
@@ -484,6 +562,10 @@ static void request_wl_surface_commit(
 		 */
 		return;
 	}
+	if (context->on_display_side) {
+		/* commit signifies a client-side update only */
+		return;
+	}
 	struct wp_object *obj = listset_get(
 			&context->mt->objects, surface->attached_buffer_id);
 	if (!obj) {
@@ -496,7 +578,33 @@ static void request_wl_surface_commit(
 		return;
 	}
 	struct wp_buffer *buf = (struct wp_buffer *)obj;
-	struct shadow_fd *sfd = buf->owned_buffer;
+	if (buf->type == BUF_DMA) {
+		for (int i = 0; i < buf->dmabuf_nplanes; i++) {
+			struct shadow_fd *sfd = buf->dmabuf_buffers[i];
+			if (!sfd) {
+				wp_log(WP_ERROR,
+						"dmabuf surface buffer is missing plane %d",
+						i);
+				continue;
+			}
+			if (sfd->type != FDC_DMABUF) {
+				wp_log(WP_ERROR,
+						"fd associated with dmabuf surface is not a dmabuf");
+				continue;
+			}
+
+			// detailed damage tracking is not yet supported
+			sfd->is_dirty = true;
+			sfd->dirty_interval_max = INT32_MAX;
+			sfd->dirty_interval_min = INT32_MIN;
+		}
+		return;
+	} else if (buf->type != BUF_SHM) {
+		wp_log(WP_ERROR,
+				"wp_buffer is backed neither by DMA nor SHM, not yet supported");
+		return;
+	}
+	struct shadow_fd *sfd = buf->shm_buffer;
 	if (!sfd) {
 		wp_log(WP_ERROR, "wp_buffer to be committed  has no fd");
 		return;
@@ -505,60 +613,48 @@ static void request_wl_surface_commit(
 		wp_log(WP_ERROR, "fd associated with surface is not file-like");
 		return;
 	}
-	if (!context->on_display_side) {
-		sfd->is_dirty = true;
-		int intv_max = INT32_MIN, intv_min = INT32_MAX;
-		int bpp = get_shm_bytes_per_pixel(buf->shm_format);
-		if (bpp == -1) {
-			sfd->dirty_interval_max = INT32_MAX;
-			sfd->dirty_interval_min = INT32_MIN;
-			struct damage_record *rec = surface->damage_stack;
-			while (rec) {
-				struct damage_record *nxt = rec->next;
-				free(rec);
-				rec = nxt;
-			}
-			surface->damage_stack = NULL;
-			return;
-		}
-
-		// Translate damage stack into damage records for the fd buffer
-		struct damage_record *rec = surface->damage_stack;
-		while (rec) {
-			// TODO: take into account transformations
-			int xlow, xhigh, ylow, yhigh;
-			int r = compute_damage_coordinates(&xlow, &xhigh, &ylow,
-					&yhigh, rec, buf->shm_width,
-					buf->shm_height, surface->transform,
-					surface->scale);
-			if (r != -1) {
-				/* Clip the damage rectangle to the containing
-				 * buffer. */
-				xlow = clamp(xlow, 0, buf->shm_width);
-				xhigh = clamp(xhigh, 0, buf->shm_width);
-				ylow = clamp(ylow, 0, buf->shm_height);
-				yhigh = clamp(yhigh, 0, buf->shm_height);
-
-				int low = buf->shm_offset +
-					  buf->shm_stride * ylow + bpp * xlow;
-				int high = buf->shm_offset +
-					   buf->shm_stride * yhigh +
-					   bpp * xhigh;
-				intv_max = max(intv_max, high);
-				intv_min = min(intv_min, low);
-			}
-
-			struct damage_record *nxt = rec->next;
-			free(rec);
-			rec = nxt;
-		}
-		surface->damage_stack = NULL;
-
-		sfd->dirty_interval_max =
-				max(sfd->dirty_interval_max, intv_max);
-		sfd->dirty_interval_min =
-				min(sfd->dirty_interval_min, intv_min);
+	sfd->is_dirty = true;
+	int intv_max = INT32_MIN, intv_min = INT32_MAX;
+	int bpp = get_shm_bytes_per_pixel(buf->shm_format);
+	if (bpp == -1) {
+		sfd->dirty_interval_max = INT32_MAX;
+		sfd->dirty_interval_min = INT32_MIN;
+		free_damage_stack(&surface->damage_stack);
+		return;
 	}
+
+	// Translate damage stack into damage records for the fd buffer
+	struct damage_record *rec = surface->damage_stack;
+	while (rec) {
+		// TODO: take into account transformations
+		int xlow, xhigh, ylow, yhigh;
+		int r = compute_damage_coordinates(&xlow, &xhigh, &ylow, &yhigh,
+				rec, buf->shm_width, buf->shm_height,
+				surface->transform, surface->scale);
+		if (r != -1) {
+			/* Clip the damage rectangle to the containing
+			 * buffer. */
+			xlow = clamp(xlow, 0, buf->shm_width);
+			xhigh = clamp(xhigh, 0, buf->shm_width);
+			ylow = clamp(ylow, 0, buf->shm_height);
+			yhigh = clamp(yhigh, 0, buf->shm_height);
+
+			int low = buf->shm_offset + buf->shm_stride * ylow +
+				  bpp * xlow;
+			int high = buf->shm_offset + buf->shm_stride * yhigh +
+				   bpp * xhigh;
+			intv_max = max(intv_max, high);
+			intv_min = min(intv_min, low);
+		}
+
+		struct damage_record *nxt = rec->next;
+		free(rec);
+		rec = nxt;
+	}
+	surface->damage_stack = NULL;
+
+	sfd->dirty_interval_max = max(sfd->dirty_interval_max, intv_max);
+	sfd->dirty_interval_min = min(sfd->dirty_interval_min, intv_min);
 }
 static void request_wl_surface_destroy(
 		struct wl_client *client, struct wl_resource *resource)
@@ -714,8 +810,9 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 		return;
 	}
 
-	the_buffer->owned_buffer = the_shm_pool->owned_buffer;
-	the_buffer->owned_buffer->refcount++;
+	the_buffer->type = BUF_SHM;
+	the_buffer->shm_buffer = the_shm_pool->owned_buffer;
+	the_buffer->shm_buffer->refcount++;
 	the_buffer->shm_offset = offset;
 	the_buffer->shm_width = width;
 	the_buffer->shm_height = height;
@@ -745,15 +842,20 @@ static void event_zwlr_screencopy_frame_v1_ready(void *data,
 		return;
 	}
 	struct wp_buffer *buffer = (struct wp_buffer *)obj;
-	if (!buffer->owned_buffer) {
+	struct shadow_fd *sfd = buffer->shm_buffer;
+	if (!sfd) {
 		wp_log(WP_ERROR, "frame copy target does not own any buffers");
 		return;
 	}
-	struct shadow_fd *sfd = buffer->owned_buffer;
 	if (sfd->type != FDC_FILE) {
 		wp_log(WP_ERROR,
 				"rame copy target buffer file descriptor (RID=%d) was not file-like (type=%d)",
 				sfd->remote_id, sfd->type);
+		return;
+	}
+	if (buffer->type != BUF_SHM) {
+		wp_log(WP_ERROR,
+				"screencopy not yet supported for non-shm-backed buffers");
 		return;
 	}
 	if (!context->on_display_side) {
@@ -861,6 +963,191 @@ static void event_wp_presentation_feedback_presented(void *data,
 	context->payload[2] = (uint32_t)nsec;
 }
 
+static void event_wl_drm_device(
+		void *data, struct wl_drm *wl_drm, const char *name)
+{
+	struct context *context = get_context(data, wl_drm);
+	if (context->on_display_side) {
+		/* Replacing the (remote) DRM device path with a local render
+		 * node path only is useful on the application side */
+		return;
+	}
+
+	const char path[] = "/dev/dri/renderD128";
+	int path_len = strlen(path);
+	int payload_bytes = 4 + 4 * ((path_len + 1 + 3) / 4);
+	if (payload_bytes > context->payload_available_space) {
+		wp_log(WP_ERROR,
+				"Not enough space to modify DRM device advertisement from '%s' to '%s'",
+				name, path);
+		return;
+	}
+	context->payload_length = payload_bytes;
+	memset(context->payload, 0, (size_t)payload_bytes);
+	context->payload[0] = (uint32_t)path_len + 1;
+	memcpy(&context->payload[1], path, (size_t)path_len);
+}
+static void request_wl_drm_create_prime_buffer(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, int32_t name,
+		int32_t width, int32_t height, uint32_t format, int32_t offset0,
+		int32_t stride0, int32_t offset1, int32_t stride1,
+		int32_t offset2, int32_t stride2)
+{
+	struct context *context = get_context(client, resource);
+	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
+			&context->mt->objects, id);
+	struct shadow_fd *sfd = get_shadow_for_local_fd(context->map, name);
+	if (!sfd) {
+		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d", name);
+		return;
+	}
+	if (sfd->type != FDC_DMABUF) {
+		wp_log(WP_ERROR,
+				"keymap candidate RID=%d was not a dmabuf (type=%d)",
+				sfd->remote_id, sfd->type);
+		return;
+	}
+
+	buf->type = BUF_DMA;
+	buf->dmabuf_nplanes = 1;
+	buf->dmabuf_buffers[0] = sfd;
+	sfd->has_owner = true;
+	sfd->refcount++;
+	buf->dmabuf_width = width;
+	buf->dmabuf_height = height;
+	buf->dmabuf_format = format;
+	// handling multiple offsets (?)
+	buf->dmabuf_offsets[0] = (uint32_t)offset0;
+	buf->dmabuf_strides[0] = (uint32_t)stride0;
+	(void)offset1;
+	(void)offset2;
+	(void)stride1;
+	(void)stride2;
+}
+
+static void event_zwp_linux_dmabuf_v1_modifier(void *data,
+		struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf_v1,
+		uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo)
+{
+	struct context *context = get_context(data, zwp_linux_dmabuf_v1);
+	(void)format;
+	// Filter out formats with nonstandard memory layouts; they may not
+	// be portable between different GPU generations.
+	// (TODO: better configuration and heuristics for this)
+	if (modifier_hi || modifier_lo) {
+		context->drop_this_msg = true;
+	}
+}
+static void event_zwp_linux_buffer_params_v1_created(void *data,
+		struct zwp_linux_buffer_params_v1 *zwp_linux_buffer_params_v1,
+		struct wl_buffer *buffer)
+{
+	struct context *context = get_context(data, zwp_linux_buffer_params_v1);
+	struct wp_linux_dmabuf_params *params =
+			(struct wp_linux_dmabuf_params *)context->obj;
+	struct wp_buffer *buf = (struct wp_buffer *)buffer;
+	buf->type = BUF_DMA;
+	buf->dmabuf_nplanes = params->nplanes;
+	for (int i = 0; i < params->nplanes; i++) {
+		if (!params->add_buffers[i]) {
+			wp_log(WP_ERROR,
+					"dmabuf backed wl_buffer plane %d was missing",
+					i);
+			continue;
+		}
+		buf->dmabuf_buffers[i] = params->add_buffers[i];
+		buf->dmabuf_buffers[i]->refcount++;
+		buf->dmabuf_offsets[i] = params->add_offsets[i];
+		buf->dmabuf_strides[i] = params->add_strides[i];
+		buf->dmabuf_modifiers[i] = params->add_modifiers[i];
+	}
+	buf->dmabuf_flags = params->create_flags;
+	buf->dmabuf_width = params->create_width;
+	buf->dmabuf_height = params->create_height;
+	buf->dmabuf_format = params->create_format;
+}
+static void request_zwp_linux_buffer_params_v1_add(struct wl_client *client,
+		struct wl_resource *resource, int32_t fd, uint32_t plane_idx,
+		uint32_t offset, uint32_t stride, uint32_t modifier_hi,
+		uint32_t modifier_lo)
+{
+	struct context *context = get_context(client, resource);
+	struct wp_linux_dmabuf_params *params =
+			(struct wp_linux_dmabuf_params *)context->obj;
+	if (params->nplanes != (int)plane_idx) {
+		wp_log(WP_ERROR,
+				"Expected sequentially assigned plane fds: got new_idx=%d != %d=nplanes",
+				plane_idx, params->nplanes);
+		return;
+	}
+	if (params->nplanes >= MAX_DMABUF_PLANES) {
+		wp_log(WP_ERROR, "Too many planes");
+		return;
+	}
+	params->nplanes++;
+	// todo: delay 'translate_id' until now?, to pass in stride info?
+	struct shadow_fd *sfd = get_shadow_for_local_fd(context->map, fd);
+	if (!sfd) {
+		wp_log(WP_ERROR, "Failed to find shadow matching lfd=%d", fd);
+		return;
+	}
+	if (sfd->type != FDC_DMABUF) {
+		wp_log(WP_ERROR,
+				"keymap candidate RID=%d was not a dmabuf (type=%d)",
+				sfd->remote_id, sfd->type);
+		return;
+	}
+	params->add_buffers[plane_idx] = sfd;
+	sfd->has_owner = true;
+	sfd->refcount++;
+	params->add_offsets[plane_idx] = offset;
+	params->add_strides[plane_idx] = stride;
+	params->add_modifiers[plane_idx] =
+			modifier_lo + modifier_hi * 0x100000000uL;
+}
+static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
+		struct wl_resource *resource, int32_t width, int32_t height,
+		uint32_t format, uint32_t flags)
+{
+	struct context *context = get_context(client, resource);
+	struct wp_linux_dmabuf_params *params =
+			(struct wp_linux_dmabuf_params *)context->obj;
+	params->create_flags = flags;
+	params->create_width = width;
+	params->create_height = height;
+	params->create_format = format;
+}
+static void request_zwp_linux_buffer_params_v1_create_immed(
+		struct wl_client *client, struct wl_resource *resource,
+		uint32_t buffer_id, int32_t width, int32_t height,
+		uint32_t format, uint32_t flags)
+{
+	struct context *context = get_context(client, resource);
+	struct wp_linux_dmabuf_params *params =
+			(struct wp_linux_dmabuf_params *)context->obj;
+	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
+			&context->mt->objects, buffer_id);
+	buf->type = BUF_DMA;
+	buf->dmabuf_nplanes = params->nplanes;
+	for (int i = 0; i < params->nplanes; i++) {
+		if (!params->add_buffers[i]) {
+			wp_log(WP_ERROR,
+					"dmabuf backed wl_buffer plane %d was missing",
+					i);
+			continue;
+		}
+		buf->dmabuf_buffers[i] = params->add_buffers[i];
+		buf->dmabuf_buffers[i]->refcount++;
+		buf->dmabuf_offsets[i] = params->add_offsets[i];
+		buf->dmabuf_strides[i] = params->add_strides[i];
+		buf->dmabuf_modifiers[i] = params->add_modifiers[i];
+	}
+	buf->dmabuf_flags = flags;
+	buf->dmabuf_width = width;
+	buf->dmabuf_height = height;
+	buf->dmabuf_format = format;
+}
+
 static const struct wl_display_listener wl_display_event_handler = {
 		.error = event_wl_display_error,
 		.delete_id = event_wl_display_delete_id};
@@ -907,6 +1194,24 @@ static const struct wp_presentation_interface wp_presentation_request_handler =
 static const struct wp_presentation_feedback_listener
 		wp_presentation_feedback_event_handler = {
 				.presented = event_wp_presentation_feedback_presented};
+static const struct wl_drm_listener wl_drm_event_handler = {
+		.device = event_wl_drm_device};
+static const struct wl_drm_interface wl_drm_request_handler = {
+		/* the other 'create_buffer' methods require an authenticated
+		 * drm node, which we do never advertise */
+		.create_prime_buffer = request_wl_drm_create_prime_buffer};
+static const struct zwp_linux_dmabuf_v1_listener
+		zwp_linux_dmabuf_v1_event_handler = {
+				.modifier = event_zwp_linux_dmabuf_v1_modifier};
+static const struct zwp_linux_buffer_params_v1_listener
+		zwp_linux_buffer_params_v1_event_handler = {
+				.created = event_zwp_linux_buffer_params_v1_created};
+static const struct zwp_linux_buffer_params_v1_interface
+		zwp_linux_buffer_params_v1_request_handler = {
+				.add = request_zwp_linux_buffer_params_v1_add,
+				.create = request_zwp_linux_buffer_params_v1_create,
+				.create_immed = request_zwp_linux_buffer_params_v1_create_immed,
+};
 
 const struct msg_handler handlers[] = {
 		{&wl_display_interface, &wl_display_event_handler,
@@ -922,6 +1227,9 @@ const struct msg_handler handlers[] = {
 				&zwlr_screencopy_frame_v1_request_handler},
 		{&wp_presentation_feedback_interface,
 				&wp_presentation_feedback_event_handler, NULL},
+		{&zwp_linux_buffer_params_v1_interface,
+				&zwp_linux_buffer_params_v1_event_handler,
+				&zwp_linux_buffer_params_v1_request_handler},
 
 		/* List all other known global object interface types, so
 		 * that the parsing code can identify all fd usages */
@@ -945,9 +1253,13 @@ const struct msg_handler handlers[] = {
 		// input-method
 		{&zwp_input_method_manager_v2_interface, NULL, NULL},
 		// linux-dmabuf
-		{&zwp_linux_dmabuf_v1_interface, NULL, NULL},
+		{&zwp_linux_dmabuf_v1_interface,
+				&zwp_linux_dmabuf_v1_event_handler, NULL},
 		// linux-dmabuf
 		{&zwlr_screencopy_manager_v1_interface, NULL, NULL},
+		// linux-dmabuf
+		{&wl_drm_interface, &wl_drm_event_handler,
+				&wl_drm_request_handler},
 
 		{NULL, NULL, NULL}};
 const struct wl_interface *the_display_interface = &wl_display_interface;

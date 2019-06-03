@@ -58,7 +58,7 @@ struct pidstack {
 	pid_t proc;
 };
 
-static int run_client_child(int chanfd, const char *socket_path)
+static int run_client_child(int chanfd, bool no_gpu, const char *socket_path)
 {
 	wp_log(WP_DEBUG, "I'm a client on %s!", socket_path);
 	struct wl_display *display = wl_display_connect(NULL);
@@ -67,12 +67,13 @@ static int run_client_child(int chanfd, const char *socket_path)
 		return EXIT_FAILURE;
 	}
 	int dispfd = wl_display_get_fd(display);
-	int retcode = main_interface_loop(chanfd, dispfd, true);
+	int retcode = main_interface_loop(chanfd, dispfd, no_gpu, true);
 	wl_display_disconnect(display);
 	return retcode;
 }
 
-int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
+int run_client(const char *socket_path, bool oneshot, bool no_gpu,
+		pid_t eol_pid)
 {
 	if (verify_connection() == -1) {
 		wp_log(WP_ERROR, "Failed to connect to a wayland compositor.");
@@ -144,8 +145,8 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 			break;
 		} else {
 			if (oneshot) {
-				retcode = run_client_child(
-						chanclient, socket_path);
+				retcode = run_client_child(chanclient, no_gpu,
+						socket_path);
 				break;
 			} else {
 				pid_t npid = fork();
@@ -161,7 +162,7 @@ int run_client(const char *socket_path, bool oneshot, pid_t eol_pid)
 					}
 
 					close(channelsock);
-					run_client_child(chanclient,
+					run_client_child(chanclient, no_gpu,
 							socket_path);
 					// exit path?
 					return EXIT_SUCCESS;

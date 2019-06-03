@@ -42,7 +42,8 @@
 
 int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 		const char **app_argv);
-int run_client(const char *socket_path, bool oneshot, pid_t eol_pid);
+int run_client(const char *socket_path, bool oneshot, bool no_gpu,
+		pid_t eol_pid);
 
 /* Usage: Wrapped to 72 characters */
 static const char usage_string[] =
@@ -65,6 +66,7 @@ static const char usage_string[] =
 		"options:\n"
 		"    -d,  --debug     Print debug messages.\n"
 		"    -h,  --help      Display this help and exit.\n"
+		"    -n,  --no-gpu    Disable protocols which would use GPU resources\n"
 		"    -o,  --oneshot   Only permit one client\n"
 		"    -s,  --socket S  Set the socket path, on which waypipe listens\n"
 		"                       if it is a client, and to which waypipe\n"
@@ -142,23 +144,26 @@ static int locate_openssh_cmd_hostname(int argc, char *const *argv)
 }
 
 void handle_noop(int sig) { (void)sig; }
+
+static const struct option options[] = {{"debug", no_argument, NULL, 'd'},
+		{"help", no_argument, NULL, 'h'},
+		{"no-gpu", no_argument, NULL, 'n'},
+		{"oneshot", no_argument, NULL, 'o'},
+		{"socket", required_argument, NULL, 's'},
+		{"unlink", no_argument, NULL, 'u'},
+		{"version", no_argument, NULL, 'v'}, {0, 0, NULL, 0}};
+
 int main(int argc, char **argv)
 {
 	bool help = false;
 	bool version = false;
 	bool fail = false;
 	bool debug = false;
+	bool nogpu = false;
 	bool oneshot = false;
 	bool unlink_at_end = false;
 	bool is_client, setup_ssh;
 	const char *socketpath = NULL;
-	static const struct option options[] = {
-			{"debug", no_argument, NULL, 'd'},
-			{"help", no_argument, NULL, 'h'},
-			{"oneshot", no_argument, NULL, 'o'},
-			{"socket", required_argument, NULL, 's'},
-			{"unlink", no_argument, NULL, 'u'},
-			{"version", no_argument, NULL, 'v'}, {0, 0, NULL, 0}};
 
 	/* We do not parse any getopt arguments happening after the mode choice
 	 * string, so as not to interfere with them. */
@@ -174,7 +179,7 @@ int main(int argc, char **argv)
 
 	while (true) {
 		int option_index;
-		int opt = getopt_long(mode_argc, argv, "dhos:uv", options,
+		int opt = getopt_long(mode_argc, argv, "dhnos:uv", options,
 				&option_index);
 
 		if (opt == -1) {
@@ -187,6 +192,9 @@ int main(int argc, char **argv)
 			break;
 		case 'h':
 			help = true;
+			break;
+		case 'n':
+			nogpu = true;
 			break;
 		case 'o':
 			oneshot = true;
@@ -267,13 +275,13 @@ int main(int argc, char **argv)
 			if (!socketpath) {
 				socketpath = "/tmp/waypipe";
 			}
-			const int max_splen =
+			const size_t max_splen =
 					(int)sizeof(((struct sockaddr_un *)NULL)
 									->sun_path) -
 					22;
 			if (strlen(socketpath) > max_splen) {
 				fprintf(stderr, "Socket path prefix '%s' is too long (more than %d bytes).\n",
-						socketpath, max_splen);
+						socketpath, (int)max_splen);
 				return EXIT_FAILURE;
 			}
 
@@ -344,14 +352,14 @@ int main(int argc, char **argv)
 				return EXIT_FAILURE;
 
 			} else {
-				return run_client(
-						clientsock, oneshot, conn_pid);
+				return run_client(clientsock, oneshot, nogpu,
+						conn_pid);
 			}
 		} else {
 			if (!socketpath) {
 				socketpath = "/tmp/waypipe-client.sock";
 			}
-			return run_client(socketpath, oneshot, 0);
+			return run_client(socketpath, oneshot, nogpu, 0);
 		}
 	} else {
 		const char **app_argv = (const char **)argv;

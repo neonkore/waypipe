@@ -40,15 +40,24 @@ endif
 wayland_client = dependency('wayland-client', version: '>=1.15') # WAYLAND_DISPLAY=path
 wayland_server = dependency('wayland-server', version: '>=1.15') # WAYLAND_DISPLAY=path
 wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
-libffi         = dependency('libffi')
-rt             = cc.find_library('rt')
+wayland_scanner = dependency('wayland-scanner', native: true, version: '>=1.15') # public-code
+libdrm = dependency('libdrm')
+libffi = dependency('libffi')
+rt = cc.find_library('rt')
+
+libdrm_intel = dependency('libdrm_intel', required: false)
+if libdrm_intel.found()
+    add_project_arguments('-DHAS_LIBDRM_INTEL=1', language : 'c')
+endif
 
 subdir('protocols')
 
 executable(
 	'waypipe',
-	['waypipe.c', 'client.c', 'handlers.c', 'parsing.c', 'server.c', 'util.c'],
+	['waypipe.c', 'client.c', 'dmabuf.c', 'handlers.c', 'parsing.c', 'server.c', 'util.c'],
 	dependencies : [
+		libdrm,          # General GPU buffer creation
+		libdrm_intel,     # Specialized buffer creation
 		libffi,          # To call wayland protocol functions
 		protos,          # Wayland protocol data
 		rt,              # For shared memory

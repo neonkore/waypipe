@@ -23,6 +23,9 @@ like *ssh -X*.
 *-h, --help*
 	Show help message and quit.
 
+*-n, --no-gpu*
+	Block protocols like wayland-drm and linux-dmabuf which require access to e.g. GPU resources
+
 *-o, --oneshot*
 	Only permit a single connection, and exit when it is closed.
 

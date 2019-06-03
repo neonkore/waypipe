@@ -42,12 +42,6 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 
-/* Closes both provided file descriptors */
-static int run_server_child(int chanfd, int appfd)
-{
-	return main_interface_loop(chanfd, appfd, false);
-}
-
 static int connect_to_channel(const char *socket_path)
 {
 	struct sockaddr_un saddr;
@@ -156,7 +150,8 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 
 		wp_log(WP_DEBUG, "Oneshot connected");
 		if (chanfd != -1) {
-			retval = run_server_child(chanfd, server_link);
+			retval = main_interface_loop(
+					chanfd, server_link, false, false);
 		} else {
 			retval = EXIT_FAILURE;
 		}
@@ -228,8 +223,9 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 					close(wdisplay_socket);
 					int chanfd = connect_to_channel(
 							socket_path);
-					run_server_child(chanfd, appfd);
-					return EXIT_SUCCESS;
+
+					return main_interface_loop(chanfd,
+							appfd, false, false);
 				} else if (npid == -1) {
 					wp_log(WP_DEBUG, "Fork failure");
 					retval = EXIT_FAILURE;

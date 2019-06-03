@@ -311,6 +311,11 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 	}
 }
 
+int peek_message_size(const void *data)
+{
+	return (int)(((const uint32_t *)data)[1] >> 16);
+}
+
 enum message_action handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool display_side,
 		bool from_client, void *data, int data_len,
@@ -394,10 +399,17 @@ enum message_action handle_message(struct message_tracker *mt,
 	ctx.drop_this_msg = false;
 	uint32_t *payload = ((uint32_t *)data) + 2;
 	ctx.payload = payload;
-
+	ctx.payload_available_space = data_len - 8;
+	ctx.payload_length = len - 8;
 	invoke_msg_handler(intf, msg, !from_client, payload, len / 4 - 2,
 			&fds[*n_consumed_fds], fds_len - *n_consumed_fds,
 			n_consumed_fds, fn, &ctx, mt);
+	if (ctx.payload_length != len - 8) {
+		payload[-1] = (uint32_t)meth |
+			      (uint32_t)(ctx.payload_length + 8) << 16;
+		*consumed_length = ctx.payload_length + 8;
+	}
+
 	// Flag set by the protocol handler function
 	if (ctx.drop_this_msg) {
 		return MESSACT_DROP;
