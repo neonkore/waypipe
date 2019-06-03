@@ -145,9 +145,10 @@ struct shadow_fd {
 struct transfer {
 	size_t size;
 	fdcat_t type;
-	char *data;
 	int obj_id;
 	int special; // type-specific extra data
+	// data vector must include space up to next 8-byte boundary
+	char *data;
 };
 
 void cleanup_translation_map(struct fd_translation_map *map);
@@ -160,10 +161,9 @@ void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
  * memory. */
 void collect_updates(struct fd_translation_map *map, int *ntransfers,
 		struct transfer transfers[]);
-/** Allocate a large new buffer to contain message data, the id list, and file
- * updates. The buffer includes the size_t at the beginning, which indicates
- * the tail size */
-void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
+/** Set up metadata and headers for the data transfer to the channel. */
+struct block_transfer;
+void pack_pipe_message(struct block_transfer *bt, int nids, const int ids[],
 		int ntransfers, const struct transfer transfers[]);
 /** Unpack the buffer containing message data, the id list, and file updates.
  * All returned pointers refer to positions in the source buffer. */

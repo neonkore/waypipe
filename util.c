@@ -40,6 +40,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -232,6 +233,29 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 	return ret;
 }
 
+struct pipe_elem_header {
+	int32_t id;
+	int32_t type;
+	int32_t size;
+	int32_t special;
+};
+
+/* The data transfers from an application to the channel consist of a length
+ * prefix, followed by a series of transfer blocks. This structure maintains
+ * the transfer block state, with the end goal of transport using 'writev' */
+struct block_transfer {
+	int total_size;
+
+	int ntransfers;
+	char *meta_header;
+	struct pipe_elem_header *transfer_block_headers;
+
+	int nblocks;
+	struct iovec *blocks;
+	// Tracking how much of the message has been transferred
+	int blocks_written;
+};
+
 /* This state corresponds to the in-progress transfer from the program
  * (compositor or application) and its pipes/buffers to the channel. */
 enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL };
@@ -247,16 +271,17 @@ struct way_msg_state {
 	int fbuffer_end;
 
 	int rbuffer_count;
-	int cmsg_size;
-	int cmsg_written;
 	enum wm_state state;
 	/* The large packed message to be written to the channel */
 	char *dbuffer;        // messages
 	char *dbuffer_edited; // messages are copied to here
 	int *fbuffer;         // fds
 	int *rbuffer;         // rids
-	char *cmsg_buffer;
+
+	/* Buffer data to be writev'd */
+	struct block_transfer cmsg;
 };
+
 /* This state corresponds to the in-progress transfer from the channel
  * to the program and the buffers/pipes on which will be written. */
 enum cm_state { CM_WAITING_FOR_PROGRAM, CM_WAITING_FOR_CHANNEL };
@@ -492,10 +517,10 @@ static int advance_waymsg_chanwrite(
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// Waiting for channel write to complete
-	while (wmsg->cmsg_written < wmsg->cmsg_size) {
-		ssize_t wr = write(chanfd,
-				wmsg->cmsg_buffer + wmsg->cmsg_written,
-				(size_t)(wmsg->cmsg_size - wmsg->cmsg_written));
+	struct block_transfer *bt = &wmsg->cmsg;
+	while (bt->blocks_written < bt->nblocks) {
+		ssize_t wr = writev(chanfd, &bt->blocks[bt->blocks_written],
+				bt->nblocks - bt->blocks_written);
 		if (wr == -1 && errno == EWOULDBLOCK) {
 			break;
 		} else if (wr == -1 && errno == EAGAIN) {
@@ -508,14 +533,38 @@ static int advance_waymsg_chanwrite(
 			wp_log(WP_ERROR, "chanfd has closed");
 			return 0;
 		}
-		wmsg->cmsg_written += wr;
+		size_t uwr = (size_t)wr;
+		while (uwr > 0) {
+			size_t left = bt->blocks[bt->blocks_written].iov_len;
+			if (left > uwr) {
+				bt->blocks[bt->blocks_written].iov_len -= uwr;
+				bt->blocks[bt->blocks_written].iov_base =
+						(void *)((char *)bt->blocks[bt->blocks_written]
+										.iov_base +
+								uwr);
+				uwr = 0;
+			} else {
+				bt->blocks[bt->blocks_written].iov_len = 0;
+				bt->blocks[bt->blocks_written].iov_base = NULL;
+				uwr -= left;
+				bt->blocks_written++;
+			}
+		}
 	}
-	if (wmsg->cmsg_written == wmsg->cmsg_size) {
+	if (bt->blocks_written == bt->nblocks) {
 		wp_log(WP_DEBUG,
-				"The %d-byte message from %s to channel has been written",
-				wmsg->cmsg_size, progdesc);
-		free(wmsg->cmsg_buffer);
-		wmsg->cmsg_buffer = NULL;
+				"The %d-byte, %d block message from %s to channel has been written",
+				bt->total_size, bt->nblocks, progdesc);
+		free(bt->blocks);
+		free(bt->meta_header);
+		free(bt->transfer_block_headers);
+		bt->blocks = NULL;
+		bt->meta_header = NULL;
+		bt->transfer_block_headers = NULL;
+		bt->total_size = 0;
+		bt->blocks_written = 0;
+		bt->nblocks = 0;
+		bt->ntransfers = 0;
 		wmsg->state = WM_WAITING_FOR_PROGRAM;
 	}
 	return 0;
@@ -614,19 +663,15 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	read_readable_pipes(map);
 	collect_updates(map, &ntransfers, transfers);
 	if (ntransfers > 0) {
-		wmsg->cmsg_written = 0;
-		wmsg->cmsg_size = 0;
-		wmsg->cmsg_buffer = NULL;
-		size_t sz = 0;
-		pack_pipe_message(&sz, &wmsg->cmsg_buffer, wmsg->rbuffer_count,
+		pack_pipe_message(&wmsg->cmsg, wmsg->rbuffer_count,
 				wmsg->rbuffer, ntransfers, transfers);
-		wmsg->cmsg_size = (int)sz;
 
 		decref_transferred_rids(
 				map, wmsg->rbuffer_count, wmsg->rbuffer);
-		wp_log(WP_DEBUG, "Packed message size (%d fds, %d blobs): %d",
+		wp_log(WP_DEBUG,
+				"Packed message size (%d fds, %d blobs, %d blocks): %d",
 				wmsg->rbuffer_count, ntransfers,
-				wmsg->cmsg_size);
+				wmsg->cmsg.nblocks, wmsg->cmsg.total_size);
 
 		// Introduce carryover data
 		if (wmsg->dbuffer_carryover_end > 0) {
@@ -692,11 +737,14 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 	way_msg.fbuffer = malloc((size_t)way_msg.fbuffer_maxsize * sizeof(int));
 	way_msg.rbuffer = malloc((size_t)way_msg.fbuffer_maxsize * sizeof(int));
 	way_msg.rbuffer_count = 0;
-	way_msg.cmsg_size = 0;
-	way_msg.cmsg_written = 0;
-	way_msg.cmsg_buffer = NULL;
 	way_msg.dbuffer_edited_maxsize = 2 * way_msg.dbuffer_maxsize;
 	way_msg.dbuffer_edited = malloc((size_t)way_msg.dbuffer_edited_maxsize);
+	way_msg.cmsg.blocks = NULL;
+	way_msg.cmsg.nblocks = 0;
+	way_msg.cmsg.transfer_block_headers = NULL;
+	way_msg.cmsg.ntransfers = 0;
+	way_msg.cmsg.meta_header = NULL;
+	way_msg.cmsg.blocks_written = 0;
 
 	struct chan_msg_state chan_msg;
 	chan_msg.state = CM_WAITING_FOR_CHANNEL;
@@ -802,7 +850,9 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 	free(way_msg.dbuffer);
 	free(way_msg.fbuffer);
 	free(way_msg.rbuffer);
-	free(way_msg.cmsg_buffer);
+	free(way_msg.cmsg.meta_header);
+	free(way_msg.cmsg.blocks);
+	free(way_msg.cmsg.transfer_block_headers);
 	free(way_msg.dbuffer_edited);
 	// We do not free chan_msg.dbuffer, as it is a subset of cmsg_buffer
 	free(chan_msg.tfbuffer);
@@ -1286,29 +1336,45 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 	}
 }
 
-struct pipe_elem_header {
-	int id;
-	int type;
-	int size;
-	int special;
-};
-
-void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
+void pack_pipe_message(struct block_transfer *bt, int nids, const int ids[],
 		int ntransfers, const struct transfer transfers[])
 {
 	// TODO: network byte order everything, content aware, somewhere in the
 	// chain!
 
-	size_t size = sizeof(uint64_t); // including the header
-	size += (size_t)nids * sizeof(struct pipe_elem_header);
+	bt->nblocks = ntransfers * 2 + 1;
+	bt->ntransfers = ntransfers;
+	bt->transfer_block_headers = calloc((size_t)bt->ntransfers,
+			sizeof(struct pipe_elem_header));
+	bt->blocks = calloc((size_t)bt->nblocks, sizeof(struct iovec));
+	const size_t header_size =
+			sizeof(uint64_t) +
+			(size_t)nids * sizeof(struct pipe_elem_header);
+	size_t total_size = header_size;
+
 	for (int i = 0; i < ntransfers; i++) {
-		size_t num_longs = (transfers[i].size + 7) / 8;
-		size += sizeof(struct pipe_elem_header) + 8 * num_longs;
+		struct pipe_elem_header *sd = &bt->transfer_block_headers[i];
+		sd->id = transfers[i].obj_id;
+		sd->type = (int)transfers[i].type;
+		sd->size = (int)transfers[i].size;
+		sd->special = transfers[i].special;
+
+		size_t tsize = transfers[i].size;
+		size_t num_longs = (tsize + sizeof(uint64_t) - 1) /
+				   sizeof(uint64_t);
+		bt->blocks[2 * i + 1].iov_len = sizeof(struct pipe_elem_header);
+		bt->blocks[2 * i + 1].iov_base = sd;
+
+		bt->blocks[2 * i + 2].iov_len = sizeof(uint64_t) * num_longs;
+		bt->blocks[2 * i + 2].iov_base = transfers[i].data;
+
+		total_size += sizeof(struct pipe_elem_header) +
+			      sizeof(uint64_t) * num_longs;
 	}
 
-	void *data = malloc(size);
-	uint64_t *cursor = data;
-	*cursor++ = size - sizeof(uint64_t); // size excluding this header
+	uint64_t *cursor = calloc(header_size, 1);
+	bt->meta_header = (char *)cursor;
+	*cursor++ = total_size - sizeof(uint64_t); // size, excluding itself
 	for (int i = 0; i < nids; i++) {
 		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
 		sd->id = ids[i];
@@ -1317,30 +1383,9 @@ void pack_pipe_message(size_t *msglen, char **msg, int nids, const int ids[],
 		sd->special = 0;
 		cursor += sizeof(struct pipe_elem_header) / sizeof(uint64_t);
 	}
-	for (int i = 0; i < ntransfers; i++) {
-		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
-		sd->id = transfers[i].obj_id;
-		sd->type = (int)transfers[i].type;
-		sd->size = (int)transfers[i].size;
-		sd->special = transfers[i].special;
-		size_t tsize = transfers[i].size;
-		char *cd = (char *)cursor;
-
-		size_t ntrailing = 8 * ((tsize + 7) / 8) - tsize;
-		if (tsize > 0) {
-			memcpy(cd + sizeof(struct pipe_elem_header),
-					transfers[i].data, tsize);
-			memset(cd + sizeof(struct pipe_elem_header) + tsize, 0,
-					ntrailing);
-		}
-
-		size_t num_longs = (tsize + 7) / 8;
-		cursor += (sizeof(struct pipe_elem_header) / sizeof(uint64_t)) +
-			  num_longs;
-	}
-
-	*msg = data;
-	*msglen = size;
+	bt->blocks[0].iov_len = header_size;
+	bt->blocks[0].iov_base = bt->meta_header;
+	bt->total_size = (int)total_size;
 }
 
 void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
