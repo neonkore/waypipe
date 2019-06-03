@@ -726,8 +726,7 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 			.max_local_id = 1,
 			.rdata = {.disabled = no_gpu,
 					.drm_fd = -1,
-					.bufmgr = NULL,
-					.api = NULL}};
+					.dev = NULL}};
 	struct message_tracker mtracker;
 	init_message_tracker(&mtracker);
 
@@ -828,7 +827,7 @@ static void destroy_unlinked_sfd(
 			shm_unlink(shadow->file_shm_buf_name);
 		}
 	} else if (shadow->type == FDC_DMABUF) {
-		destroy_dmabuf(&map->rdata, shadow->dmabuf_bo);
+		destroy_dmabuf(shadow->dmabuf_bo);
 		free(shadow->dmabuf_mem_mirror);
 		free(shadow->dmabuf_diff_buffer);
 	} else if (fdcat_ispipe(shadow->type)) {
@@ -840,6 +839,7 @@ static void destroy_unlinked_sfd(
 		free(shadow->pipe_send.data);
 	}
 	free(shadow);
+	(void)map;
 }
 
 void cleanup_translation_map(struct fd_translation_map *map)
@@ -1189,8 +1189,12 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				// 8 extra bytes for worst case diff expansion
 				first = true;
 			}
-			void *data = map_dmabuf(&map->rdata, cur->dmabuf_size,
-					cur->dmabuf_bo, false);
+			void *handle = NULL;
+			if (!cur->dmabuf_bo) {
+				// ^ was not previously able to create buffer
+				continue;
+			}
+			void *data = map_dmabuf(cur->dmabuf_bo, false, &handle);
 			if (!data) {
 				continue;
 			}
@@ -1243,9 +1247,7 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 					transfers[nt].special = 0;
 				}
 			}
-			if (unmap_dmabuf(&map->rdata, cur->dmabuf_size,
-					    cur->dmabuf_bo, data,
-					    false) == -1) {
+			if (unmap_dmabuf(cur->dmabuf_bo, handle) == -1) {
 				// there was an issue unmapping; unmap_dmabuf
 				// will log error
 				continue;
@@ -1493,15 +1495,20 @@ static void apply_update(
 			wp_log(WP_DEBUG, "Applying dmabuf damage");
 			apply_diff(cur->dmabuf_size, cur->dmabuf_mem_mirror,
 					transf->size, transf->data);
-			void *data = map_dmabuf(&map->rdata, cur->dmabuf_size,
-					cur->dmabuf_bo, true);
+			void *handle = NULL;
+			if (!cur->dmabuf_bo) {
+				wp_log(WP_ERROR,
+						"Applying update to nonexistent dma buffer object rid=%d",
+						cur->remote_id);
+				return;
+			}
+			void *data = map_dmabuf(cur->dmabuf_bo, true, &handle);
 			if (!data) {
 				return;
 			}
 			apply_diff(cur->dmabuf_size, data, transf->size,
 					transf->data);
-			if (unmap_dmabuf(&map->rdata, cur->dmabuf_size,
-					    cur->dmabuf_bo, data, true) == -1) {
+			if (unmap_dmabuf(cur->dmabuf_bo, handle) == -1) {
 				// there was an issue unmapping; unmap_dmabuf
 				// will log error
 				return;
@@ -1616,10 +1623,13 @@ static void apply_update(
 			shadow->fd_local = -1;
 			return;
 		}
-		shadow->dmabuf_bo = make_dma_buf(
+		shadow->dmabuf_bo = make_dmabuf(
 				&map->rdata, transf->data, transf->size);
-		shadow->fd_local = export_dmabuf(
-				&map->rdata, transf->size, shadow->dmabuf_bo);
+		if (!shadow->dmabuf_bo) {
+			shadow->fd_local = -1;
+			return;
+		}
+		shadow->fd_local = export_dmabuf(shadow->dmabuf_bo);
 	} else {
 		wp_log(WP_ERROR, "Creating unknown file type updates");
 	}

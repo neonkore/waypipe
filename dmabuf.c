@@ -36,146 +36,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <drm.h>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
-
-#ifdef HAS_LIBDRM_INTEL
-#include <i915_drm.h>
-#include <intel_bufmgr.h>
-#endif
-
-struct driver_api {
-	void *(*setup_bufmgr)(int drm_fd);
-	void (*cleanup_bufmgr)(void *bufmgr);
-	void *(*create)(void *bufmgr, size_t size, const void *misc);
-	void (*destroy)(void *bo);
-	void *(*read_map)(void *bo, size_t size);
-	int (*read_unmap)(void *bo, size_t size);
-	void *(*write_map)(void *bo, size_t size);
-	int (*write_unmap)(void *bo, size_t size);
-	void *(*load_dmabuf)(void *bufmgr, int fd, size_t size);
-	int (*export_dmabuf)(void *bo);
-};
-
-#ifdef HAS_LIBDRM_INTEL
-static void *intel_setup_bufmgr(int drm_fd)
-{
-	drm_intel_bufmgr *bufmgr = drm_intel_bufmgr_gem_init(drm_fd, 32);
-	if (!bufmgr) {
-		wp_log(WP_ERROR, "Failed to init intel bufmgr");
-		return NULL;
-	}
-	return bufmgr;
-}
-static void intel_cleanup_bufmgr(void *bufmgr)
-{
-	drm_intel_bufmgr_destroy(bufmgr);
-}
-static void *intel_create(void *bufmgr, size_t size, const void *data)
-{
-	/* with intel, tiling modes require extra space, and have
-	 * additional size constraints, in a sometimes GPU
-	 * generation-dependent fashion. Ultimately, the 'alloc_tiled'
-	 * request sometimes depends on size and stride; the other
-	 * 'alloc_*' variants lack tiling and only depend on size.
-	 *
-	 * While size is easy to reconstruct (llseek), and tiling can be
-	 * identified, we can't so easily query the stride. Maybe it
-	 * gets lost in translation to (prime) dmabuf ?
-	 */
-	int height = ((int)size + 1023) / 1024;
-
-	unsigned int tilemode = I915_TILING_NONE;
-	unsigned long pitch = 256 * 4;
-	//  why don't we use the BO_ALLOC_FOR_RENDER hint?
-	drm_intel_bo *bo = drm_intel_bo_alloc_tiled(
-			bufmgr, "test", 256, height, 4, &tilemode, &pitch, 0);
-
-	if (drm_intel_bo_map(bo, true) != 0) {
-		wp_log(WP_ERROR, "Failed to map intel buffer object");
-		return NULL;
-	}
-	size_t bufsize = (size_t)height * 256 * 4;
-	memcpy(bo->virtual, data, size > bufsize ? bufsize : size);
-	if (drm_intel_bo_unmap(bo) != 0) {
-		wp_log(WP_ERROR, "Failed to unmap intel buffer object");
-		return NULL;
-	}
-	return bo;
-}
-static void intel_destroy(void *bo) { drm_intel_bo_unreference(bo); }
-static void *intel_wmap(void *bo, size_t size)
-{
-	(void)size;
-	drm_intel_bo *ibo = (drm_intel_bo *)bo;
-	if (drm_intel_bo_map(ibo, true) != 0) {
-		wp_log(WP_ERROR, "Failed to wmap intel buffer object");
-		return NULL;
-	}
-	return ibo->virtual;
-}
-static void *intel_rmap(void *bo, size_t size)
-{
-	(void)size;
-	drm_intel_bo *ibo = (drm_intel_bo *)bo;
-	if (drm_intel_bo_map(ibo, false) != 0) {
-		wp_log(WP_ERROR, "Failed to rmap intel buffer object");
-		return NULL;
-	}
-	return ibo->virtual;
-}
-static int intel_unmap(void *bo, size_t size)
-{
-	/* TODO: map with GTT or just regular map? */
-	(void)size;
-	if (drm_intel_bo_unmap(bo) != 0) {
-		wp_log(WP_ERROR, "Failed to unmap intel buffer object");
-		return -1;
-	}
-	return 0;
-}
-static int intel_export_dmabuf(void *bo)
-{
-	int dmabuf_fd = -1;
-	if (drm_intel_bo_gem_export_to_prime(bo, &dmabuf_fd) != 0 ||
-			dmabuf_fd == -1) {
-		wp_log(WP_ERROR,
-				"Failed to export intel buffer object to dmabuf");
-		return -1;
-	}
-	return dmabuf_fd;
-}
-static void *intel_load_dmabuf(void *bufmgr, int fd, size_t size)
-{
-	drm_intel_bo *bo = drm_intel_bo_gem_create_from_prime(
-			bufmgr, fd, (int)size);
-	if (!bo) {
-		wp_log(WP_ERROR,
-				"Failed to import intel buffer object from dmabuf");
-		return NULL;
-	}
-	uint32_t tiling_mode = (uint32_t)-1, swizzle_mode = (uint32_t)-1;
-	if (drm_intel_bo_get_tiling(bo, &tiling_mode, &swizzle_mode) == -1) {
-		drm_intel_bo_unreference(bo);
-		wp_log(WP_ERROR, "Failed to acq tiling state");
-		return NULL;
-	}
-	wp_log(WP_DEBUG, "Newly loaded buffer has: tiling=%x swizzle=%x",
-			tiling_mode, swizzle_mode);
-	return bo;
-}
-static const struct driver_api intel_api = {.setup_bufmgr = intel_setup_bufmgr,
-		.cleanup_bufmgr = intel_cleanup_bufmgr,
-		.create = intel_create,
-		.destroy = intel_destroy,
-		.read_map = intel_rmap,
-		.read_unmap = intel_unmap,
-		.write_map = intel_wmap,
-		.write_unmap = intel_unmap,
-		.load_dmabuf = intel_load_dmabuf,
-		.export_dmabuf = intel_export_dmabuf};
-#endif
+#include <gbm.h>
 
 int init_render_data(struct render_data *data)
 {
@@ -198,50 +59,30 @@ int init_render_data(struct render_data *data)
 		data->disabled = true;
 		return -1;
 	}
-	/* NOTE: a generic render client can only query the version,
-	 * query capabilities, relate PRIME handles to (DMABUF) fds,
-	 * and close GEM objects. We must therefore use driver specific
-	 * code. See also the DRM_RENDER_ALLOW flag in the kernel. */
-	drmVersionPtr ver = drmGetVersion(drm_fd);
-	const struct driver_api *api = NULL;
-#ifdef HAS_LIBDRM_INTEL
-	if (!strcmp(ver->name, "i915")) {
-		api = &intel_api;
-	}
-#endif
-	if (!api) {
-		close(drm_fd);
-		wp_log(WP_ERROR, "waypipe doesn't have support for driver: %s",
-				ver->name);
-		drmFreeVersion(ver);
-		data->disabled = true;
-		return -1;
-	}
-	drmFreeVersion(ver);
 
-	void *bufmgr = api->setup_bufmgr(drm_fd);
-	if (!bufmgr) {
-		close(drm_fd);
+	struct gbm_device *dev = gbm_create_device(drm_fd);
+	if (!dev) {
 		data->disabled = true;
+		close(drm_fd);
+		wp_log(WP_ERROR, "Failed to create gbm device from drm_fd");
 		return -1;
 	}
-	data->api = api;
-	data->bufmgr = bufmgr;
+
 	data->drm_fd = drm_fd;
+	data->dev = dev;
 	return 0;
 }
 void cleanup_render_data(struct render_data *data)
 {
 	if (data->drm_fd != -1) {
-		data->api->cleanup_bufmgr(data->bufmgr);
+		gbm_device_destroy(data->dev);
 		close(data->drm_fd);
-		data->bufmgr = NULL;
-		data->api = NULL;
+		data->dev = NULL;
 		data->drm_fd = -1;
 	}
 }
 
-void *import_dmabuf(struct render_data *rd, int fd, size_t *size)
+struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size)
 {
 	ssize_t endp = lseek(fd, 0, SEEK_END);
 	if (endp == -1) {
@@ -256,7 +97,26 @@ void *import_dmabuf(struct render_data *rd, int fd, size_t *size)
 		return NULL;
 	}
 	*size = (size_t)endp;
-	return rd->api->load_dmabuf(rd->bufmgr, fd, (size_t)endp);
+	/* TODO: delay this invocation until we parse the protocol and are given
+	 * metadata. Note: for the multiplanar buffers, this would, in the worst
+	 * case, require that we block or reorder the 'add_fd' calls until
+	 * someone calls create. Also, how are the multiplanar/multifd formats
+	 * mapped? */
+	struct gbm_import_fd_data data;
+	data.fd = fd;
+	data.width = 256;
+	data.stride = 1024;
+	data.height = (uint32_t)(endp + 1023) / 1024;
+	data.format = GBM_FORMAT_XRGB8888;
+	struct gbm_bo *bo = gbm_bo_import(
+			rd->dev, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_RENDERING);
+	if (!bo) {
+		wp_log(WP_ERROR, "Failed to import dmabuf to gbm bo",
+				strerror(errno));
+		return NULL;
+	}
+
+	return bo;
 }
 
 int read_dmabuf(int fd, void *mapptr, size_t size, void *destination)
@@ -303,33 +163,68 @@ bool is_dmabuf(int fd)
 		return false;
 	}
 }
-void *make_dma_buf(struct render_data *rd, const char *data, size_t size)
+struct gbm_bo *make_dmabuf(
+		struct render_data *rd, const char *data, size_t size)
 {
-	void *bo = rd->api->create(rd->bufmgr, size, (void *)data);
+	uint32_t width = 512;
+	uint32_t height = (uint32_t)(size + 4 * width - 1) / (4 * width);
+	uint32_t format = GBM_FORMAT_XRGB8888;
+	/* Set modifiers to linear, since incoming buffers also will be, thanks
+	 * to the modifier restrictions set in handlers.c */
+	struct gbm_bo *bo = gbm_bo_create(rd->dev, width, height, format,
+			GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+	if (!bo) {
+		wp_log(WP_ERROR, "Failed to make dmabuf: %s", strerror(errno));
+		return NULL;
+	}
+	void *handle = NULL;
+	void *dst = map_dmabuf(bo, true, &handle);
+	if (!dst) {
+		gbm_bo_destroy(bo);
+		return NULL;
+	}
+	memcpy(dst, data, size);
+	// no error message :-(, even though unmap ~ commit
+	unmap_dmabuf(bo, handle);
 	return bo;
 }
-int export_dmabuf(struct render_data *rd, size_t size, void *bo)
+int export_dmabuf(struct gbm_bo *bo)
 {
-	(void)size;
-	return rd->api->export_dmabuf(bo);
+	int fd = gbm_bo_get_fd(bo);
+	if (fd == -1) {
+		wp_log(WP_ERROR, "Failed to export dmabuf: %s",
+				strerror(errno));
+	}
+	return fd;
 }
-void destroy_dmabuf(struct render_data *rd, void *bo) { rd->api->destroy(bo); }
+void destroy_dmabuf(struct gbm_bo *bo)
+{
+	if (bo) {
+		gbm_bo_destroy(bo);
+	}
+}
 
-void *map_dmabuf(struct render_data *rd, size_t size, void *bo, bool write)
+void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle)
 {
-	if (write) {
-		return rd->api->write_map(bo, size);
-	} else {
-		return rd->api->read_map(bo, size);
+	/* With i965, the map handle MUST initially point to a NULL pointer;
+	 * otherwise the handler silently exits, sometimes with misleading errno
+	 * :-(
+	 */
+	*map_handle = NULL;
+	uint32_t stride;
+	uint32_t width = gbm_bo_get_width(bo);
+	uint32_t height = gbm_bo_get_height(bo);
+	void *data = gbm_bo_map(bo, 0, 0, width, height,
+			write ? GBM_BO_TRANSFER_WRITE : GBM_BO_TRANSFER_READ,
+			&stride, map_handle);
+	if (!data) {
+		// errno is useless here
+		wp_log(WP_ERROR, "Failed to map dmabuf");
 	}
+	return data;
 }
-int unmap_dmabuf(struct render_data *rd, size_t size, void *bo, void *ptr,
-		bool was_for_write)
+int unmap_dmabuf(struct gbm_bo *bo, void *map_handle)
 {
-	(void)ptr;
-	if (was_for_write) {
-		return rd->api->write_unmap(bo, size);
-	} else {
-		return rd->api->write_unmap(bo, size);
-	}
+	gbm_bo_unmap(bo, map_handle);
+	return 0;
 }

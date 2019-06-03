@@ -74,12 +74,10 @@ void wp_log_handler(const char *file, int line, log_cat_t level,
 	wp_log_handler(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,      \
 			__LINE__, (level), fmt, ##__VA_ARGS__)
 
-struct driver_api;
 struct render_data {
 	bool disabled;
 	int drm_fd;
-	void *bufmgr;
-	const struct driver_api *api;
+	struct gbm_device *dev;
 };
 struct fd_translation_map {
 	struct shadow_fd *list;
@@ -139,7 +137,7 @@ struct shadow_fd {
 
 	// DMAbuf data
 	size_t dmabuf_size;
-	void *dmabuf_bo;
+	struct gbm_bo *dmabuf_bo;
 	char *dmabuf_mem_mirror;  // malloc'd
 	char *dmabuf_diff_buffer; // malloc'd
 };
@@ -339,12 +337,12 @@ extern const struct wl_interface *the_display_interface;
 int init_render_data(struct render_data *);
 void cleanup_render_data(struct render_data *);
 bool is_dmabuf(int fd);
-void *make_dma_buf(struct render_data *rd, const char *data, size_t size);
-int export_dmabuf(struct render_data *rd, size_t size, void *bo);
-void *import_dmabuf(struct render_data *rd, int fd, size_t *size);
-void destroy_dmabuf(struct render_data *rd, void *bo);
-void *map_dmabuf(struct render_data *rd, size_t size, void *bo, bool write);
-int unmap_dmabuf(struct render_data *rd, size_t size, void *bo, void *ptr,
-		bool was_for_write);
+struct gbm_bo *make_dmabuf(
+		struct render_data *rd, const char *data, size_t size);
+int export_dmabuf(struct gbm_bo *bo);
+struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size);
+void destroy_dmabuf(struct gbm_bo *bo);
+void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle);
+int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
 
 #endif // WAYPIPE_UTIL_H
