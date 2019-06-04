@@ -266,17 +266,14 @@ struct way_msg_state {
 	int dbuffer_end;
 	int dbuffer_carryover_start;
 	int dbuffer_carryover_end;
-	// Somewhat like a queue
-	int fbuffer_maxsize;
-	int fbuffer_end;
 
 	int rbuffer_count;
 	enum wm_state state;
 	/* The large packed message to be written to the channel */
 	char *dbuffer;        // messages
 	char *dbuffer_edited; // messages are copied to here
-	int *fbuffer;         // fds
 	int *rbuffer;         // rids
+	struct int_window fds;
 
 	/* Buffer data to be writev'd */
 	struct block_transfer cmsg;
@@ -578,14 +575,14 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	int ntransfers = 0;
 	struct transfer transfers[50];
 	ssize_t rc = -1;
-	int old_fbuffer_end = wmsg->fbuffer_end;
+	int old_fbuffer_end = wmsg->fds.zone_end;
 	if (progsock_readable) {
 		// Read /once/
-		int nmaxfds = wmsg->fbuffer_maxsize - wmsg->fbuffer_end;
+		int nmaxfds = wmsg->fds.size - wmsg->fds.zone_end;
 		rc = iovec_read(progfd, wmsg->dbuffer + wmsg->dbuffer_end,
 				(size_t)(wmsg->dbuffer_maxsize -
 						wmsg->dbuffer_end),
-				wmsg->fbuffer, &wmsg->fbuffer_end, nmaxfds);
+				wmsg->fds.data, &wmsg->fds.zone_end, nmaxfds);
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
 		} else if (rc == -1) {
@@ -602,16 +599,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	}
 
 	if (rc > 0) {
-		wp_log(WP_DEBUG, "Translating %d new file descriptors",
-				wmsg->fbuffer_end - old_fbuffer_end);
-		wmsg->rbuffer_count = wmsg->fbuffer_end - old_fbuffer_end;
+		wp_log(WP_DEBUG,
+				"Read %d new file descriptors, have %d total now",
+				wmsg->fds.zone_end - old_fbuffer_end,
+				wmsg->fds.zone_end);
 
-		// TODO: make use of the information
-		// from parsing the protocol
-		translate_fds(map, wmsg->rbuffer_count,
-				wmsg->fbuffer + old_fbuffer_end, wmsg->rbuffer);
-
-		wp_log(WP_DEBUG, "Parsing messages");
 		struct char_window src;
 		src.data = wmsg->dbuffer;
 		src.zone_start = 0;
@@ -622,13 +614,21 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		dst.zone_start = 0;
 		dst.zone_end = 0;
 		dst.size = wmsg->dbuffer_edited_maxsize;
-		struct int_window fds;
-		fds.data = wmsg->fbuffer;
-		fds.zone_start = 0;
-		fds.zone_end = wmsg->fbuffer_end;
-		fds.size = wmsg->fbuffer_maxsize;
+
 		parse_and_prune_messages(mt, map, display_side, !display_side,
-				&src, &dst, &fds);
+				&src, &dst, &wmsg->fds);
+
+		/* Translate all fds in the zone read by the protocol,
+		 * creating shadow structures if needed. The window-queue
+		 * is then reset */
+		wmsg->rbuffer_count = wmsg->fds.zone_start;
+		translate_fds(map, wmsg->fds.zone_start, wmsg->fds.data,
+				wmsg->rbuffer);
+		memmove(wmsg->fds.data, wmsg->fds.data + wmsg->fds.zone_start,
+				sizeof(int) * (size_t)(wmsg->fds.zone_end -
+							      wmsg->fds.zone_start));
+		wmsg->fds.zone_end -= wmsg->fds.zone_start;
+		wmsg->fds.zone_start = 0;
 
 		/* Specify the range of recycled bytes */
 		if (rc > src.zone_start) {
@@ -638,15 +638,6 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			wmsg->dbuffer_carryover_start = 0;
 			wmsg->dbuffer_carryover_end = 0;
 		}
-		/* Because we have already translated
-		 * the fds to rids, we can shift the
-		 * remaining fds now */
-		if (wmsg->fbuffer_end > fds.zone_start) {
-			memmove(wmsg->fbuffer, wmsg->fbuffer + fds.zone_start,
-					sizeof(int) * (size_t)(wmsg->fbuffer_end -
-								      fds.zone_start));
-		}
-		wmsg->fbuffer_end -= fds.zone_start;
 
 		if (dst.zone_end > 0) {
 			wp_log(WP_DEBUG,
@@ -732,10 +723,11 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 	way_msg.dbuffer_carryover_start = 0;
 	way_msg.dbuffer_end = 0;
 	way_msg.dbuffer = malloc((size_t)way_msg.dbuffer_maxsize);
-	way_msg.fbuffer_maxsize = 128;
-	way_msg.fbuffer_end = 0;
-	way_msg.fbuffer = malloc((size_t)way_msg.fbuffer_maxsize * sizeof(int));
-	way_msg.rbuffer = malloc((size_t)way_msg.fbuffer_maxsize * sizeof(int));
+	way_msg.fds.size = 128;
+	way_msg.fds.zone_start = 0;
+	way_msg.fds.zone_end = 0;
+	way_msg.fds.data = malloc((size_t)way_msg.fds.size * sizeof(int));
+	way_msg.rbuffer = malloc((size_t)way_msg.fds.size * sizeof(int));
 	way_msg.rbuffer_count = 0;
 	way_msg.dbuffer_edited_maxsize = 2 * way_msg.dbuffer_maxsize;
 	way_msg.dbuffer_edited = malloc((size_t)way_msg.dbuffer_edited_maxsize);
@@ -848,7 +840,7 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 	cleanup_message_tracker(&fdtransmap, &mtracker);
 	cleanup_translation_map(&fdtransmap);
 	free(way_msg.dbuffer);
-	free(way_msg.fbuffer);
+	free(way_msg.fds.data);
 	free(way_msg.rbuffer);
 	free(way_msg.cmsg.meta_header);
 	free(way_msg.cmsg.blocks);
@@ -904,7 +896,55 @@ void cleanup_translation_map(struct fd_translation_map *map)
 	}
 	cleanup_render_data(&map->rdata);
 }
-static struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
+fdcat_t get_fd_type(int fd, size_t *size)
+{
+	struct stat fsdata;
+	memset(&fsdata, 0, sizeof(fsdata));
+	int ret = fstat(fd, &fsdata);
+	if (ret == -1) {
+		wp_log(WP_ERROR, "The fd %d is not file-like: %s", fd,
+				strerror(errno));
+		return FDC_UNKNOWN;
+	} else if (S_ISREG(fsdata.st_mode)) {
+		if (size) {
+			*size = (size_t)fsdata.st_size;
+		}
+		return FDC_FILE;
+	} else if (S_ISFIFO(fsdata.st_mode) || S_ISCHR(fsdata.st_mode)) {
+		if (!S_ISFIFO(fsdata.st_mode)) {
+			wp_log(WP_ERROR,
+					"The fd %d, size %ld, mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
+					fd, fsdata.st_size, fsdata.st_mode);
+		}
+		int flags = fcntl(fd, F_GETFL, 0);
+		if (flags == -1) {
+			wp_log(WP_ERROR, "fctnl F_GETFL failed!");
+		}
+		if ((flags & O_ACCMODE) == O_RDONLY) {
+			return FDC_PIPE_IR;
+		} else if ((flags & O_ACCMODE) == O_WRONLY) {
+			return FDC_PIPE_IW;
+		} else {
+			return FDC_PIPE_RW;
+		}
+	} else if (is_dmabuf(fd)) {
+		return FDC_DMABUF;
+	} else {
+		wp_log(WP_ERROR,
+				"The fd %d has an unusual mode %x (type=%x): blk=%d chr=%d dir=%d lnk=%d reg=%d fifo=%d sock=%d; expect an application crash!",
+				fd, fsdata.st_mode, fsdata.st_mode & __S_IFMT,
+				S_ISBLK(fsdata.st_mode),
+				S_ISCHR(fsdata.st_mode),
+				S_ISDIR(fsdata.st_mode),
+				S_ISLNK(fsdata.st_mode),
+				S_ISREG(fsdata.st_mode),
+				S_ISFIFO(fsdata.st_mode),
+				S_ISSOCK(fsdata.st_mode), strerror(errno));
+		return FDC_UNKNOWN;
+	}
+}
+
+struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 {
 	struct shadow_fd *cur = map->list;
 	while (cur) {
@@ -935,18 +975,13 @@ static struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
 
-	struct stat fsdata;
-	memset(&fsdata, 0, sizeof(fsdata));
-	int ret = fstat(fd, &fsdata);
-	if (ret == -1) {
-		wp_log(WP_ERROR, "The fd %d is not file-like: %s", fd,
-				strerror(errno));
-	} else if (S_ISREG(fsdata.st_mode)) {
+	size_t fsize = 0;
+	shadow->type = get_fd_type(fd, &fsize);
+	if (shadow->type == FDC_FILE) {
 		// We have a file-like object
-		shadow->file_size = fsdata.st_size;
-		// both r/w permissions, because the size the allocates
-		// the memory does not always have to be the size that
-		// modifies it
+		shadow->file_size = fsize;
+		// both r/w permissions, because the size the allocates the
+		// memory does not always have to be the size that modifies it
 		shadow->file_mem_local = mmap(NULL, shadow->file_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (!shadow->file_mem_local) {
@@ -955,28 +990,7 @@ static struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 		}
 		// This will be created at the first transfer
 		shadow->file_mem_mirror = NULL;
-		shadow->type = FDC_FILE;
-	} else if (S_ISFIFO(fsdata.st_mode) || S_ISCHR(fsdata.st_mode)) {
-		if (!S_ISFIFO(fsdata.st_mode)) {
-			/* For example, weston-terminal passes the master
-			 * connection of the terminal which was acquired with
-			 * forkpty; it probably links to a character device */
-			wp_log(WP_ERROR,
-					"The fd %d, size %ld, mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
-					fd, fsdata.st_size, fsdata.st_mode);
-		}
-		int flags = fcntl(fd, F_GETFL, 0);
-		if (flags == -1) {
-			wp_log(WP_ERROR, "fctnl F_GETFL failed!");
-		}
-		if ((flags & O_ACCMODE) == O_RDONLY) {
-			shadow->type = FDC_PIPE_IR;
-		} else if ((flags & O_ACCMODE) == O_WRONLY) {
-			shadow->type = FDC_PIPE_IW;
-		} else {
-			shadow->type = FDC_PIPE_RW;
-		}
-
+	} else if (fdcat_ispipe(shadow->type)) {
 		// Make this end of the pipe nonblocking, so that we can include
 		// it in our main loop.
 		set_fnctl_flag(shadow->fd_local, O_NONBLOCK);
@@ -987,7 +1001,7 @@ static struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 		shadow->pipe_recv.data = calloc(shadow->pipe_recv.size, 1);
 
 		shadow->pipe_onlyhere = true;
-	} else if (is_dmabuf(fd)) {
+	} else if (shadow->type == FDC_DMABUF) {
 		shadow->dmabuf_size = 0;
 
 		init_render_data(&map->rdata);
@@ -1000,17 +1014,6 @@ static struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 		shadow->dmabuf_mem_mirror = NULL;
 		shadow->dmabuf_diff_buffer = NULL;
 		shadow->type = FDC_DMABUF;
-	} else {
-		wp_log(WP_ERROR,
-				"The fd %d has an unusual mode %x (type=%x): blk=%d chr=%d dir=%d lnk=%d reg=%d fifo=%d sock=%d; expect an application crash!",
-				fd, fsdata.st_mode, fsdata.st_mode & __S_IFMT,
-				S_ISBLK(fsdata.st_mode),
-				S_ISCHR(fsdata.st_mode),
-				S_ISDIR(fsdata.st_mode),
-				S_ISLNK(fsdata.st_mode),
-				S_ISREG(fsdata.st_mode),
-				S_ISFIFO(fsdata.st_mode),
-				S_ISSOCK(fsdata.st_mode), strerror(errno));
 	}
 	return shadow;
 }
@@ -1174,11 +1177,14 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			cur->dirty_interval_max = INT32_MIN;
 
 			if (!cur->file_mem_mirror) {
-				cur->file_mem_mirror =
-						calloc(cur->file_size, 1);
+				// increase space, to avoid overflow when
+				// writing this buffer along with padding
+				cur->file_mem_mirror = calloc(
+						align(cur->file_size, 8), 1);
 				// 8 extra bytes for worst case diff expansion
-				cur->file_diff_buffer =
-						calloc(cur->file_size + 8, 1);
+				cur->file_diff_buffer = calloc(
+						align(cur->file_size + 8, 8),
+						1);
 				memcpy(cur->file_mem_mirror,
 						cur->file_mem_local,
 						cur->file_size);
@@ -1907,8 +1913,13 @@ void parse_and_prune_messages(struct message_tracker *mt,
 		struct char_window *dest_bytes, struct int_window *fds)
 {
 	bool anything_unknown = false;
+	struct char_window scan_bytes;
+	scan_bytes.data = dest_bytes->data;
+	scan_bytes.zone_start = dest_bytes->zone_start;
+	scan_bytes.zone_end = dest_bytes->zone_start;
+	scan_bytes.size = dest_bytes->size;
+
 	for (; source_bytes->zone_start < source_bytes->zone_end;) {
-		bool effect_unknown = true;
 		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
 			// Not enough remaining bytes to parse the header
 			wp_log(WP_DEBUG, "Insufficient bytes for header: %d %d",
@@ -1923,44 +1934,29 @@ void parse_and_prune_messages(struct message_tracker *mt,
 			// Not enough remaining bytes to contain the message
 			break;
 		}
+		if (msgsz < 8) {
+			wp_log(WP_DEBUG, "Degenerate message, claimed len=%d",
+					msgsz);
+			// Not enough remaining bytes to contain the message
+			break;
+		}
+
 		/* We copy the message to the trailing end of the in-progress
 		 * buffer; the parser may elect to modify the message's size */
-		memcpy(&dest_bytes->data[dest_bytes->zone_end],
+		memcpy(&scan_bytes.data[scan_bytes.zone_start],
 				&source_bytes->data[source_bytes->zone_start],
 				(size_t)msgsz);
 		source_bytes->zone_start += msgsz;
+		scan_bytes.zone_end = scan_bytes.zone_start + msgsz;
 
-		int new_size = 0, consumed_fds = 0;
-		enum message_action action = handle_message(mt, map,
-				on_display_side, from_client,
-				&dest_bytes->data[dest_bytes->zone_end],
-				dest_bytes->size - dest_bytes->zone_end,
-				&new_size, &fds->data[fds->zone_start],
-				fds->zone_end - fds->zone_start, &consumed_fds,
-				&effect_unknown);
-		fds->zone_start += consumed_fds;
-		if (new_size != msgsz) {
-			wp_log(WP_DEBUG, "Changing msg size");
+		enum parse_state pstate = handle_message(mt, map,
+				on_display_side, from_client, &scan_bytes, fds);
+		if (pstate == PARSE_UNKNOWN || pstate == PARSE_ERROR) {
+			anything_unknown = true;
 		}
-		if (action != MESSACT_DROP) {
-			dest_bytes->zone_end += new_size;
-		} else {
-			wp_log(WP_DEBUG, "Dropping a message of orig size %d",
-					msgsz);
-			if (consumed_fds > 0) {
-				wp_log(WP_ERROR,
-						"Message dropped had sent fds -- unimplemented, expect crash");
-			}
-		}
-		if (action == MESSACT_DELAY) {
-			wp_log(WP_DEBUG, "delay?? %d | %d %d", action,
-					dest_bytes->size, dest_bytes->zone_end);
-		}
-		if (action == MESSACT_ERROR) {
-			break;
-		}
-		anything_unknown |= effect_unknown;
+		scan_bytes.zone_start = scan_bytes.zone_end;
 	}
+	dest_bytes->zone_end = scan_bytes.zone_end;
 
 	if (anything_unknown) {
 		// All-un-owned buffers are assumed to have changed.

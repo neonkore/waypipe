@@ -193,7 +193,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 		} break;
 		case 'h': {
 			if (*fds_used >= fdlen) {
-				goto len_overflow;
+				goto fd_overflow;
 			}
 			call_args_val[nargs].si = fd_list[(*fds_used)++];
 			call_args_ptr[nargs] = &call_args_val[nargs].si;
@@ -290,11 +290,15 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 		}
 
 		continue;
+		const char *overflow_type = NULL;
 	len_overflow:
+		overflow_type = "byte";
+	fd_overflow:
+		overflow_type = "fd";
 		wp_log(WP_ERROR,
-				"Message %s.%s parse length overflow, bytes=%d/%d, fds=%d/%d, c=%c",
-				intf->name, msg->name, 4 * i, 4 * paylen,
-				*fds_used, fdlen, *c);
+				"Message %x %s.%s parse length overflow (for %ss), bytes=%d/%d, fds=%d/%d, c=%c",
+				payload, intf->name, msg->name, overflow_type,
+				4 * i, 4 * paylen, *fds_used, fdlen, *c);
 		return;
 	}
 	if (i != paylen) {
@@ -316,39 +320,28 @@ int peek_message_size(const void *data)
 	return (int)(((const uint32_t *)data)[1] >> 16);
 }
 
-enum message_action handle_message(struct message_tracker *mt,
+enum parse_state handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool display_side,
-		bool from_client, void *data, int data_len,
-		int *consumed_length, const int *fds, int fds_len,
-		int *n_consumed_fds, bool *unidentified_changes)
+		bool from_client, struct char_window *chars,
+		struct int_window *fds)
 {
-	const uint32_t *const header = (uint32_t *)data;
+	const uint32_t *const header =
+			(uint32_t *)&chars->data[chars->zone_start];
 	uint32_t obj = header[0];
 	int meth = (int)((header[1] << 16) >> 16);
 	int len = (int)(header[1] >> 16);
-	if (len > data_len) {
-		// This buffer containing this message was truncated before the
-		// end of the message
-		*consumed_length = 0;
-		return MESSACT_DELAY;
+	if (len != chars->zone_end - chars->zone_start) {
+		wp_log(WP_ERROR, "Message length disagreement %d vs %d", len,
+				chars->zone_end - chars->zone_start);
+		return PARSE_ERROR;
 	}
-	if (len < 2 * (int)sizeof(uint32_t)) {
-		wp_log(WP_ERROR,
-				"Message length underflow (%d), probably parsing error",
-				len);
-		*consumed_length = 0;
-		return MESSACT_ERROR;
-	}
-	*consumed_length = len;
-
 	// display: object = 0?
 	struct wp_object *objh = listset_get(&mt->objects, obj);
 
 	if (!objh || !objh->type) {
 		wp_log(WP_DEBUG, "Unidentified object %d with %s", obj,
 				from_client ? "request" : "event");
-		*unidentified_changes = true;
-		return MESSACT_KEEP;
+		return PARSE_UNKNOWN;
 	}
 	const struct wl_interface *intf = objh->type;
 	const struct wl_message *msg = NULL;
@@ -372,11 +365,9 @@ enum message_action handle_message(struct message_tracker *mt,
 	if (!msg) {
 		wp_log(WP_DEBUG, "Unidentified %s from known object",
 				from_client ? "request" : "event");
-		*unidentified_changes = true;
-		return MESSACT_KEEP;
+		return PARSE_UNKNOWN;
 	}
 
-	*unidentified_changes = false;
 	const struct msg_handler *handler =
 			get_handler_for_interface(objh->type);
 	void (*fn)(void) = NULL;
@@ -391,28 +382,49 @@ enum message_action handle_message(struct message_tracker *mt,
 		}
 	}
 
-	struct context ctx;
-	ctx.mt = mt;
-	ctx.map = map;
-	ctx.obj = objh;
-	ctx.on_display_side = display_side;
-	ctx.drop_this_msg = false;
-	uint32_t *payload = ((uint32_t *)data) + 2;
-	ctx.payload = payload;
-	ctx.payload_available_space = data_len - 8;
-	ctx.payload_length = len - 8;
+	int fds_used = 0;
+	struct context ctx = {
+			.mt = mt,
+			.map = map,
+			.obj = objh,
+			.on_display_side = display_side,
+			.drop_this_msg = false,
+			.message = (uint32_t *)&chars->data[chars->zone_start],
+			.message_length = len,
+			.message_available_space =
+					chars->size - chars->zone_start,
+			.fds = fds,
+			.fds_changed = false,
+	};
+	const uint32_t *payload = ctx.message + 2;
+
 	invoke_msg_handler(intf, msg, !from_client, payload, len / 4 - 2,
-			&fds[*n_consumed_fds], fds_len - *n_consumed_fds,
-			n_consumed_fds, fn, &ctx, mt);
-	if (ctx.payload_length != len - 8) {
-		payload[-1] = (uint32_t)meth |
-			      (uint32_t)(ctx.payload_length + 8) << 16;
-		*consumed_length = ctx.payload_length + 8;
+			&fds->data[fds->zone_start],
+			fds->zone_end - fds->zone_start, &fds_used, fn, &ctx,
+			mt);
+	if (ctx.drop_this_msg) {
+		wp_log(WP_DEBUG, "Dropping %s.%s, with %d fds", intf->name,
+				msg->name, fds_used);
+		chars->zone_end = chars->zone_start;
+		int nmoved = fds->zone_end - fds->zone_start - fds_used;
+		memmove(&fds->data[fds->zone_start],
+				&fds->data[fds->zone_start + fds_used],
+				(size_t)nmoved * sizeof(int));
+		fds->zone_end -= fds_used;
+		return PARSE_KNOWN;
 	}
 
-	// Flag set by the protocol handler function
-	if (ctx.drop_this_msg) {
-		return MESSACT_DROP;
+	if (!ctx.fds_changed) {
+		// Default, autoadvance fd queue, unless handler disagreed
+		fds->zone_start += fds_used;
 	}
-	return MESSACT_KEEP;
+	if (fds->zone_end < fds->zone_start) {
+		wp_log(WP_ERROR,
+				"Handler error after %s.%s: fdzs = %d > %d = fdze",
+				intf->name, msg->name, fds->zone_start,
+				fds->zone_end);
+	}
+	// Move the end, in case there were changes
+	chars->zone_end = chars->zone_start + ctx.message_length;
+	return PARSE_KNOWN;
 }

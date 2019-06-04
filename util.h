@@ -43,6 +43,7 @@ static inline int clamp(int v, int lower, int upper)
 {
 	return max(min(v, upper), lower);
 }
+static inline int align(int v, int m) { return m * ((v + m - 1) / m); }
 
 /** Set the given flag with fcntl. Silently return -1 on failure. */
 int set_fnctl_flag(int fd, int the_flag);
@@ -153,8 +154,14 @@ struct transfer {
 
 void cleanup_translation_map(struct fd_translation_map *map);
 
+/** Given a file descriptor, return which type code would be applied
+ * to its shadow entry. (For example, FDC_PIPE_IR for a pipe-like
+ * object that can only be read.) Sets *size if non-NULL and if
+ * the object is an FDC_FILE. */
+fdcat_t get_fd_type(int fd, size_t *size);
 /** Given a list of local file descriptors, produce matching global ids, and
  * register them into the translation map if not already done. */
+struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd);
 void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
 		int ids[]);
 /** Produce a list of file updates to transfer. All pointers will be to existing
@@ -204,9 +211,6 @@ void close_local_pipe_ends(struct fd_translation_map *map);
 /** If a pipe is remotely closed, but not locally closed, then close it too */
 void close_rclosed_pipes(struct fd_translation_map *map);
 
-/** Get the shadow structure matching lfd, if one exists, else NULL */
-struct shadow_fd *get_shadow_for_local_fd(
-		struct fd_translation_map *map, int lfd);
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 /** Reduce the reference count for a surface which is owned. The surface
  * should not be used by the caller after this point. Returns true if pointer
@@ -251,19 +255,22 @@ struct message_tracker {
 	struct obj_list objects;
 };
 struct context {
-	struct message_tracker *mt;
-	struct fd_translation_map *map;
+	struct message_tracker *const mt;
+	struct fd_translation_map *const map;
 	struct wp_object *obj;
 	bool drop_this_msg;
 	/* If true, running as waypipe client, and interfacing with compositor's
 	 * buffers */
-	bool on_display_side;
-	/* Adjusting the payload will modify the transferred message. Length
-	 * changes to the payload can be performed by changing payload length,
-	 * as long as there is space still available for the payload */
-	uint32_t *payload;
-	int payload_length;
-	int payload_available_space;
+	const bool on_display_side;
+	/* The transferred message can be rewritten in place, and resized, as
+	 * long as there is space available. Setting 'fds_changed' will
+	 * prevent the fd zone start from autoincrementing after running
+	 * the function, which may be useful when injecting messages with fds */
+	const int message_available_space;
+	uint32_t *const message;
+	int message_length;
+	bool fds_changed;
+	struct int_window *const fds;
 };
 
 struct char_window {
@@ -303,12 +310,6 @@ void init_message_tracker(struct message_tracker *mt);
 void cleanup_message_tracker(
 		struct fd_translation_map *map, struct message_tracker *mt);
 
-enum message_action {
-	MESSACT_KEEP,
-	MESSACT_DROP,
-	MESSACT_ERROR,
-	MESSACT_DELAY
-};
 /** Read message size from header; the 8 bytes beyond data must exist */
 int peek_message_size(const void *data);
 /**
@@ -317,12 +318,21 @@ int peek_message_size(const void *data);
  * not correspond to a known protocol.
  *
  * The message data payload may be modified and increased in size.
+ *
+ * The window `chars` should start at the message start, end
+ * at its end, and indicate remaining space.
+ * The window `fds` should start at the next fd in the queue, ends
+ * with the last.
+ *
+ * The start and end of `chars` will be moved to the new end of the message.
+ * The end of `fds` may be moved if any fds are inserted or discarded.
+ * The start of fds will be moved, depending on how many fds were consumed.
  */
-enum message_action handle_message(struct message_tracker *mt,
+enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
+enum parse_state handle_message(struct message_tracker *mt,
 		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, void *data, int data_len,
-		int *consumed_length, const int *fds, int fds_len,
-		int *n_consumed_fds, bool *unidentified_changes);
+		bool from_client, struct char_window *chars,
+		struct int_window *fds);
 
 // handlers.c
 struct wl_interface;
