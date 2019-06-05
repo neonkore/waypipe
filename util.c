@@ -539,7 +539,7 @@ static int advance_waymsg_chanwrite(
 			return 0;
 		}
 		size_t uwr = (size_t)wr;
-		while (uwr > 0) {
+		while (uwr > 0 && bt->blocks_written < bt->nblocks) {
 			size_t left = bt->blocks[bt->blocks_written].iov_len;
 			if (left > uwr) {
 				/* Block partially completed */
@@ -557,7 +557,9 @@ static int advance_waymsg_chanwrite(
 				bt->blocks_written++;
 			}
 			/* Skip past zero-length blocks */
-			while (bt->blocks[bt->blocks_written].iov_len == 0) {
+			while (bt->blocks_written < bt->nblocks &&
+					bt->blocks[bt->blocks_written].iov_len ==
+							0) {
 				bt->blocks_written++;
 			}
 		}
