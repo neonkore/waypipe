@@ -54,7 +54,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
 ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds,
 		int maxfds);
 ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
-		int numfds);
+		int numfds, int *nfds_written);
 
 int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side);
 

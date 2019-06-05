@@ -196,11 +196,15 @@ ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds,
 	}
 	return ret;
 }
+// The maximum number of fds libwayland can recvmsg at once
+#define MAX_LIBWAY_FDS 28
 ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
-		int numfds)
+		int numfds, int *nfds_written)
 {
+	bool overflow = numfds > MAX_LIBWAY_FDS;
+
 	struct iovec the_iovec;
-	the_iovec.iov_len = buflen;
+	the_iovec.iov_len = overflow ? 1 : buflen;
 	the_iovec.iov_base = (char *)buf;
 	struct msghdr msg;
 	msg.msg_name = NULL;
@@ -212,7 +216,7 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 	msg.msg_flags = 0;
 
 	union {
-		char buf[CMSG_SPACE(sizeof(int) * 28)];
+		char buf[CMSG_SPACE(sizeof(int) * MAX_LIBWAY_FDS)];
 		struct cmsghdr align;
 	} uc;
 	memset(uc.buf, 0, sizeof(uc.buf));
@@ -223,7 +227,9 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		struct cmsghdr *frst = CMSG_FIRSTHDR(&msg);
 		frst->cmsg_level = SOL_SOCKET;
 		frst->cmsg_type = SCM_RIGHTS;
-		memcpy(CMSG_DATA(frst), fds, numfds * sizeof(int));
+		*nfds_written = min(numfds, MAX_LIBWAY_FDS);
+		size_t nwritten = (size_t)(*nfds_written);
+		memcpy(CMSG_DATA(frst), fds, nwritten * sizeof(int));
 		for (int i = 0; i < numfds; i++) {
 			int flags = fcntl(fds[i], F_GETFL, 0);
 			if (flags == -1 && errno == EBADF) {
@@ -232,9 +238,11 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 			}
 		}
 
-		frst->cmsg_len = CMSG_LEN(numfds * sizeof(int));
-		msg.msg_controllen = CMSG_SPACE(numfds * sizeof(int));
-		wp_log(WP_DEBUG, "Writing %d fds to cmsg data", numfds);
+		frst->cmsg_len = CMSG_LEN(nwritten * sizeof(int));
+		msg.msg_controllen = CMSG_SPACE(nwritten * sizeof(int));
+		wp_log(WP_DEBUG, "Writing %d fds to cmsg data", *nfds_written);
+	} else {
+		*nfds_written = 0;
 	}
 
 	ssize_t ret = sendmsg(conn, &msg, 0);
@@ -461,11 +469,13 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	const char *progdesc = display_side ? "compositor" : "application";
 	// Write as much as possible
 	while (cmsg->dbuffer_start < cmsg->dbuffer_end) {
+		int nfds_written = 0;
 		ssize_t wc = iovec_write(progfd,
 				cmsg->dbuffer + cmsg->dbuffer_start,
 				(size_t)(cmsg->dbuffer_end -
 						cmsg->dbuffer_start),
-				cmsg->tfbuffer, cmsg->tfbuffer_count);
+				cmsg->tfbuffer, cmsg->tfbuffer_count,
+				&nfds_written);
 		if (wc == -1 && errno == EWOULDBLOCK) {
 			wp_log(WP_DEBUG, "Write to the %s would block",
 					progdesc);
@@ -483,10 +493,12 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 					"Wrote, have done %d/%d bytes in chunk %ld",
 					cmsg->dbuffer_start, cmsg->dbuffer_end,
 					wc);
-			// We send all fds with the very first batch
-			decref_transferred_fds(map, cmsg->tfbuffer_count,
-					cmsg->tfbuffer);
-			cmsg->tfbuffer_count = 0;
+			// We send as many fds as we can with the first batch
+			decref_transferred_fds(
+					map, nfds_written, cmsg->tfbuffer);
+			memmove(cmsg->tfbuffer, cmsg->tfbuffer + nfds_written,
+					(size_t)nfds_written * sizeof(int));
+			cmsg->tfbuffer_count -= nfds_written;
 		}
 	}
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
