@@ -980,7 +980,8 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	}
 }
 
-struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
+struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
+		struct dmabuf_slice_data *info)
 {
 	struct shadow_fd *cur = map->list;
 	while (cur) {
@@ -1043,9 +1044,15 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 
 		init_render_data(&map->rdata);
 		shadow->dmabuf_bo = import_dmabuf(&map->rdata, shadow->fd_local,
-				&shadow->dmabuf_size);
+				&shadow->dmabuf_size, info);
 		if (!shadow->dmabuf_bo) {
 			return shadow;
+		}
+		if (info) {
+			memcpy(&shadow->dmabuf_info, info,
+					sizeof(struct dmabuf_slice_data));
+		} else {
+			// already zero initialized (no information).
 		}
 		// to be created on first transfer
 		shadow->dmabuf_mem_mirror = NULL;
@@ -1058,7 +1065,7 @@ void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
 		int ids[])
 {
 	for (int i = 0; i < nfds; i++) {
-		ids[i] = translate_fd(map, fds[i])->remote_id;
+		ids[i] = translate_fd(map, fds[i], NULL)->remote_id;
 	}
 }
 struct shadow_fd *get_shadow_for_local_fd(
@@ -1279,7 +1286,14 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 			if (!cur->dmabuf_mem_mirror) {
 				cur->dmabuf_mem_mirror =
 						calloc(1, cur->dmabuf_size);
-				// 8 extra bytes for worst case diff expansion
+				// 8 extra bytes for diff messages, or
+				// alternatively for type header info
+				size_t diffb_size =
+						(size_t)max(sizeof(struct dmabuf_slice_data),
+								8) +
+						(size_t)align((int)cur->dmabuf_size,
+								8);
+				cur->dmabuf_diff_buffer = calloc(diffb_size, 1);
 				first = true;
 			}
 			void *handle = NULL;
@@ -1292,14 +1306,25 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				continue;
 			}
 			if (first) {
+				// Write diff with a header, and build mirror,
+				// only touching data once
 				memcpy(cur->dmabuf_mem_mirror, data,
+						cur->dmabuf_size);
+				memcpy(cur->dmabuf_diff_buffer,
+						&cur->dmabuf_info,
+						sizeof(struct dmabuf_slice_data));
+				memcpy(cur->dmabuf_diff_buffer +
+								sizeof(struct dmabuf_slice_data),
+						cur->dmabuf_mem_mirror,
 						cur->dmabuf_size);
 				// new transfer, we send file contents verbatim
 
 				wp_log(WP_DEBUG, "Sending initial dmabuf");
 				int nt = (*ntransfers)++;
-				transfers[nt].data = cur->dmabuf_mem_mirror;
-				transfers[nt].size = cur->dmabuf_size;
+				transfers[nt].data = cur->dmabuf_diff_buffer;
+				transfers[nt].size =
+						cur->dmabuf_size +
+						sizeof(struct dmabuf_slice_data);
 				transfers[nt].type = cur->type;
 				transfers[nt].obj_id = cur->remote_id;
 				transfers[nt].special = 0;
@@ -1307,16 +1332,6 @@ void collect_updates(struct fd_translation_map *map, int *ntransfers,
 				bool delta = memcmp(cur->dmabuf_mem_mirror,
 						data, cur->dmabuf_size);
 				if (delta) {
-					if (!cur->dmabuf_diff_buffer) {
-						/* Create diff buffer by need
-						 * for remote files
-						 */
-						cur->dmabuf_diff_buffer = calloc(
-								cur->dmabuf_size +
-										8,
-								1);
-					}
-
 					// TODO: damage region support!
 					size_t diffsize;
 					wp_log(WP_DEBUG,
@@ -1712,12 +1727,21 @@ static void apply_update(
 			shadow->fd_local = -1;
 			return;
 		}
+		struct dmabuf_slice_data *info =
+				(struct dmabuf_slice_data *)transf->data;
+		char *contents =
+				transf->data + sizeof(struct dmabuf_slice_data);
+		size_t contents_size =
+				transf->size - sizeof(struct dmabuf_slice_data);
+
 		shadow->dmabuf_bo = make_dmabuf(
-				&map->rdata, transf->data, transf->size);
+				&map->rdata, contents, contents_size, info);
 		if (!shadow->dmabuf_bo) {
 			shadow->fd_local = -1;
 			return;
 		}
+		memcpy(&shadow->dmabuf_info, info,
+				sizeof(struct dmabuf_slice_data));
 		shadow->fd_local = export_dmabuf(shadow->dmabuf_bo);
 	} else {
 		wp_log(WP_ERROR, "Creating unknown file type updates");

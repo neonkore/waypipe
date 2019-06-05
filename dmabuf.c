@@ -50,8 +50,9 @@ int init_render_data(struct render_data *data)
 		// Silent return, idempotent
 		return 0;
 	}
+	// todo: make this a command line option
 	const char card[] = "/dev/dri/renderD128";
-	// Try 1: DRM dumb buffers
+
 	int drm_fd = open(card, O_RDWR | O_CLOEXEC);
 	if (drm_fd == -1) {
 		wp_log(WP_ERROR, "Failed to open drm fd for %s: %s", card,
@@ -82,7 +83,8 @@ void cleanup_render_data(struct render_data *data)
 	}
 }
 
-struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size)
+struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
+		struct dmabuf_slice_data *info)
 {
 	ssize_t endp = lseek(fd, 0, SEEK_END);
 	if (endp == -1) {
@@ -97,19 +99,38 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size)
 		return NULL;
 	}
 	*size = (size_t)endp;
-	/* TODO: delay this invocation until we parse the protocol and are given
-	 * metadata. Note: for the multiplanar buffers, this would, in the worst
-	 * case, require that we block or reorder the 'add_fd' calls until
-	 * someone calls create. Also, how are the multiplanar/multifd formats
-	 * mapped? */
-	struct gbm_import_fd_data data;
-	data.fd = fd;
-	data.width = 256;
-	data.stride = 1024;
-	data.height = (uint32_t)(endp + 1023) / 1024;
-	data.format = GBM_FORMAT_XRGB8888;
-	struct gbm_bo *bo = gbm_bo_import(
-			rd->dev, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_RENDERING);
+
+	/* Multiplanar formats are all rather badly supported by
+	 * drivers/libgbm/libdrm/compositors/applications/everything. */
+	struct gbm_import_fd_modifier_data data;
+	data.num_fds = 1;
+	data.fds[0] = fd;
+	if (info && info->num_planes == 1) {
+		// Assume only one plane contains contents? otherwise fall
+		// back....
+		data.modifier = info->modifier;
+		int which = 0;
+		for (int i = 0; i < 4; i++) {
+			if (info->using_planes[i]) {
+				which = i;
+			}
+		}
+		data.strides[0] = (int)info->strides[which];
+		data.offsets[0] = (int)info->offsets[which];
+		data.width = info->width;
+		data.height = info->height;
+		data.format = info->format;
+	} else {
+		data.offsets[0] = 0;
+		data.strides[0] = 1024;
+		data.width = 256;
+		data.height = (uint32_t)(endp + 1023) / 1024;
+		data.format = GBM_FORMAT_XRGB8888;
+		data.modifier = 0;
+	}
+
+	struct gbm_bo *bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER,
+			&data, GBM_BO_USE_RENDERING);
 	if (!bo) {
 		wp_log(WP_ERROR, "Failed to import dmabuf to gbm bo",
 				strerror(errno));
@@ -117,29 +138,6 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size)
 	}
 
 	return bo;
-}
-
-int read_dmabuf(int fd, void *mapptr, size_t size, void *destination)
-{
-	// Assuming mmap worked
-	if (!mapptr) {
-		wp_log(WP_ERROR, "dmabuf to read was null");
-		return -1;
-	}
-	struct dma_buf_sync sync;
-	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) == -1) {
-		wp_log(WP_ERROR, "Failed to start sync guard on dmabuf: %s",
-				strerror(errno));
-	}
-	memcpy(destination, mapptr, size);
-
-	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) == -1) {
-		wp_log(WP_ERROR, "Failed to end sync guard on dmabuf: %s",
-				strerror(errno));
-	}
-	return 0;
 }
 
 bool is_dmabuf(int fd)
@@ -163,6 +161,7 @@ bool is_dmabuf(int fd)
 		return false;
 	}
 }
+
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo)
 {
@@ -183,21 +182,53 @@ int get_unique_dmabuf_handle(
 	return handle;
 }
 
-struct gbm_bo *make_dmabuf(
-		struct render_data *rd, const char *data, size_t size)
+struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
+		size_t size, struct dmabuf_slice_data *info)
 {
-	uint32_t width = 512;
-	uint32_t height = (uint32_t)(size + 4 * width - 1) / (4 * width);
-	uint32_t format = GBM_FORMAT_XRGB8888;
-	/* Set modifiers to linear, since incoming buffers also will be, thanks
-	 * to the modifier restrictions set in handlers.c */
-	struct gbm_bo *bo = gbm_bo_create(rd->dev, width, height, format,
-			GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+	struct gbm_bo *bo;
+	if (!info || info->num_planes == 0) {
+		uint32_t width = 512;
+		uint32_t height =
+				(uint32_t)(size + 4 * width - 1) / (4 * width);
+		uint32_t format = GBM_FORMAT_XRGB8888;
+		/* Set modifiers to linear, the most likely/portable format */
+		bo = gbm_bo_create(rd->dev, width, height, format,
+				GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+	} else {
+		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
+		// assuming the format is a very standard one which can be
+		// created by gbm_bo;
+		int which = 0;
+		for (int i = 0; i < (int)info->num_planes; i++) {
+			if (info->using_planes[i]) {
+				which = i;
+			}
+		}
+		/* Whether just size and modifiers suffice to replicate
+		 * a surface is driver dependent, and requires actual testing
+		 * with the hardware.
+		 *
+		 * i915 DRM ioctls cover size, swizzling, tiling state, only.
+		 * amdgpu, size + allocation domain/caching/align flags
+		 * etnaviv, size + caching flags
+		 * tegra, vc4: size + tiling + flags
+		 * radeon: size + tiling + flags, including pitch
+		 *
+		 * Note that gbm doesn't have a specific api for creating
+		 * buffers with minimal information, or even just getting
+		 * the size of the buffer contents.
+		 */
+		int eff_height = size / info->strides[which] + 1;
+		bo = gbm_bo_create_with_modifiers(rd->dev, info->width,
+				eff_height, info->format, modifiers, 2);
+	}
 	if (!bo) {
 		wp_log(WP_ERROR, "Failed to make dmabuf: %s", strerror(errno));
 		return NULL;
 	}
+
 	void *handle = NULL;
+	// unfortunately, there is no easy way to estimate the writeable region
 	void *dst = map_dmabuf(bo, true, &handle);
 	if (!dst) {
 		gbm_bo_destroy(bo);
@@ -247,4 +278,44 @@ int unmap_dmabuf(struct gbm_bo *bo, void *map_handle)
 {
 	gbm_bo_unmap(bo, map_handle);
 	return 0;
+}
+
+// TODO: support DRM formats, like DRM_FORMAT_RGB888_A8 and
+// DRM_FORMAT_ARGB16161616F, defined in drm_fourcc.h.
+struct multiplanar_info {
+	uint32_t format;
+	struct {
+		int subsample_w;
+		int subsample_h;
+		int cpp;
+	} planes[3];
+};
+static const struct multiplanar_info plane_table[] = {
+		{GBM_FORMAT_NV12, {{1, 1, 1}, {2, 2, 2}}},
+		{GBM_FORMAT_NV21, {{1, 1, 1}, {2, 2, 2}}},
+		{GBM_FORMAT_NV16, {{1, 1, 1}, {2, 1, 2}}},
+		{GBM_FORMAT_NV61, {{1, 1, 1}, {2, 1, 2}}},
+		{GBM_FORMAT_YUV410, {{1, 1, 1}, {4, 4, 1}, {4, 4, 1}}},
+		{GBM_FORMAT_YVU410, {{1, 1, 1}, {4, 4, 1}, {4, 4, 1}}},
+		{GBM_FORMAT_YUV411, {{1, 1, 1}, {4, 1, 1}, {4, 1, 1}}},
+		{GBM_FORMAT_YVU411, {{1, 1, 1}, {4, 1, 1}, {4, 1, 1}}},
+		{GBM_FORMAT_YUV420, {{1, 1, 1}, {2, 2, 1}, {2, 2, 1}}},
+		{GBM_FORMAT_YVU420, {{1, 1, 1}, {2, 2, 1}, {2, 2, 1}}},
+		{GBM_FORMAT_YUV422, {{1, 1, 1}, {2, 1, 1}, {2, 1, 1}}},
+		{GBM_FORMAT_YVU422, {{1, 1, 1}, {2, 1, 1}, {2, 1, 1}}},
+		{GBM_FORMAT_YUV444, {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}}},
+		{GBM_FORMAT_YVU444, {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}}}, {0}};
+
+uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
+{
+	for (int i = 0; plane_table[i].format; i++) {
+		if (plane_table[i].format == format) {
+			int cpp = plane_table[i].planes[plane].cpp;
+			const uint32_t by_cpp[] = {0, GBM_FORMAT_R8,
+					GBM_FORMAT_GR88, GBM_FORMAT_RGB888,
+					GBM_BO_FORMAT_ARGB8888};
+			return by_cpp[cpp];
+		}
+	}
+	return format;
 }

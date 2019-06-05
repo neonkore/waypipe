@@ -104,6 +104,22 @@ struct pipe_buffer {
 	ssize_t used;
 };
 
+struct dmabuf_slice_data {
+	/* This information partially duplicates that of a gbm_bo. However, for
+	 * instance with weston, it is possible for the compositor to handle
+	 * multibuffer multiplanar images, even though a driver may only support
+	 * multiplanar images derived from a single underlying dmabuf. */
+	uint32_t width;
+	uint32_t height;
+	uint32_t format;
+	uint32_t num_planes;
+	// to which planes is the matching dmabuf assigned?
+	uint8_t using_planes[4];
+	uint32_t strides[4];
+	uint32_t offsets[4];
+	uint64_t modifier;
+};
+
 struct shadow_fd {
 	struct shadow_fd *next; // singly-linked list
 	fdcat_t type;
@@ -150,6 +166,7 @@ struct shadow_fd {
 	struct gbm_bo *dmabuf_bo;
 	char *dmabuf_mem_mirror;  // malloc'd
 	char *dmabuf_diff_buffer; // malloc'd
+	struct dmabuf_slice_data dmabuf_info;
 };
 
 struct transfer {
@@ -169,8 +186,12 @@ void cleanup_translation_map(struct fd_translation_map *map);
  * the object is an FDC_FILE. */
 fdcat_t get_fd_type(int fd, size_t *size);
 /** Given a list of local file descriptors, produce matching global ids, and
- * register them into the translation map if not already done. */
-struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd);
+ * register them into the translation map if not already done.  The specific
+ * translate_fd function can also be provided with optional extra information.
+ */
+struct dmabuf_slice_data;
+struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
+		struct dmabuf_slice_data *info);
 void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
 		int ids[]);
 /** Produce a list of file updates to transfer. All pointers will be to existing
@@ -358,13 +379,16 @@ extern const struct msg_handler handlers[];
 extern const struct wl_interface *the_display_interface;
 
 // dmabuf.c
+
+/* Additional information to help serialize a dmabuf */
 int init_render_data(struct render_data *);
 void cleanup_render_data(struct render_data *);
 bool is_dmabuf(int fd);
-struct gbm_bo *make_dmabuf(
-		struct render_data *rd, const char *data, size_t size);
+struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
+		size_t size, struct dmabuf_slice_data *info);
 int export_dmabuf(struct gbm_bo *bo);
-struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size);
+struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
+		struct dmabuf_slice_data *info);
 void destroy_dmabuf(struct gbm_bo *bo);
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle);
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
@@ -373,5 +397,6 @@ int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
  * then free the temporary buffer objects in a batch */
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo);
+uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
 
 #endif // WAYPIPE_UTIL_H

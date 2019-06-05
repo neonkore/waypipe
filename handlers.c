@@ -757,7 +757,7 @@ static void event_wl_keyboard_keymap(void *data,
 {
 	struct context *context = get_context(data, wl_keyboard);
 
-	struct shadow_fd *sfd = translate_fd(context->map, fd);
+	struct shadow_fd *sfd = translate_fd(context->map, fd, NULL);
 	if (sfd->type != FDC_FILE || sfd->file_size != size) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d",
@@ -777,7 +777,7 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 	struct context *context = get_context(client, resource);
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)listset_get(
 			&context->mt->objects, id);
-	struct shadow_fd *sfd = translate_fd(context->map, fd);
+	struct shadow_fd *sfd = translate_fd(context->map, fd, NULL);
 	/* It may be valid for the file descriptor size to be larger than the
 	 * immediately advertised size, since the call to wl_shm.create_pool
 	 * may be followed by wl_shm_pool.resize, which then increases the size
@@ -1018,7 +1018,18 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 	struct context *context = get_context(client, resource);
 	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
 			&context->mt->objects, id);
-	struct shadow_fd *sfd = translate_fd(context->map, name);
+	struct dmabuf_slice_data info;
+	info.width = (uint32_t)width;
+	info.height = (uint32_t)height;
+	info.offsets[0] = (uint32_t)offset0;
+	info.offsets[1] = (uint32_t)offset1;
+	info.offsets[2] = (uint32_t)offset2;
+	info.strides[0] = (uint32_t)stride0;
+	info.strides[1] = (uint32_t)stride1;
+	info.strides[2] = (uint32_t)stride2;
+	info.modifier = 0;
+	info.format = format;
+	struct shadow_fd *sfd = translate_fd(context->map, name, &info);
 	if (sfd->type != FDC_DMABUF) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not a dmabuf (type=%d)",
@@ -1035,10 +1046,6 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 	// handling multiple offsets (?)
 	buf->dmabuf_offsets[0] = (uint32_t)offset0;
 	buf->dmabuf_strides[0] = (uint32_t)stride0;
-	(void)offset1;
-	(void)offset2;
-	(void)stride1;
-	(void)stride2;
 }
 
 static void event_zwp_linux_dmabuf_v1_modifier(void *data,
@@ -1047,12 +1054,9 @@ static void event_zwp_linux_dmabuf_v1_modifier(void *data,
 {
 	struct context *context = get_context(data, zwp_linux_dmabuf_v1);
 	(void)format;
-	// Filter out formats with nonstandard memory layouts; they may not
-	// be portable between different GPU generations.
-	// (TODO: better configuration and heuristics for this)
-	if (modifier_hi || modifier_lo) {
-		context->drop_this_msg = true;
-	}
+	uint64_t modifier = modifier_hi * 0x100000000uL * modifier_lo;
+	(void)modifier;
+	(void)context;
 }
 static void event_zwp_linux_buffer_params_v1_created(void *data,
 		struct zwp_linux_buffer_params_v1 *zwp_linux_buffer_params_v1,
@@ -1224,9 +1228,34 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 	if (!context->on_display_side) {
 		reintroduce_add_msgs(context, params);
 	}
+	struct dmabuf_slice_data info = {
+			.width = width,
+			.height = height,
+			.format = format,
+			.num_planes = params->nplanes,
+			.strides = {params->add[0].stride,
+					params->add[1].stride,
+					params->add[2].stride,
+					params->add[3].stride},
+			.offsets = {params->add[0].offset,
+					params->add[1].offset,
+					params->add[2].offset,
+					params->add[3].offset},
+	};
 	for (int i = 0; i < params->nplanes; i++) {
-		struct shadow_fd *sfd =
-				translate_fd(context->map, params->add[i].fd);
+		memset(info.using_planes, 0, sizeof(info.using_planes));
+		for (int k = 0; k < params->nplanes; k++) {
+			if (params->add[k].fd == params->add[i].fd) {
+				info.using_planes[k] = 1;
+				info.modifier = params->add[k].modifier;
+			}
+		}
+		/* replace the format with something the driver can probably
+		 * handle */
+		info.format = dmabuf_get_simple_format_for_plane(format, i);
+
+		struct shadow_fd *sfd = translate_fd(
+				context->map, params->add[i].fd, &info);
 		if (sfd->type != FDC_DMABUF) {
 			wp_log(WP_ERROR,
 					"fd #%d for linux-dmabuf request wasn't a dmabuf",
@@ -1251,49 +1280,16 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 		uint32_t format, uint32_t flags)
 {
 	struct context *context = get_context(client, resource);
-	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)context->obj;
 	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
 			&context->mt->objects, buffer_id);
-	buf->type = BUF_DMA;
-	buf->dmabuf_nplanes = params->nplanes;
-	deduplicate_dmabuf_fds(context, params);
-	if (!context->on_display_side) {
-		// Do this before we wipe any of the fds
-		reintroduce_add_msgs(context, params);
-	}
-	for (int i = 0; i < params->nplanes; i++) {
-		// TODO: pass in stride info and modifier hints
-		struct shadow_fd *sfd =
-				translate_fd(context->map, params->add[i].fd);
-		if (sfd->type != FDC_DMABUF) {
-			wp_log(WP_ERROR,
-					"fd #%d for linux-dmabuf request wasn't a dmabuf",
-					i);
-			continue;
-		}
-		/* Doubly increment the refcount: once for the decrement after
-		 * transferring, and once due to the pointer ownership here */
-		if (sfd->has_owner) {
-			/* increment for each extra time this fd will be
-			 * sent */
-			shadow_incref_transfer(sfd);
-		}
-		buf->dmabuf_buffers[i] = shadow_incref_protocol(sfd);
-		buf->dmabuf_offsets[i] = params->add[i].offset;
-		buf->dmabuf_strides[i] = params->add[i].stride;
-		buf->dmabuf_modifiers[i] = params->add[i].modifier;
-	}
-	buf->dmabuf_flags = flags;
-	buf->dmabuf_width = width;
-	buf->dmabuf_height = height;
-	buf->dmabuf_format = format;
-	/* Remove fds from params, so they aren't closed when the param object
-	 * is destroyed */
-	for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
-		params->add[i].fd = -1;
-	}
-	params->nplanes = 0;
+
+	// There isn't really that much unnecessary copying. Note that
+	// 'create' may modify messages
+	request_zwp_linux_buffer_params_v1_create(
+			(void *)context, NULL, width, height, format, flags);
+	event_zwp_linux_buffer_params_v1_created(
+			(void *)context, NULL, (void *)buf);
+	return;
 }
 
 static const struct wl_display_listener wl_display_event_handler = {
