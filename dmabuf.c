@@ -163,7 +163,8 @@ bool is_dmabuf(int fd)
 		return false;
 	}
 }
-int get_unique_dmabuf_handle(struct render_data *rd, int fd)
+int get_unique_dmabuf_handle(
+		struct render_data *rd, int fd, struct gbm_bo **temporary_bo)
 {
 	struct gbm_import_fd_data data;
 	data.fd = fd;
@@ -171,14 +172,14 @@ int get_unique_dmabuf_handle(struct render_data *rd, int fd)
 	data.stride = 1;
 	data.height = 1;
 	data.format = GBM_FORMAT_R8;
-	struct gbm_bo *bo = gbm_bo_import(
+	*temporary_bo = gbm_bo_import(
 			rd->dev, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_RENDERING);
-	if (!bo) {
+	if (!*temporary_bo) {
 		return -1;
 	}
-	// This effectively reduces to DRM_IOCTL_PRIME_FD_TO_HANDLE
-	int handle = gbm_bo_get_handle(bo).s32;
-	gbm_bo_destroy(bo);
+	// This effectively reduces to DRM_IOCTL_PRIME_FD_TO_HANDLE. Is the
+	// runtime dependency worth it?
+	int handle = gbm_bo_get_handle(*temporary_bo).s32;
 	return handle;
 }
 

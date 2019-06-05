@@ -1183,9 +1183,14 @@ static void deduplicate_dmabuf_fds(
 		struct context *context, struct wp_linux_dmabuf_params *params)
 {
 	int handles[MAX_DMABUF_PLANES];
+	struct gbm_bo *temp_bos[MAX_DMABUF_PLANES];
+	memset(temp_bos, 0, sizeof(temp_bos));
 	for (int i = 0; i < params->nplanes; i++) {
-		handles[i] = get_unique_dmabuf_handle(
-				&context->map->rdata, params->add[i].fd);
+		handles[i] = get_unique_dmabuf_handle(&context->map->rdata,
+				params->add[i].fd, &temp_bos[i]);
+	}
+	for (int i = 0; i < params->nplanes; i++) {
+		destroy_dmabuf(temp_bos[i]);
 	}
 	for (int i = 0; i < params->nplanes; i++) {
 		int lowest = i;

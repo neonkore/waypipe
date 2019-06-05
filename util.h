@@ -354,6 +354,10 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size);
 void destroy_dmabuf(struct gbm_bo *bo);
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle);
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
-int get_unique_dmabuf_handle(struct render_data *rd, int fd);
+/** The handle values are unique among the set of currently active buffer
+ * objects. To compare a set of buffer objects, produce handles in a batch, and
+ * then free the temporary buffer objects in a batch */
+int get_unique_dmabuf_handle(
+		struct render_data *rd, int fd, struct gbm_bo **temporary_bo);
 
 #endif // WAYPIPE_UTIL_H
