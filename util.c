@@ -542,6 +542,7 @@ static int advance_waymsg_chanwrite(
 		while (uwr > 0) {
 			size_t left = bt->blocks[bt->blocks_written].iov_len;
 			if (left > uwr) {
+				/* Block partially completed */
 				bt->blocks[bt->blocks_written].iov_len -= uwr;
 				bt->blocks[bt->blocks_written].iov_base =
 						(void *)((char *)bt->blocks[bt->blocks_written]
@@ -549,9 +550,14 @@ static int advance_waymsg_chanwrite(
 								uwr);
 				uwr = 0;
 			} else {
+				/* Block completed */
 				bt->blocks[bt->blocks_written].iov_len = 0;
 				bt->blocks[bt->blocks_written].iov_base = NULL;
 				uwr -= left;
+				bt->blocks_written++;
+			}
+			/* Skip past zero-length blocks */
+			while (bt->blocks[bt->blocks_written].iov_len == 0) {
 				bt->blocks_written++;
 			}
 		}
@@ -711,12 +717,14 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 				"Error making channel connection nonblocking: %s",
 				strerror(errno));
 		close(chanfd);
+		close(progfd);
 		return EXIT_FAILURE;
 	}
 	if (set_fnctl_flag(progfd, O_NONBLOCK | O_CLOEXEC) == -1) {
 		wp_log(WP_ERROR, "Error making %s connection nonblocking: %s",
 				progdesc, strerror(errno));
 		close(chanfd);
+		close(progfd);
 		return EXIT_FAILURE;
 	}
 

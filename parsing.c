@@ -293,8 +293,10 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 		const char *overflow_type = NULL;
 	len_overflow:
 		overflow_type = "byte";
+		goto overflow;
 	fd_overflow:
 		overflow_type = "fd";
+	overflow:
 		wp_log(WP_ERROR,
 				"Message %x %s.%s parse length overflow (for %ss), bytes=%d/%d, fds=%d/%d, c=%c",
 				payload, intf->name, msg->name, overflow_type,
