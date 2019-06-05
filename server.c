@@ -64,7 +64,7 @@ static int connect_to_channel(const char *socket_path)
 }
 
 int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
-		char *const app_argv[])
+		const char *application, char *const app_argv[])
 {
 	wp_log(WP_DEBUG, "I'm a server on %s, running: %s", socket_path,
 			app_argv[0]);
@@ -129,8 +129,8 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 			close(wdisplay_socket);
 		}
 
-		execvp(app_argv[0], app_argv);
-		wp_log(WP_ERROR, "Failed to execvp \'%s\': %s", app_argv[0],
+		execvp(application, app_argv);
+		wp_log(WP_ERROR, "Failed to execvp \'%s\': %s", application,
 				strerror(errno));
 		return EXIT_FAILURE;
 	}

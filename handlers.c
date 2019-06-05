@@ -1174,6 +1174,9 @@ static int reintroduce_add_msgs(
 static void deduplicate_dmabuf_fds(
 		struct context *context, struct wp_linux_dmabuf_params *params)
 {
+	if (params->nplanes == 1) {
+		return;
+	}
 	int handles[MAX_DMABUF_PLANES];
 	struct gbm_bo *temp_bos[MAX_DMABUF_PLANES];
 	memset(temp_bos, 0, sizeof(temp_bos));
