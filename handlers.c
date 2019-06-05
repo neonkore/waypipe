@@ -765,9 +765,7 @@ static void event_wl_keyboard_keymap(void *data,
 		return;
 	}
 	struct wp_keyboard *keyboard = (struct wp_keyboard *)context->obj;
-	keyboard->owned_buffer = sfd;
-	sfd->has_owner = true;
-	sfd->refcount++;
+	keyboard->owned_buffer = shadow_incref(sfd);
 	(void)format;
 }
 
@@ -791,9 +789,7 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 		return;
 	}
 
-	the_shm_pool->owned_buffer = sfd;
-	sfd->has_owner = true;
-	sfd->refcount++;
+	the_shm_pool->owned_buffer = shadow_incref(sfd);
 }
 
 static void request_wl_shm_pool_resize(struct wl_client *client,
@@ -832,8 +828,7 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 	}
 
 	the_buffer->type = BUF_SHM;
-	the_buffer->shm_buffer = the_shm_pool->owned_buffer;
-	the_buffer->shm_buffer->refcount++;
+	the_buffer->shm_buffer = shadow_incref(the_shm_pool->owned_buffer);
 	the_buffer->shm_offset = offset;
 	the_buffer->shm_width = width;
 	the_buffer->shm_height = height;
@@ -1031,9 +1026,7 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = 1;
-	buf->dmabuf_buffers[0] = sfd;
-	sfd->has_owner = true;
-	sfd->refcount++;
+	buf->dmabuf_buffers[0] = shadow_incref(sfd);
 	buf->dmabuf_width = width;
 	buf->dmabuf_height = height;
 	buf->dmabuf_format = format;
@@ -1076,8 +1069,7 @@ static void event_zwp_linux_buffer_params_v1_created(void *data,
 					i);
 			continue;
 		}
-		buf->dmabuf_buffers[i] = params->add[i].buffer;
-		buf->dmabuf_buffers[i]->refcount++;
+		buf->dmabuf_buffers[i] = shadow_incref(params->add[i].buffer);
 		buf->dmabuf_offsets[i] = params->add[i].offset;
 		buf->dmabuf_strides[i] = params->add[i].stride;
 		buf->dmabuf_modifiers[i] = params->add[i].modifier;
@@ -1235,10 +1227,14 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 					i);
 			continue;
 		}
-		// Convert the stored fds to buffer pointers now
-		params->add[i].buffer = sfd;
-		sfd->has_owner = true;
-		sfd->refcount++;
+		if (!context->on_display_side) {
+			if (!sfd->has_owner) {
+				sfd->refcount = 0;
+			}
+			shadow_incref(sfd);
+		}
+		// Convert the stored fds to buffer pointers now.
+		params->add[i].buffer = shadow_incref(sfd);
 	}
 	// Avoid closing in destroy_wp_object
 	for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
@@ -1273,10 +1269,18 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 					i);
 			continue;
 		}
-		buf->dmabuf_buffers[i] = sfd;
-		sfd->has_owner = true;
-		sfd->refcount++;
-		buf->dmabuf_buffers[i]->refcount++;
+		/* Doubly increment the refcount: once for the decrement after
+		 * transferring, and once due to the pointer ownership here */
+		if (!context->on_display_side) {
+			if (!sfd->has_owner) {
+				/* i.e, if the buffer is newly allocated, reset
+				 * its for-transfer refcount to compensate for
+				 * upcoming increases */
+				sfd->refcount = 0;
+			}
+			shadow_incref(sfd);
+		}
+		buf->dmabuf_buffers[i] = shadow_incref(sfd);
 		buf->dmabuf_offsets[i] = params->add[i].offset;
 		buf->dmabuf_strides[i] = params->add[i].stride;
 		buf->dmabuf_modifiers[i] = params->add[i].modifier;

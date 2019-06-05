@@ -490,12 +490,10 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 		} else {
 			cmsg->dbuffer_start += wc;
 			wp_log(WP_DEBUG,
-					"Wrote, have done %d/%d bytes in chunk %ld",
+					"Wrote, have done %d/%d bytes in chunk %ld, %d/%d fds",
 					cmsg->dbuffer_start, cmsg->dbuffer_end,
-					wc);
+					wc, nfds_written, cmsg->tfbuffer_count);
 			// We send as many fds as we can with the first batch
-			decref_transferred_fds(
-					map, nfds_written, cmsg->tfbuffer);
 			memmove(cmsg->tfbuffer, cmsg->tfbuffer + nfds_written,
 					(size_t)nfds_written * sizeof(int));
 			cmsg->tfbuffer_count -= nfds_written;
@@ -503,6 +501,8 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	}
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
 		wp_log(WP_DEBUG, "Write to the %s succeeded", progdesc);
+		decref_transferred_fds(
+				map, cmsg->tfbuffer_count, cmsg->tfbuffer);
 		close_local_pipe_ends(map);
 		cmsg->state = CM_WAITING_FOR_CHANNEL;
 		free(cmsg->cmsg_buffer);
@@ -1767,22 +1767,16 @@ bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *sfd)
 	}
 	return false;
 }
-
-static bool is_in_list(int val, int n, int values[])
+struct shadow_fd *shadow_incref(struct shadow_fd *sfd)
 {
-	for (int i = 0; i < n; i++) {
-		if (values[i] == val) {
-			return true;
-		}
-	}
-	return false;
+	sfd->has_owner = true;
+	sfd->refcount++;
+	return sfd;
 }
+
 void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
 {
 	for (int i = 0; i < nfds; i++) {
-		if (is_in_list(fds[i], i, fds)) {
-			continue;
-		}
 		struct shadow_fd *sfd = get_shadow_for_local_fd(map, fds[i]);
 		shadow_decref(map, sfd);
 	}
@@ -1791,9 +1785,6 @@ void decref_transferred_rids(
 		struct fd_translation_map *map, int nids, int ids[])
 {
 	for (int i = 0; i < nids; i++) {
-		if (is_in_list(ids[i], i, ids)) {
-			continue;
-		}
 		struct shadow_fd *sfd = get_shadow_for_rid(map, ids[i]);
 		shadow_decref(map, sfd);
 	}
