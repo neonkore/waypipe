@@ -198,17 +198,18 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 	if (object->type == &wl_shm_pool_interface) {
 		struct wp_shm_pool *r = (struct wp_shm_pool *)object;
 		if (r->owned_buffer) {
-			shadow_decref(map, r->owned_buffer);
+			shadow_decref_protocol(map, r->owned_buffer);
 		}
 	} else if (object->type == &wl_buffer_interface) {
 		struct wp_buffer *r = (struct wp_buffer *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->dmabuf_buffers[i]) {
-				shadow_decref(map, r->dmabuf_buffers[i]);
+				shadow_decref_protocol(
+						map, r->dmabuf_buffers[i]);
 			}
 		}
 		if (r->shm_buffer) {
-			shadow_decref(map, r->shm_buffer);
+			shadow_decref_protocol(map, r->shm_buffer);
 		}
 	} else if (object->type == &wl_surface_interface) {
 		struct wp_surface *r = (struct wp_surface *)object;
@@ -216,7 +217,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 	} else if (object->type == &wl_keyboard_interface) {
 		struct wp_keyboard *r = (struct wp_keyboard *)object;
 		if (r->owned_buffer) {
-			shadow_decref(map, r->owned_buffer);
+			shadow_decref_protocol(map, r->owned_buffer);
 		}
 	} else if (object->type == &zwlr_screencopy_frame_v1_interface) {
 		struct wp_wlr_screencopy_frame *r =
@@ -229,7 +230,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 				(struct wp_linux_dmabuf_params *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->add[i].buffer) {
-				shadow_decref(map, r->add[i].buffer);
+				shadow_decref_protocol(map, r->add[i].buffer);
 			}
 			// Sometimes multiple entries point to the same buffer
 			if (r->add[i].fd != -1) {
@@ -765,7 +766,7 @@ static void event_wl_keyboard_keymap(void *data,
 		return;
 	}
 	struct wp_keyboard *keyboard = (struct wp_keyboard *)context->obj;
-	keyboard->owned_buffer = shadow_incref(sfd);
+	keyboard->owned_buffer = shadow_incref_protocol(sfd);
 	(void)format;
 }
 
@@ -789,7 +790,7 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 		return;
 	}
 
-	the_shm_pool->owned_buffer = shadow_incref(sfd);
+	the_shm_pool->owned_buffer = shadow_incref_protocol(sfd);
 }
 
 static void request_wl_shm_pool_resize(struct wl_client *client,
@@ -828,7 +829,8 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 	}
 
 	the_buffer->type = BUF_SHM;
-	the_buffer->shm_buffer = shadow_incref(the_shm_pool->owned_buffer);
+	the_buffer->shm_buffer =
+			shadow_incref_protocol(the_shm_pool->owned_buffer);
 	the_buffer->shm_offset = offset;
 	the_buffer->shm_width = width;
 	the_buffer->shm_height = height;
@@ -1026,7 +1028,7 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = 1;
-	buf->dmabuf_buffers[0] = shadow_incref(sfd);
+	buf->dmabuf_buffers[0] = shadow_incref_protocol(sfd);
 	buf->dmabuf_width = width;
 	buf->dmabuf_height = height;
 	buf->dmabuf_format = format;
@@ -1069,7 +1071,8 @@ static void event_zwp_linux_buffer_params_v1_created(void *data,
 					i);
 			continue;
 		}
-		buf->dmabuf_buffers[i] = shadow_incref(params->add[i].buffer);
+		buf->dmabuf_buffers[i] =
+				shadow_incref_protocol(params->add[i].buffer);
 		buf->dmabuf_offsets[i] = params->add[i].offset;
 		buf->dmabuf_strides[i] = params->add[i].stride;
 		buf->dmabuf_modifiers[i] = params->add[i].modifier;
@@ -1230,20 +1233,17 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 					i);
 			continue;
 		}
-		if (!context->on_display_side) {
-			if (!sfd->has_owner) {
-				sfd->refcount = 0;
-			}
-			shadow_incref(sfd);
+		/* increment for each extra time this fd will be sent */
+		if (sfd->has_owner) {
+			shadow_incref_transfer(sfd);
 		}
 		// Convert the stored fds to buffer pointers now.
-		params->add[i].buffer = shadow_incref(sfd);
+		params->add[i].buffer = shadow_incref_protocol(sfd);
 	}
 	// Avoid closing in destroy_wp_object
 	for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 		params->add[i].fd = -1;
 	}
-	params->nplanes = 0;
 }
 static void request_zwp_linux_buffer_params_v1_create_immed(
 		struct wl_client *client, struct wl_resource *resource,
@@ -1274,16 +1274,12 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 		}
 		/* Doubly increment the refcount: once for the decrement after
 		 * transferring, and once due to the pointer ownership here */
-		if (!context->on_display_side) {
-			if (!sfd->has_owner) {
-				/* i.e, if the buffer is newly allocated, reset
-				 * its for-transfer refcount to compensate for
-				 * upcoming increases */
-				sfd->refcount = 0;
-			}
-			shadow_incref(sfd);
+		if (sfd->has_owner) {
+			/* increment for each extra time this fd will be
+			 * sent */
+			shadow_incref_transfer(sfd);
 		}
-		buf->dmabuf_buffers[i] = shadow_incref(sfd);
+		buf->dmabuf_buffers[i] = shadow_incref_protocol(sfd);
 		buf->dmabuf_offsets[i] = params->add[i].offset;
 		buf->dmabuf_strides[i] = params->add[i].stride;
 		buf->dmabuf_modifiers[i] = params->add[i].modifier;

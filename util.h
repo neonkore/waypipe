@@ -117,7 +117,16 @@ struct shadow_fd {
 	 * expected changes since the last synchronization. */
 	int dirty_interval_min, dirty_interval_max;
 
-	int refcount; // Number of references from parsing logic
+	/* There are two types of reference counts for shadow_fd objects;
+	 * a struct shadow_fd can only be safely deleted when both counts are
+	 * zero. The protocol refcount tracks the number of protocol objects
+	 * which have a reference to the shadow_fd (and which may try to
+	 * mark it dirty.) The transfer refcount tracks the number of times
+	 * that the object id (as either remote_id, or fd_local) must be passed
+	 * on to the next program (waypipe instance, or application/compositor)
+	 * so that said program can correctly parse its Wayland messages. */
+	int refcount_protocol; // Number of references from protocol objects
+	int refcount_transfer; // Number of references from fd transfer logic
 
 	// File data
 	size_t file_size;
@@ -215,10 +224,12 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 /** Reduce the reference count for a shadow structure which is owned. The
  * structure should not be used by the caller after this point. Returns true if
  * pointer deleted. */
-bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *);
+bool shadow_decref_protocol(struct fd_translation_map *map, struct shadow_fd *);
+bool shadow_decref_transfer(struct fd_translation_map *map, struct shadow_fd *);
 /** Increase the reference count of a shadow structure, and mark it as being
  * owned. For convenience, returns the passed-in structure. */
-struct shadow_fd *shadow_incref(struct shadow_fd *);
+struct shadow_fd *shadow_incref_protocol(struct shadow_fd *);
+struct shadow_fd *shadow_incref_transfer(struct shadow_fd *);
 /** Decrease reference count for all objects in the given list, deleting
  * iff they are owned by protocol objects and have refcount zero */
 void decref_transferred_fds(

@@ -494,6 +494,8 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 					cmsg->dbuffer_start, cmsg->dbuffer_end,
 					wc, nfds_written, cmsg->tfbuffer_count);
 			// We send as many fds as we can with the first batch
+			decref_transferred_fds(
+					map, nfds_written, cmsg->tfbuffer);
 			memmove(cmsg->tfbuffer, cmsg->tfbuffer + nfds_written,
 					(size_t)nfds_written * sizeof(int));
 			cmsg->tfbuffer_count -= nfds_written;
@@ -501,8 +503,6 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	}
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
 		wp_log(WP_DEBUG, "Write to the %s succeeded", progdesc);
-		decref_transferred_fds(
-				map, cmsg->tfbuffer_count, cmsg->tfbuffer);
 		close_local_pipe_ends(map);
 		cmsg->state = CM_WAITING_FOR_CHANNEL;
 		free(cmsg->cmsg_buffer);
@@ -1005,9 +1005,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd)
 	shadow->dirty_interval_max = INT32_MAX;
 	shadow->dirty_interval_min = INT32_MIN;
 	shadow->has_owner = false;
-	/* Start object reference at one; will be decremented once RID is sent
-	 */
-	shadow->refcount = 1;
+	/* Start the number of expected transfers to channel remaining at one,
+	 * and number of protocol objects referencing this shadow_fd at zero.*/
+	shadow->refcount_transfer = 1;
+	shadow->refcount_protocol = 0;
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
 
@@ -1617,7 +1618,8 @@ static void apply_update(
 	/* Start the object reference at one, so that, if it is owned by
 	 * some known protocol object, it can not be deleted until the fd
 	 * has at least be transferred over the Wayland connection */
-	shadow->refcount = 1;
+	shadow->refcount_transfer = 1;
+	shadow->refcount_protocol = 0;
 	if (shadow->type == FDC_FILE) {
 		shadow->file_mem_local = NULL;
 		shadow->file_size = transf->size;
@@ -1746,10 +1748,11 @@ void wait_on_children(struct kstack **children, int options)
 		}
 	}
 }
-bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *sfd)
+static bool destroy_shadow_if_unreferenced(
+		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
-	sfd->refcount--;
-	if (sfd->refcount == 0 && sfd->has_owner) {
+	if (sfd->refcount_protocol == 0 && sfd->refcount_transfer == 0 &&
+			sfd->has_owner) {
 		for (struct shadow_fd *cur = map->list, *prev = NULL; cur;
 				prev = cur, cur = cur->next) {
 			if (cur == sfd) {
@@ -1764,13 +1767,36 @@ bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *sfd)
 
 		destroy_unlinked_sfd(map, sfd);
 		return true;
+	} else if (sfd->refcount_protocol < 0 || sfd->refcount_transfer < 0) {
+		wp_log(WP_ERROR,
+				"Negative refcount for rid=%d: %d protocol references, %d transfer references",
+				sfd->remote_id, sfd->refcount_protocol,
+				sfd->refcount_transfer);
 	}
 	return false;
 }
-struct shadow_fd *shadow_incref(struct shadow_fd *sfd)
+bool shadow_decref_protocol(
+		struct fd_translation_map *map, struct shadow_fd *sfd)
+{
+	sfd->refcount_protocol--;
+	return destroy_shadow_if_unreferenced(map, sfd);
+}
+
+bool shadow_decref_transfer(
+		struct fd_translation_map *map, struct shadow_fd *sfd)
+{
+	sfd->refcount_transfer--;
+	return destroy_shadow_if_unreferenced(map, sfd);
+}
+struct shadow_fd *shadow_incref_protocol(struct shadow_fd *sfd)
 {
 	sfd->has_owner = true;
-	sfd->refcount++;
+	sfd->refcount_protocol++;
+	return sfd;
+}
+struct shadow_fd *shadow_incref_transfer(struct shadow_fd *sfd)
+{
+	sfd->refcount_transfer++;
 	return sfd;
 }
 
@@ -1778,7 +1804,7 @@ void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
 {
 	for (int i = 0; i < nfds; i++) {
 		struct shadow_fd *sfd = get_shadow_for_local_fd(map, fds[i]);
-		shadow_decref(map, sfd);
+		shadow_decref_transfer(map, sfd);
 	}
 }
 void decref_transferred_rids(
@@ -1786,7 +1812,7 @@ void decref_transferred_rids(
 {
 	for (int i = 0; i < nids; i++) {
 		struct shadow_fd *sfd = get_shadow_for_rid(map, ids[i]);
-		shadow_decref(map, sfd);
+		shadow_decref_transfer(map, sfd);
 	}
 }
 
