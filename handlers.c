@@ -72,6 +72,7 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 
 #include "util.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -230,8 +231,20 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 			if (r->add[i].buffer) {
 				shadow_decref(map, r->add[i].buffer);
 			}
+			// Sometimes multiple entries point to the same buffer
 			if (r->add[i].fd != -1) {
-				close(r->add[i].fd);
+				if (close(r->add[i].fd) == -1) {
+					wp_log(WP_ERROR,
+							"Incorrect close(%d): %s",
+							r->add[i].fd,
+							strerror(errno));
+				}
+
+				for (int k = 0; k < MAX_DMABUF_PLANES; k++) {
+					if (r->add[i].fd == r->add[k].fd) {
+						r->add[k].fd = -1;
+					}
+				}
 			}
 			if (r->add[i].msg) {
 				free(r->add[i].msg);
@@ -1164,6 +1177,35 @@ static int reintroduce_add_msgs(
 	context->fds_changed = true;
 	return 0;
 }
+/** After this function is called, all subsets of fds that duplicate an
+ * underlying dmabuf will be reduced to select a single fd. */
+static void deduplicate_dmabuf_fds(
+		struct context *context, struct wp_linux_dmabuf_params *params)
+{
+	int handles[MAX_DMABUF_PLANES];
+	for (int i = 0; i < params->nplanes; i++) {
+		handles[i] = get_unique_dmabuf_handle(
+				&context->map->rdata, params->add[i].fd);
+	}
+	for (int i = 0; i < params->nplanes; i++) {
+		int lowest = i;
+		for (int k = 0; k < i; k++) {
+			if (handles[k] == handles[i]) {
+				lowest = k;
+				break;
+			}
+		}
+		if (lowest != i &&
+				params->add[i].fd != params->add[lowest].fd) {
+			if (close(params->add[i].fd) == -1) {
+				wp_log(WP_ERROR, "Incorrect close(%d): %s",
+						params->add[i].fd,
+						strerror(errno));
+			}
+		}
+		params->add[i].fd = params->add[lowest].fd;
+	}
+}
 static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		struct wl_resource *resource, int32_t width, int32_t height,
 		uint32_t format, uint32_t flags)
@@ -1175,6 +1217,7 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 	params->create_width = width;
 	params->create_height = height;
 	params->create_format = format;
+	deduplicate_dmabuf_fds(context, params);
 	if (!context->on_display_side) {
 		reintroduce_add_msgs(context, params);
 	}
@@ -1189,10 +1232,14 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		}
 		// Convert the stored fds to buffer pointers now
 		params->add[i].buffer = sfd;
-		params->add[i].fd = -1;
 		sfd->has_owner = true;
 		sfd->refcount++;
 	}
+	// Avoid closing in destroy_wp_object
+	for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
+		params->add[i].fd = -1;
+	}
+	params->nplanes = 0;
 }
 static void request_zwp_linux_buffer_params_v1_create_immed(
 		struct wl_client *client, struct wl_resource *resource,
@@ -1206,6 +1253,7 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 			&context->mt->objects, buffer_id);
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = params->nplanes;
+	deduplicate_dmabuf_fds(context, params);
 	if (!context->on_display_side) {
 		// Do this before we wipe any of the fds
 		reintroduce_add_msgs(context, params);
@@ -1214,9 +1262,6 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 		// TODO: pass in stride info and modifier hints
 		struct shadow_fd *sfd =
 				translate_fd(context->map, params->add[i].fd);
-		// remove fd from params, so it doesn't get closed when params
-		// are closed
-		params->add[i].fd = -1;
 		if (sfd->type != FDC_DMABUF) {
 			wp_log(WP_ERROR,
 					"fd #%d for linux-dmabuf request wasn't a dmabuf",
@@ -1235,6 +1280,11 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 	buf->dmabuf_width = width;
 	buf->dmabuf_height = height;
 	buf->dmabuf_format = format;
+	/* Remove fds from params, so they aren't closed when the param object
+	 * is destroyed */
+	for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
+		params->add[i].fd = -1;
+	}
 	params->nplanes = 0;
 }
 

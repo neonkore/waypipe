@@ -224,6 +224,14 @@ ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		frst->cmsg_level = SOL_SOCKET;
 		frst->cmsg_type = SCM_RIGHTS;
 		memcpy(CMSG_DATA(frst), fds, numfds * sizeof(int));
+		for (int i = 0; i < numfds; i++) {
+			int flags = fcntl(fds[i], F_GETFL, 0);
+			if (flags == -1 && errno == EBADF) {
+				wp_log(WP_ERROR, "Writing invalid fd %d",
+						fds[i]);
+			}
+		}
+
 		frst->cmsg_len = CMSG_LEN(numfds * sizeof(int));
 		msg.msg_controllen = CMSG_SPACE(numfds * sizeof(int));
 		wp_log(WP_DEBUG, "Writing %d fds to cmsg data", numfds);
@@ -860,7 +868,6 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 static void destroy_unlinked_sfd(
 		struct fd_translation_map *map, struct shadow_fd *shadow)
 {
-	close(shadow->fd_local);
 	if (shadow->type == FDC_FILE) {
 		munmap(shadow->file_mem_local, shadow->file_size);
 		free(shadow->file_mem_mirror);
@@ -873,12 +880,19 @@ static void destroy_unlinked_sfd(
 		free(shadow->dmabuf_mem_mirror);
 		free(shadow->dmabuf_diff_buffer);
 	} else if (fdcat_ispipe(shadow->type)) {
-		close(shadow->pipe_fd);
-		if (shadow->pipe_fd != shadow->fd_local) {
-			close(shadow->fd_local);
+		if (shadow->pipe_fd != shadow->fd_local &&
+				shadow->pipe_fd != -1 &&
+				shadow->pipe_fd != -2) {
+			close(shadow->pipe_fd);
 		}
 		free(shadow->pipe_recv.data);
 		free(shadow->pipe_send.data);
+	}
+	if (shadow->fd_local != -2 && shadow->fd_local != -1) {
+		if (close(shadow->fd_local) == -1) {
+			wp_log(WP_ERROR, "Incorrect close(%d): %s",
+					shadow->fd_local, strerror(errno));
+		}
 	}
 	free(shadow);
 	(void)map;
@@ -1732,9 +1746,21 @@ bool shadow_decref(struct fd_translation_map *map, struct shadow_fd *sfd)
 	return false;
 }
 
+static bool is_in_list(int val, int n, int values[])
+{
+	for (int i = 0; i < n; i++) {
+		if (values[i] == val) {
+			return true;
+		}
+	}
+	return false;
+}
 void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
 {
 	for (int i = 0; i < nfds; i++) {
+		if (is_in_list(fds[i], i, fds)) {
+			continue;
+		}
 		struct shadow_fd *sfd = get_shadow_for_local_fd(map, fds[i]);
 		shadow_decref(map, sfd);
 	}
@@ -1743,6 +1769,9 @@ void decref_transferred_rids(
 		struct fd_translation_map *map, int nids, int ids[])
 {
 	for (int i = 0; i < nids; i++) {
+		if (is_in_list(ids[i], i, ids)) {
+			continue;
+		}
 		struct shadow_fd *sfd = get_shadow_for_rid(map, ids[i]);
 		shadow_decref(map, sfd);
 	}

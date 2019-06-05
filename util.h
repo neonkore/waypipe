@@ -354,5 +354,6 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size);
 void destroy_dmabuf(struct gbm_bo *bo);
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle);
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
+int get_unique_dmabuf_handle(struct render_data *rd, int fd);
 
 #endif // WAYPIPE_UTIL_H
