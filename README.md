@@ -46,6 +46,7 @@ Requirements:
 * wayland (>= 1.15, to support absolute paths in WAYLAND_DISPLAY)
 * wayland-protocols (>= 1.12, for the xdg-shell protocol, and others)
 * libffi
+* libgbm (from a recent version of mesa)
 * scdoc (optional, to generate a man page)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)
 

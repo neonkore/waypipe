@@ -106,13 +106,14 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 		return -1;
 	}
 	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error binding socket: %s", strerror(errno));
+		wp_log(WP_ERROR, "Error binding socket at %s: %s", socket_path,
+				strerror(errno));
 		close(sock);
 		return -1;
 	}
 	if (listen(sock, nmaxclients) == -1) {
-		wp_log(WP_ERROR, "Error listening to socket: %s",
-				strerror(errno));
+		wp_log(WP_ERROR, "Error listening to socket at %s: %s",
+				socket_path, strerror(errno));
 		close(sock);
 		unlink(socket_path);
 		return -1;
