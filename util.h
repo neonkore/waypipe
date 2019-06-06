@@ -56,7 +56,8 @@ ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds,
 ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
 		int numfds, int *nfds_written);
 
-int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side);
+int main_interface_loop(int chanfd, int progfd, const char *drm_node,
+		bool no_gpu, bool display_side);
 
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
 
@@ -78,6 +79,7 @@ void wp_log_handler(const char *file, int line, log_cat_t level,
 struct render_data {
 	bool disabled;
 	int drm_fd;
+	const char *drm_node_path;
 	struct gbm_device *dev;
 };
 struct fd_translation_map {
@@ -87,7 +89,6 @@ struct fd_translation_map {
 	struct render_data rdata;
 };
 
-// TODO: evtly, FDC_DMABUF and more complicated emulation types
 typedef enum {
 	FDC_UNKNOWN,
 	FDC_FILE,

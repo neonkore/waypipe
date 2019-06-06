@@ -58,7 +58,8 @@ struct pidstack {
 	pid_t proc;
 };
 
-static int run_client_child(int chanfd, bool no_gpu, const char *socket_path)
+static int run_client_child(int chanfd, const char *drm_node, bool no_gpu,
+		const char *socket_path)
 {
 	wp_log(WP_DEBUG, "I'm a client on %s!", socket_path);
 	struct wl_display *display = wl_display_connect(NULL);
@@ -67,13 +68,14 @@ static int run_client_child(int chanfd, bool no_gpu, const char *socket_path)
 		return EXIT_FAILURE;
 	}
 	int dispfd = wl_display_get_fd(display);
-	int retcode = main_interface_loop(chanfd, dispfd, no_gpu, true);
+	int retcode = main_interface_loop(
+			chanfd, dispfd, drm_node, no_gpu, true);
 	wl_display_disconnect(display);
 	return retcode;
 }
 
-int run_client(const char *socket_path, bool oneshot, bool no_gpu,
-		pid_t eol_pid)
+int run_client(const char *socket_path, const char *drm_node, bool oneshot,
+		bool no_gpu, pid_t eol_pid)
 {
 	if (verify_connection() == -1) {
 		wp_log(WP_ERROR, "Failed to connect to a wayland compositor.");
@@ -84,7 +86,7 @@ int run_client(const char *socket_path, bool oneshot, bool no_gpu,
 	}
 	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.");
 
-	int nmaxclients = oneshot ? 1 : 3; // << todo, increase
+	int nmaxclients = oneshot ? 1 : 128;
 	int channelsock = setup_nb_socket(socket_path, nmaxclients);
 	if (channelsock == -1) {
 		// Error messages already made
@@ -105,7 +107,6 @@ int run_client(const char *socket_path, bool oneshot, bool no_gpu,
 	cs.events = POLL_IN;
 	cs.revents = 0;
 	while (!shutdown_flag) {
-		// TODO: figure out a safe, non-polling solution
 		if (eol_pid) {
 			int wp = waitpid(eol_pid, NULL, WNOHANG);
 			if (wp > 0) {
@@ -145,8 +146,8 @@ int run_client(const char *socket_path, bool oneshot, bool no_gpu,
 			break;
 		} else {
 			if (oneshot) {
-				retcode = run_client_child(chanclient, no_gpu,
-						socket_path);
+				retcode = run_client_child(chanclient, drm_node,
+						no_gpu, socket_path);
 				break;
 			} else {
 				pid_t npid = fork();
@@ -162,8 +163,8 @@ int run_client(const char *socket_path, bool oneshot, bool no_gpu,
 					}
 
 					close(channelsock);
-					run_client_child(chanclient, no_gpu,
-							socket_path);
+					run_client_child(chanclient, drm_node,
+							no_gpu, socket_path);
 					// exit path?
 					return EXIT_SUCCESS;
 				} else if (npid == -1) {

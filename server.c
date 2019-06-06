@@ -63,8 +63,9 @@ static int connect_to_channel(const char *socket_path)
 	return chanfd;
 }
 
-int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
-		const char *application, char *const app_argv[])
+int run_server(const char *socket_path, const char *drm_node, bool oneshot,
+		bool unlink_at_end, const char *application,
+		char *const app_argv[])
 {
 	wp_log(WP_DEBUG, "I'm a server on %s, running: %s", socket_path,
 			app_argv[0]);
@@ -150,8 +151,8 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 
 		wp_log(WP_DEBUG, "Oneshot connected");
 		if (chanfd != -1) {
-			retval = main_interface_loop(
-					chanfd, server_link, false, false);
+			retval = main_interface_loop(chanfd, server_link,
+					drm_node, false, false);
 		} else {
 			retval = EXIT_FAILURE;
 		}
@@ -225,7 +226,8 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 							socket_path);
 
 					return main_interface_loop(chanfd,
-							appfd, false, false);
+							appfd, drm_node, false,
+							false);
 				} else if (npid == -1) {
 					wp_log(WP_DEBUG, "Fork failure");
 					retval = EXIT_FAILURE;
@@ -263,7 +265,6 @@ int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
 	if (!oneshot) {
 		unlink(displaypath);
 	}
-	// todo: scope manipulation, to ensure all cleanups are done
 	wp_log(WP_DEBUG, "Waiting for child process");
 	waitpid(pid, NULL, shutdown_flag ? WNOHANG : 0);
 	wp_log(WP_DEBUG, "Program ended");

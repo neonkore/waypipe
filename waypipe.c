@@ -40,41 +40,41 @@
 #include <time.h>
 #include <unistd.h>
 
-int run_server(const char *socket_path, bool oneshot, bool unlink_at_end,
-		const char *application, char *const app_argv[]);
-int run_client(const char *socket_path, bool oneshot, bool no_gpu,
-		pid_t eol_pid);
+int run_server(const char *socket_path, const char *drm_node, bool oneshot,
+		bool unlink_at_end, const char *application,
+		char *const app_argv[]);
+int run_client(const char *socket_path, const char *drm_node, bool oneshot,
+		bool no_gpu, pid_t eol_pid);
 
-/* Usage: Wrapped to 72 characters */
+/* Usage: Wrapped to 79 characters */
 static const char usage_string[] =
-		"usage: waypipe [OPTION] mode [arguments...]\n\n"
-		"A proxy for wayland applications. It can be run as a client on the\n"
-		"side with a wayland compositor, as server on the remote system, or\n"
-		"by wrapping an ssh invocation to automatically set up forwarding.\n"
+		"Usage: waypipe [options] mode ...\n"
+		"A proxy for Wayland protocol applications.\n"
+		"Example: waypipe ssh -C user@place weston-terminal\n"
 		"\n"
-		"modes:\n"
-		"    ssh              Will run ssh with the given arguments, invoking\n"
-		"                       waypipe locally and remotely to forward wayland\n"
-		"                       connections as well. Assumes the remote copy of\n"
-		"                       waypipe is in the default PATH.\n"
-		"    server           Emulate a wayland compositor and forward all\n"
-		"                       client data to the given socket (by default, at\n"
-		"                       /tmp/waypipe-server.sock).\n"
-		"    client           Emulate a wayland client and forward all\n"
-		"                       compositor data to the given socket (by\n"
-		"                       default, /tmp/waypipe-client.sock)\n"
-		"options:\n"
-		"    -d,  --debug     Print debug messages.\n"
-		"    -h,  --help      Display this help and exit.\n"
-		"    -n,  --no-gpu    Disable protocols which would use GPU resources\n"
-		"    -o,  --oneshot   Only permit one client\n"
-		"    -s,  --socket S  Set the socket path, on which waypipe listens\n"
-		"                       if it is a client, and to which waypipe\n"
-		"                       connects if it is a server. In ssh mode, forms\n"
-		"                       the prefix of the socket path.\n"
-		"    -u,  --unlink    If in server mode, unlink the socket once\n"
-		"                       no more connections will be made to it.\n"
-		"    -v,  --version   Print waypipe version.\n";
+		"Modes:\n"
+		"  ssh [...]    Wrap an ssh invocation to run waypipe on both ends of the\n"
+		"                 connection, and automatically forward Wayland applications.\n"
+		"  server CMD   Run remotely to invoke CMD and forward application data through\n"
+		"                 a socket to a matching 'waypipe client' instance.\n"
+		"  client       Run locally to create a Unix socket to which 'waypipe server'\n"
+		"                 instances can connect.\n"
+		"\n"
+		"Options:\n"
+		"  -d, --debug          print debug messages\n"
+		"  -h, --help           display this help and exit\n"
+		"  -n, --no-gpu         disable protocols which would use GPU resources\n"
+		"  -o, --oneshot        only permit one connected application\n"
+		"  -s, --socket S       set the socket path to either create or connect to:\n"
+		"                         server default: /tmp/waypipe-server.sock\n"
+		"                         client default: /tmp/waypipe-client.sock\n"
+		"                         ssh mode: sets the prefix for the socket path\n"
+		"  -v, --version        print waypipe version and exit\n"
+		"      --drm-node R     set the local render node. default: /dev/dri/renderD128\n"
+		"      --remote-node R  ssh mode: set the remote render node path\n"
+		"      --login-shell    server mode: if server CMD is empty, run a login shell\n"
+		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
+		"\n";
 
 static int usage(int retcode)
 {
@@ -135,8 +135,8 @@ static int locate_openssh_cmd_hostname(int argc, char *const *argv)
 }
 
 /* requires >=256 byte shell/shellname buffers */
-static void setup_login_shell_command(
-		char shell[static 256], char shellname[static 256])
+static void setup_login_shell_command(char shell[static 256],
+		char shellname[static 256], bool login_shell)
 {
 	strcpy(shellname, "-sh");
 	strcpy(shell, "/bin/sh");
@@ -153,28 +153,43 @@ static void setup_login_shell_command(
 		return;
 	}
 	strcpy(shell, shell_env);
-	/* Create a login shell. The convention for this is to prefix the name
-	 * of the shell with a single hyphen */
-	int start = len;
-	for (; start-- > 0;) {
-		if (shell[start] == '/') {
-			start++;
-			break;
+	if (login_shell) {
+		/* Create a login shell. The convention for this is to prefix
+		 * the name of the shell with a single hyphen */
+		int start = len;
+		for (; start-- > 0;) {
+			if (shell[start] == '/') {
+				start++;
+				break;
+			}
 		}
+		shellname[0] = '-';
+		strcpy(shellname + 1, shell + start);
+	} else {
+		strcpy(shellname, shell);
 	}
-	shellname[0] = '-';
-	strcpy(shellname + 1, shell + start);
 }
 
 void handle_noop(int sig) { (void)sig; }
+
+#define ARG_UNLINK 1001
+#define ARG_DRMNODE 1002
+#define ARG_REMOTENODE 1003
+#define ARG_LOGIN_SHELL 1004
 
 static const struct option options[] = {{"debug", no_argument, NULL, 'd'},
 		{"help", no_argument, NULL, 'h'},
 		{"no-gpu", no_argument, NULL, 'n'},
 		{"oneshot", no_argument, NULL, 'o'},
 		{"socket", required_argument, NULL, 's'},
-		{"unlink", no_argument, NULL, 'u'},
-		{"version", no_argument, NULL, 'v'}, {0, 0, NULL, 0}};
+		{"version", no_argument, NULL, 'v'},
+		{"unlink-socket", no_argument, NULL, ARG_UNLINK},
+		{"drm-node", required_argument, NULL, ARG_DRMNODE},
+		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
+		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
+		{0, 0, NULL, 0}};
+
+enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
 
 int main(int argc, char **argv)
 {
@@ -185,16 +200,26 @@ int main(int argc, char **argv)
 	bool nogpu = false;
 	bool oneshot = false;
 	bool unlink_at_end = false;
-	bool is_client, setup_ssh;
+	bool login_shell = false;
+	const char *drm_node = NULL;
+	char *remote_drm_node = NULL;
 	const char *socketpath = NULL;
 
 	/* We do not parse any getopt arguments happening after the mode choice
 	 * string, so as not to interfere with them. */
+	enum waypipe_mode mode = MODE_FAIL;
 	int mode_argc = 0;
 	while (mode_argc < argc) {
-		if (!strcmp(argv[mode_argc], "ssh") ||
-				!strcmp(argv[mode_argc], "client") ||
-				!strcmp(argv[mode_argc], "server")) {
+		if (!strcmp(argv[mode_argc], "ssh")) {
+			mode = MODE_SSH;
+			break;
+		}
+		if (!strcmp(argv[mode_argc], "client")) {
+			mode = MODE_CLIENT;
+			break;
+		}
+		if (!strcmp(argv[mode_argc], "server")) {
+			mode = MODE_SERVER;
 			break;
 		}
 		mode_argc++;
@@ -202,7 +227,7 @@ int main(int argc, char **argv)
 
 	while (true) {
 		int option_index;
-		int opt = getopt_long(mode_argc, argv, "dhnos:uv", options,
+		int opt = getopt_long(mode_argc, argv, "dhnos:v", options,
 				&option_index);
 
 		if (opt == -1) {
@@ -225,11 +250,29 @@ int main(int argc, char **argv)
 		case 's':
 			socketpath = optarg;
 			break;
-		case 'u':
-			unlink_at_end = true;
-			break;
 		case 'v':
 			version = true;
+			break;
+		case ARG_UNLINK:
+			if (mode != MODE_SERVER) {
+				fail = true;
+			}
+			unlink_at_end = true;
+			break;
+		case ARG_DRMNODE:
+			drm_node = optarg;
+			break;
+		case ARG_REMOTENODE:
+			if (mode != MODE_SSH) {
+				fail = true;
+			}
+			remote_drm_node = optarg;
+			break;
+		case ARG_LOGIN_SHELL:
+			if (mode != MODE_SERVER) {
+				fail = true;
+			}
+			login_shell = true;
 			break;
 		default:
 			fail = true;
@@ -246,23 +289,13 @@ int main(int argc, char **argv)
 		fprintf(stdout, "waypipe " WAYPIPE_VERSION "\n");
 		return EXIT_SUCCESS;
 	} else if (argc < 1) {
-		// todo: immediately useful error message
 		return usage(EXIT_FAILURE);
 	} else if (help) {
 		return usage(EXIT_SUCCESS);
-	} else if (!strcmp(argv[0], "ssh")) {
-		is_client = true;
-		setup_ssh = true;
-	} else if (!strcmp(argv[0], "client")) {
-		is_client = true;
-		setup_ssh = false;
-	} else if (!strcmp(argv[0], "server")) {
-		is_client = false;
-		setup_ssh = false;
-	} else {
+	} else if (mode == MODE_FAIL) {
 		return usage(EXIT_FAILURE);
 	}
-	if ((is_client && !setup_ssh) && argc > 1) {
+	if (mode == MODE_CLIENT && argc > 1) {
 		// In client mode, we do not start an application
 		return usage(EXIT_FAILURE);
 	}
@@ -273,7 +306,9 @@ int main(int argc, char **argv)
 		argc--;
 	}
 	waypipe_loglevel = debug ? WP_DEBUG : WP_ERROR;
-	waypipe_log_mode = setup_ssh ? 'c' : (is_client ? 'C' : 'S');
+	waypipe_log_mode = (mode == MODE_SSH)
+					   ? 'c'
+					   : (mode == MODE_CLIENT ? 'C' : 'S');
 
 	// Setup signals
 	struct sigaction ia; // SIGINT: abort operations, and set a flag
@@ -293,112 +328,120 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	if (is_client) {
-		if (setup_ssh) {
-			if (!socketpath) {
-				socketpath = "/tmp/waypipe";
-			}
-			const size_t max_splen =
-					(int)sizeof(((struct sockaddr_un *)NULL)
-									->sun_path) -
-					22;
-			if (strlen(socketpath) > max_splen) {
-				fprintf(stderr, "Socket path prefix '%s' is too long (more than %d bytes).\n",
-						socketpath, (int)max_splen);
-				return EXIT_FAILURE;
-			}
-
-			char rbytes[9];
-			fill_rand_token(rbytes);
-			rbytes[8] = 0;
-
-			char linkage[256];
-			char serversock[110];
-			char clientsock[110];
-			sprintf(serversock, "%s-server-%s.sock", socketpath,
-					rbytes);
-			sprintf(clientsock, "%s-client-%s.sock", socketpath,
-					rbytes);
-			sprintf(linkage, "%s:%s", serversock, clientsock);
-
-			pid_t conn_pid = fork();
-			if (conn_pid == -1) {
-				wp_log(WP_ERROR, "Fork failure");
-				return EXIT_FAILURE;
-			} else if (conn_pid == 0) {
-				int dstidx = locate_openssh_cmd_hostname(
-						argc, argv);
-				if (dstidx < 0) {
-					fprintf(stderr, "Failed to locate destination in ssh command string\n");
-					return EXIT_FAILURE;
-				}
-
-				int nextra = 10 + debug + oneshot;
-				char **arglist = calloc(
-						argc + nextra, sizeof(char *));
-
-				int offset = 0;
-				arglist[offset++] = "/usr/bin/ssh";
-				/* Force tty allocation. The user-override is a
-				 * -T flag. Unfortunately, -t disables newline
-				 * translation on the local side; see
-				 * `wp_log_handler`.
-				 */
-				arglist[offset++] = "-t";
-				arglist[offset++] = "-R";
-				arglist[offset++] = linkage;
-				for (int i = 0; i <= dstidx; i++) {
-					arglist[offset + i] = argv[i];
-				}
-				/* NOTE: the remote waypipe instance must be in
-				 * the default PATH */
-				arglist[dstidx + 1 + offset++] = "waypipe";
-				if (debug) {
-					arglist[dstidx + 1 + offset++] = "-d";
-				}
-				if (oneshot) {
-					arglist[dstidx + 1 + offset++] = "-o";
-				}
-				arglist[dstidx + 1 + offset++] = "-u";
-				arglist[dstidx + 1 + offset++] = "-s";
-				arglist[dstidx + 1 + offset++] = serversock;
-				arglist[dstidx + 1 + offset++] = "server";
-				for (int i = dstidx + 1; i < argc; i++) {
-					arglist[offset + i] = argv[i];
-				}
-				arglist[argc + offset] = NULL;
-
-				// execvp effectively frees arglist
-				execvp(arglist[0], arglist);
-				wp_log(WP_ERROR, "Fork failed");
-				free(arglist);
-				return EXIT_FAILURE;
-
-			} else {
-				return run_client(clientsock, oneshot, nogpu,
-						conn_pid);
-			}
-		} else {
-			if (!socketpath) {
-				socketpath = "/tmp/waypipe-client.sock";
-			}
-			return run_client(socketpath, oneshot, nogpu, 0);
+	if (mode == MODE_CLIENT) {
+		if (!socketpath) {
+			socketpath = "/tmp/waypipe-client.sock";
 		}
-	} else {
+		return run_client(socketpath, drm_node, oneshot, nogpu, 0);
+	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
 		const char *application = app_argv[0];
 		char shell[256];
 		char shellname[256];
 		char *shellcmd[2] = {shellname, NULL};
 		if (argc == 0) {
-			setup_login_shell_command(shell, shellname);
+			setup_login_shell_command(
+					shell, shellname, login_shell);
 			application = shell;
 			app_argv = shellcmd;
 		}
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-server.sock";
 		}
-		return run_server(socketpath, oneshot, unlink_at_end,
+		return run_server(socketpath, drm_node, oneshot, unlink_at_end,
 				application, app_argv);
+	} else {
+
+		if (!socketpath) {
+			socketpath = "/tmp/waypipe";
+		}
+		const size_t max_splen =
+				(int)sizeof(((struct sockaddr_un *)NULL)
+								->sun_path) -
+				22;
+		if (strlen(socketpath) > max_splen) {
+			fprintf(stderr, "Socket path prefix '%s' is too long (more than %d bytes).\n",
+					socketpath, (int)max_splen);
+			return EXIT_FAILURE;
+		}
+
+		char rbytes[9];
+		fill_rand_token(rbytes);
+		rbytes[8] = 0;
+
+		char linkage[256];
+		char serversock[110];
+		char clientsock[110];
+		sprintf(serversock, "%s-server-%s.sock", socketpath, rbytes);
+		sprintf(clientsock, "%s-client-%s.sock", socketpath, rbytes);
+		sprintf(linkage, "%s:%s", serversock, clientsock);
+
+		pid_t conn_pid = fork();
+		if (conn_pid == -1) {
+			wp_log(WP_ERROR, "Fork failure");
+			return EXIT_FAILURE;
+		} else if (conn_pid == 0) {
+			int dstidx = locate_openssh_cmd_hostname(argc, argv);
+			if (dstidx < 0) {
+				fprintf(stderr, "waypipe: Failed to locate destination in ssh command string\n");
+				return EXIT_FAILURE;
+			}
+
+			/* If there are no arguments following the destination
+			 */
+			bool needs_login_shell = dstidx + 1 == argc;
+
+			int nextra = 10 + debug + oneshot +
+				     2 * (remote_drm_node != NULL) +
+				     needs_login_shell;
+			char **arglist = calloc(argc + nextra, sizeof(char *));
+
+			int offset = 0;
+			arglist[offset++] = "/usr/bin/ssh";
+			/* Force tty allocation. The user-override is a -T flag.
+			 * Unfortunately, -t disables newline translation on the
+			 * local side; see `wp_log_handler`. */
+			arglist[offset++] = "-t";
+			arglist[offset++] = "-R";
+			arglist[offset++] = linkage;
+			for (int i = 0; i <= dstidx; i++) {
+				arglist[offset + i] = argv[i];
+			}
+			/* NOTE: the remote waypipe instance must be in
+			 * the default PATH */
+			arglist[dstidx + 1 + offset++] = "waypipe";
+			if (debug) {
+				arglist[dstidx + 1 + offset++] = "-d";
+			}
+			if (oneshot) {
+				arglist[dstidx + 1 + offset++] = "-o";
+			}
+			if (needs_login_shell) {
+				arglist[dstidx + 1 + offset++] =
+						"--login-shell";
+			}
+			if (remote_drm_node) {
+				arglist[dstidx + 1 + offset++] = "--drm-node";
+				arglist[dstidx + 1 + offset++] =
+						remote_drm_node;
+			}
+			arglist[dstidx + 1 + offset++] = "--unlink-socket";
+			arglist[dstidx + 1 + offset++] = "-s";
+			arglist[dstidx + 1 + offset++] = serversock;
+			arglist[dstidx + 1 + offset++] = "server";
+			for (int i = dstidx + 1; i < argc; i++) {
+				arglist[offset + i] = argv[i];
+			}
+			arglist[argc + offset] = NULL;
+
+			// execvp effectively frees arglist
+			execvp(arglist[0], arglist);
+			wp_log(WP_ERROR, "Fork failed");
+			free(arglist);
+			return EXIT_FAILURE;
+		} else {
+			return run_client(clientsock, drm_node, oneshot, nogpu,
+					conn_pid);
+		}
 	}
 }

@@ -656,7 +656,6 @@ static void request_wl_surface_commit(
 	// Translate damage stack into damage records for the fd buffer
 	struct damage_record *rec = surface->damage_stack;
 	while (rec) {
-		// TODO: take into account transformations
 		int xlow, xhigh, ylow, yhigh;
 		int r = compute_damage_coordinates(&xlow, &xhigh, &ylow, &yhigh,
 				rec, buf->shm_width, buf->shm_height,
@@ -991,21 +990,22 @@ static void event_wl_drm_device(
 		 * node path only is useful on the application side */
 		return;
 	}
-
-	const char path[] = "/dev/dri/renderD128";
-	int path_len = strlen(path);
+	/* The render node was already initialized in wl_registry.global,
+	 * so the render node path is provides has been checked */
+	int path_len = (int)strlen(context->map->rdata.drm_node_path);
 	int message_bytes = 8 + 4 + 4 * ((path_len + 1 + 3) / 4);
 	if (message_bytes > context->message_available_space) {
 		wp_log(WP_ERROR,
 				"Not enough space to modify DRM device advertisement from '%s' to '%s'",
-				name, path);
+				name, context->map->rdata.drm_node_path);
 		return;
 	}
 	context->message_length = message_bytes;
 	uint32_t *payload = context->message + 2;
 	memset(payload, 0, (size_t)message_bytes - 8);
 	payload[0] = (uint32_t)path_len + 1;
-	memcpy(context->message + 3, path, (size_t)path_len);
+	memcpy(context->message + 3, context->map->rdata.drm_node_path,
+			(size_t)path_len);
 	uint32_t meth = (context->message[1] << 16) >> 16;
 	context->message[1] = meth | ((uint32_t)message_bytes << 16);
 }

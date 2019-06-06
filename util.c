@@ -724,7 +724,8 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 	}
 }
 
-int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
+int main_interface_loop(int chanfd, int progfd, const char *drm_node,
+		bool no_gpu, bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_fnctl_flag(chanfd, O_NONBLOCK | O_CLOEXEC) == -1) {
@@ -796,6 +797,7 @@ int main_interface_loop(int chanfd, int progfd, bool no_gpu, bool display_side)
 			.list = NULL,
 			.max_local_id = 1,
 			.rdata = {.disabled = no_gpu,
+					.drm_node_path = drm_node,
 					.drm_fd = -1,
 					.dev = NULL}};
 	struct message_tracker mtracker;

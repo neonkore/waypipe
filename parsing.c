@@ -157,11 +157,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 	int k = 0;                      // current argument index
 	const char *c = msg->signature; // current argument value
 
-	// TODO: compensate for version strings
 	for (; *c; c++, k++) {
-		// TODO: truncation safety check, because applications need not
-		// be protocol-compliant
-
 		// Skip over version specifications, and over null object
 		// permission flags
 		while ((*c >= '0' && *c <= '9') || *c == '?') {

@@ -50,8 +50,8 @@ int init_render_data(struct render_data *data)
 		// Silent return, idempotent
 		return 0;
 	}
-	// todo: make this a command line option
-	const char card[] = "/dev/dri/renderD128";
+	const char *card = data->drm_node_path ? data->drm_node_path
+					       : "/dev/dri/renderD128";
 
 	int drm_fd = open(card, O_RDWR | O_CLOEXEC);
 	if (drm_fd == -1) {
@@ -71,6 +71,8 @@ int init_render_data(struct render_data *data)
 
 	data->drm_fd = drm_fd;
 	data->dev = dev;
+	/* Set the path to the card used for protocol handlers to see */
+	data->drm_node_path = card;
 	return 0;
 }
 void cleanup_render_data(struct render_data *data)
