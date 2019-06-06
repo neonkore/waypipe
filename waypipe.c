@@ -99,18 +99,6 @@ static void fill_rand_token(char tok[static 8])
 	}
 }
 
-static bool strcont(char v, const char *string)
-{
-	while (true) {
-		if (*string == 0) {
-			return false;
-		} else if (*string == v) {
-			return true;
-		}
-		string++;
-	}
-}
-
 static int locate_openssh_cmd_hostname(int argc, char *const *argv)
 {
 	/* Based on command line help for openssh 8.0 */
@@ -119,13 +107,13 @@ static int locate_openssh_cmd_hostname(int argc, char *const *argv)
 	int dstidx = 0;
 	while (dstidx < argc) {
 		if (argv[dstidx][0] == '-' &&
-				strcont(argv[dstidx][1], argletters) &&
+				strchr(argletters, argv[dstidx][1]) != NULL &&
 				argv[dstidx][2] == 0) {
 			dstidx += 2;
 			continue;
 		}
 		if (argv[dstidx][0] == '-' &&
-				strcont(argv[dstidx][1], fixletters)) {
+				strchr(fixletters, argv[dstidx][1]) != NULL) {
 			dstidx++;
 			continue;
 		}
