@@ -83,10 +83,13 @@ static int usage(int retcode)
 	return retcode;
 }
 
+/* produces a random token with a low accidental collision probability */
 static void fill_rand_token(char tok[static 8])
 {
-	// TODO: replace with a true random value; time() overlaps /very/ easily
-	srand(time(NULL));
+	struct timespec tp;
+	clock_gettime(CLOCK_REALTIME, &tp);
+	uint32_t seed = (uint32_t)(getpid() + tp.tv_sec + (tp.tv_nsec << 2));
+	srand(seed);
 	for (int i = 0; i < 8; i++) {
 		unsigned int r = ((unsigned int)rand()) % 62;
 		if (r < 26) {
