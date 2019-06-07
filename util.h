@@ -29,7 +29,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 // On SIGINT, this is set to true. The main program should then cleanup ASAP
 extern bool shutdown_flag;
@@ -50,11 +49,6 @@ int set_fnctl_flag(int fd, int the_flag);
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);
-
-ssize_t iovec_read(int socket, char *buf, size_t buflen, int *fds, int *numfds,
-		int maxfds);
-ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
-		int numfds, int *nfds_written);
 
 int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 		bool no_gpu, bool display_side);
@@ -196,30 +190,16 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct shadow_fd *cur, int *ntransfers,
 		struct transfer transfers[]);
-/** Set up metadata and headers for the data transfer to the channel. */
-struct block_transfer;
-void pack_pipe_message(struct block_transfer *bt, int nids, const int ids[],
-		int ntransfers, const struct transfer transfers[]);
-/** Unpack the buffer containing message data, the id list, and file updates.
- * All returned pointers refer to positions in the source buffer. */
-void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
-		char **waymsg, int *nids, int ids[], int *ntransfers,
-		struct transfer transfers[]);
-/** Given a list of global ids, and an up-to-date translation map, produce local
- * file descriptors */
-void untranslate_ids(struct fd_translation_map *map, int nids, const int ids[],
-		int fds[]);
 /** Apply a file update to the translation map, creating an entry when there is
  * none */
 void apply_update(
 		struct fd_translation_map *map, const struct transfer *transf);
-
-/** Read the contents of a packed message into a newly allocated buffer */
-ssize_t read_size_then_buf(int fd, char **msg);
+/** Get the shadow structure associated to a remote id, or NULL if it dne */
+struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 
 /** Count the number of pipe fds being maintained by the translation map */
 int count_npipes(const struct fd_translation_map *map);
-/** Fill in pollfd entries, with POLL_IN | POLLOUT, for applicable pipe objects.
+/** Fill in pollfd entries, with POLLIN | POLLOUT, for applicable pipe objects.
  * Specifically, if check_read is true, indicate all readable pipes.
  * Also, indicate all writeable pipes for which we also something to write. */
 struct pollfd;
@@ -239,7 +219,6 @@ void close_local_pipe_ends(struct fd_translation_map *map);
 /** If a pipe is remotely closed, but not locally closed, then close it too */
 void close_rclosed_pipes(struct fd_translation_map *map);
 
-struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 /** Reduce the reference count for a shadow structure which is owned. The
  * structure should not be used by the caller after this point. Returns true if
  * pointer deleted. */
@@ -318,20 +297,6 @@ struct int_window {
 	int zone_start;
 	int zone_end;
 };
-/**
- * Given a set of messages and fds, parse the messages, and if indicated by
- * parsing logic, compact the message buffer by removing selected messages.
- *
- * Messages with file descriptors should not be compacted.
- *
- * The amount of the message buffer read is written to `data_used`
- * The new size of the message buffer, after compaction, is `data_newsize`
- * The number of file descriptors read by the protocol is `fds_used`.
- */
-void parse_and_prune_messages(struct message_tracker *mt,
-		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, struct char_window *source_bytes,
-		struct char_window *dest_bytes, struct int_window *fds);
 
 // parsing.c
 

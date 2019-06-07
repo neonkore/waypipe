@@ -36,6 +36,7 @@
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 bool fdcat_ispipe(fdcat_t t)
 {
@@ -525,30 +526,6 @@ void collect_update(struct shadow_fd *cur, int *ntransfers,
 	}
 }
 
-void untranslate_ids(struct fd_translation_map *map, int nids, const int ids[],
-		int fds[])
-{
-	for (int i = 0; i < nids; i++) {
-		struct shadow_fd *cur = map->list;
-		int the_id = ids[i];
-		bool found = false;
-		while (cur) {
-			if (cur->remote_id == the_id) {
-				fds[i] = cur->fd_local;
-				found = true;
-				break;
-			}
-
-			cur = cur->next;
-		}
-		if (!found) {
-			wp_log(WP_ERROR,
-					"Could not untranslate remote id %d in map. Application will probably crash.",
-					the_id);
-			fds[i] = -1;
-		}
-	}
-}
 void apply_update(struct fd_translation_map *map, const struct transfer *transf)
 {
 	struct shadow_fd *cur = map->list;

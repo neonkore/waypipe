@@ -76,6 +76,7 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static inline struct context *get_context(void *first_arg, void *second_arg)
 {

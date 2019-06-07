@@ -28,15 +28,12 @@
 #include "util.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
 
@@ -104,7 +101,7 @@ int run_client(const char *socket_path, const char *drm_node, bool oneshot,
 	 * are waiting for a socket accept */
 	struct pollfd cs;
 	cs.fd = channelsock;
-	cs.events = POLL_IN;
+	cs.events = POLLIN;
 	cs.revents = 0;
 	while (!shutdown_flag) {
 		if (eol_pid) {

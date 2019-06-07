@@ -34,13 +34,9 @@
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
-#include <wayland-server-core.h>
 
 static int connect_to_channel(const char *socket_path)
 {
@@ -164,7 +160,7 @@ int run_server(const char *socket_path, const char *drm_node, bool oneshot,
 		// connection
 		struct pollfd pf;
 		pf.fd = wdisplay_socket;
-		pf.events = POLL_IN;
+		pf.events = POLLIN;
 		pf.revents = 0;
 		while (!shutdown_flag) {
 			int wp = waitpid(pid, NULL, WNOHANG);

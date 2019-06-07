@@ -36,8 +36,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds,
-		int maxfds)
+static ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds,
+		int *numfds, int maxfds)
 {
 	char cmsgdata[(CMSG_LEN(28 * sizeof(int32_t)))];
 	struct iovec the_iovec;
@@ -77,8 +77,8 @@ ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds, int *numfds,
 }
 // The maximum number of fds libwayland can recvmsg at once
 #define MAX_LIBWAY_FDS 28
-ssize_t iovec_write(int conn, const char *buf, size_t buflen, const int *fds,
-		int numfds, int *nfds_written)
+static ssize_t iovec_write(int conn, const char *buf, size_t buflen,
+		const int *fds, int numfds, int *nfds_written)
 {
 	bool overflow = numfds > MAX_LIBWAY_FDS;
 
@@ -135,6 +135,23 @@ static void translate_fds(struct fd_translation_map *map, int nfds,
 		ids[i] = translate_fd(map, fds[i], NULL)->remote_id;
 	}
 }
+/** Given a list of global ids, and an up-to-date translation map, produce local
+ * file descriptors */
+static void untranslate_ids(struct fd_translation_map *map, int nids,
+		const int ids[], int fds[])
+{
+	for (int i = 0; i < nids; i++) {
+		struct shadow_fd *shadow = get_shadow_for_rid(map, ids[i]);
+		if (!shadow) {
+			wp_log(WP_ERROR,
+					"Could not untranslate remote id %d in map. Application will probably crash.",
+					ids[i]);
+			fds[i] = -1;
+		} else {
+			fds[i] = shadow->fd_local;
+		}
+	}
+}
 
 static void apply_updates(struct fd_translation_map *map, int ntransfers,
 		const struct transfer transfers[])
@@ -150,6 +167,81 @@ static void collect_updates(struct fd_translation_map *map, int *ntransfers,
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
 		collect_update(cur, ntransfers, transfers);
 	}
+}
+
+/**
+ * Given a set of messages and fds, parse the messages, and if indicated by
+ * parsing logic, compact the message buffer by removing selected messages.
+ *
+ * Messages with file descriptors should not be compacted.
+ *
+ * The amount of the message buffer read is written to `data_used`
+ * The new size of the message buffer, after compaction, is `data_newsize`
+ * The number of file descriptors read by the protocol is `fds_used`.
+ */
+static void parse_and_prune_messages(struct message_tracker *mt,
+		struct fd_translation_map *map, bool on_display_side,
+		bool from_client, struct char_window *source_bytes,
+		struct char_window *dest_bytes, struct int_window *fds)
+{
+	bool anything_unknown = false;
+	struct char_window scan_bytes;
+	scan_bytes.data = dest_bytes->data;
+	scan_bytes.zone_start = dest_bytes->zone_start;
+	scan_bytes.zone_end = dest_bytes->zone_start;
+	scan_bytes.size = dest_bytes->size;
+
+	for (; source_bytes->zone_start < source_bytes->zone_end;) {
+		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
+			// Not enough remaining bytes to parse the header
+			wp_log(WP_DEBUG, "Insufficient bytes for header: %d %d",
+					source_bytes->zone_start,
+					source_bytes->zone_end);
+			break;
+		}
+		int msgsz = peek_message_size(
+				&source_bytes->data[source_bytes->zone_start]);
+		if (source_bytes->zone_start + msgsz > source_bytes->zone_end) {
+			wp_log(WP_DEBUG, "Insufficient bytes");
+			// Not enough remaining bytes to contain the message
+			break;
+		}
+		if (msgsz < 8) {
+			wp_log(WP_DEBUG, "Degenerate message, claimed len=%d",
+					msgsz);
+			// Not enough remaining bytes to contain the message
+			break;
+		}
+
+		/* We copy the message to the trailing end of the in-progress
+		 * buffer; the parser may elect to modify the message's size */
+		memcpy(&scan_bytes.data[scan_bytes.zone_start],
+				&source_bytes->data[source_bytes->zone_start],
+				(size_t)msgsz);
+		source_bytes->zone_start += msgsz;
+		scan_bytes.zone_end = scan_bytes.zone_start + msgsz;
+
+		enum parse_state pstate = handle_message(mt, map,
+				on_display_side, from_client, &scan_bytes, fds);
+		if (pstate == PARSE_UNKNOWN || pstate == PARSE_ERROR) {
+			anything_unknown = true;
+		}
+		scan_bytes.zone_start = scan_bytes.zone_end;
+	}
+	dest_bytes->zone_end = scan_bytes.zone_end;
+
+	if (anything_unknown) {
+		// All-un-owned buffers are assumed to have changed.
+		// (Note that in some cases, a new protocol could imply a change
+		// for an existing buffer; it may make sense to mark everything
+		// dirty, then.)
+		for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+			if (!cur->has_owner) {
+				cur->is_dirty = true;
+			}
+		}
+	}
+	return;
 }
 
 struct pipe_elem_header {
@@ -174,6 +266,115 @@ struct block_transfer {
 	// Tracking how much of the message has been transferred
 	int blocks_written;
 };
+
+/** Set up metadata and headers for the data transfer to the channel. */
+static void pack_pipe_message(struct block_transfer *bt, int nids,
+		const int ids[], int ntransfers,
+		const struct transfer transfers[])
+{
+	// TODO: network byte order everything, content aware, somewhere in the
+	// chain!
+
+	bt->nblocks = ntransfers * 2 + 1;
+	bt->ntransfers = ntransfers;
+	bt->transfer_block_headers = calloc((size_t)bt->ntransfers,
+			sizeof(struct pipe_elem_header));
+	bt->blocks = calloc((size_t)bt->nblocks, sizeof(struct iovec));
+	const size_t header_size =
+			sizeof(uint64_t) +
+			(size_t)nids * sizeof(struct pipe_elem_header);
+	size_t total_size = header_size;
+
+	for (int i = 0; i < ntransfers; i++) {
+		struct pipe_elem_header *sd = &bt->transfer_block_headers[i];
+		sd->id = transfers[i].obj_id;
+		sd->type = (int)transfers[i].type;
+		sd->size = (int)transfers[i].size;
+		sd->special = transfers[i].special;
+
+		size_t tsize = transfers[i].size;
+		size_t num_longs = (tsize + sizeof(uint64_t) - 1) /
+				   sizeof(uint64_t);
+		bt->blocks[2 * i + 1].iov_len = sizeof(struct pipe_elem_header);
+		bt->blocks[2 * i + 1].iov_base = sd;
+
+		bt->blocks[2 * i + 2].iov_len = sizeof(uint64_t) * num_longs;
+		bt->blocks[2 * i + 2].iov_base = transfers[i].data;
+
+		total_size += sizeof(struct pipe_elem_header) +
+			      sizeof(uint64_t) * num_longs;
+	}
+
+	uint64_t *cursor = calloc(header_size, 1);
+	bt->meta_header = (char *)cursor;
+	*cursor++ = total_size - sizeof(uint64_t); // size, excluding itself
+	for (int i = 0; i < nids; i++) {
+		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
+		sd->id = ids[i];
+		sd->type = -1;
+		sd->size = -1;
+		sd->special = 0;
+		cursor += sizeof(struct pipe_elem_header) / sizeof(uint64_t);
+	}
+	bt->blocks[0].iov_len = header_size;
+	bt->blocks[0].iov_base = bt->meta_header;
+	bt->total_size = (int)total_size;
+}
+
+/** Unpack the buffer containing message data, the id list, and file updates.
+ * All returned pointers refer to positions in the source buffer. */
+static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
+		char **waymsg, int *nids, int ids[], int *ntransfers,
+		struct transfer transfers[])
+{
+	if (msglen % 8 != 0) {
+		wp_log(WP_ERROR, "Unpacking uneven message, size %ld=%ld mod 8",
+				msglen, msglen % 8);
+		*nids = 0;
+		*ntransfers = 0;
+		return;
+	}
+	int ni = 0, nt = 0;
+	const uint64_t *cursor = (const uint64_t *)msg;
+	const uint64_t *end = (const uint64_t *)(msg + msglen);
+	while (cursor < end) {
+		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
+		if (sd->size != -1) {
+			const char *data = ((const char *)cursor) + 16;
+			if (sd->id == 0) {
+				// There can only be one of these blocks
+				*waylen = sd->size;
+				*waymsg = (char *)data;
+			} else {
+				// Add to list of data transfers
+				transfers[nt].obj_id = sd->id;
+				transfers[nt].size = (size_t)sd->size;
+				transfers[nt].type = (fdcat_t)sd->type;
+				transfers[nt].data = (char *)data;
+				transfers[nt].special = sd->special;
+				nt++;
+			}
+			size_t nlongs = ((size_t)sd->size + 7) / 8;
+			if (nlongs > msglen / 8) {
+				wp_log(WP_ERROR,
+						"Excessively long buffer: length: %ld x uint64_t",
+						nlongs);
+				return;
+			}
+			cursor += (sizeof(struct pipe_elem_header) /
+						  sizeof(uint64_t)) +
+				  nlongs;
+		} else {
+			// Add to list of file descriptors passed along
+			ids[ni++] = sd->id;
+
+			cursor += (sizeof(struct pipe_elem_header) /
+					sizeof(uint64_t));
+		}
+	}
+	*nids = ni;
+	*ntransfers = nt;
+}
 
 /* This state corresponds to the in-progress transfer from the program
  * (compositor or application) and its pipes/buffers to the channel. */
@@ -790,174 +991,4 @@ int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 	close(chanfd);
 	close(progfd);
 	return EXIT_SUCCESS;
-}
-
-void pack_pipe_message(struct block_transfer *bt, int nids, const int ids[],
-		int ntransfers, const struct transfer transfers[])
-{
-	// TODO: network byte order everything, content aware, somewhere in the
-	// chain!
-
-	bt->nblocks = ntransfers * 2 + 1;
-	bt->ntransfers = ntransfers;
-	bt->transfer_block_headers = calloc((size_t)bt->ntransfers,
-			sizeof(struct pipe_elem_header));
-	bt->blocks = calloc((size_t)bt->nblocks, sizeof(struct iovec));
-	const size_t header_size =
-			sizeof(uint64_t) +
-			(size_t)nids * sizeof(struct pipe_elem_header);
-	size_t total_size = header_size;
-
-	for (int i = 0; i < ntransfers; i++) {
-		struct pipe_elem_header *sd = &bt->transfer_block_headers[i];
-		sd->id = transfers[i].obj_id;
-		sd->type = (int)transfers[i].type;
-		sd->size = (int)transfers[i].size;
-		sd->special = transfers[i].special;
-
-		size_t tsize = transfers[i].size;
-		size_t num_longs = (tsize + sizeof(uint64_t) - 1) /
-				   sizeof(uint64_t);
-		bt->blocks[2 * i + 1].iov_len = sizeof(struct pipe_elem_header);
-		bt->blocks[2 * i + 1].iov_base = sd;
-
-		bt->blocks[2 * i + 2].iov_len = sizeof(uint64_t) * num_longs;
-		bt->blocks[2 * i + 2].iov_base = transfers[i].data;
-
-		total_size += sizeof(struct pipe_elem_header) +
-			      sizeof(uint64_t) * num_longs;
-	}
-
-	uint64_t *cursor = calloc(header_size, 1);
-	bt->meta_header = (char *)cursor;
-	*cursor++ = total_size - sizeof(uint64_t); // size, excluding itself
-	for (int i = 0; i < nids; i++) {
-		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
-		sd->id = ids[i];
-		sd->type = -1;
-		sd->size = -1;
-		sd->special = 0;
-		cursor += sizeof(struct pipe_elem_header) / sizeof(uint64_t);
-	}
-	bt->blocks[0].iov_len = header_size;
-	bt->blocks[0].iov_base = bt->meta_header;
-	bt->total_size = (int)total_size;
-}
-
-void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
-		char **waymsg, int *nids, int ids[], int *ntransfers,
-		struct transfer transfers[])
-{
-	if (msglen % 8 != 0) {
-		wp_log(WP_ERROR, "Unpacking uneven message, size %ld=%ld mod 8",
-				msglen, msglen % 8);
-		*nids = 0;
-		*ntransfers = 0;
-		return;
-	}
-	int ni = 0, nt = 0;
-	const uint64_t *cursor = (const uint64_t *)msg;
-	const uint64_t *end = (const uint64_t *)(msg + msglen);
-	while (cursor < end) {
-		struct pipe_elem_header *sd = (struct pipe_elem_header *)cursor;
-		if (sd->size != -1) {
-			const char *data = ((const char *)cursor) + 16;
-			if (sd->id == 0) {
-				// There can only be one of these blocks
-				*waylen = sd->size;
-				*waymsg = (char *)data;
-			} else {
-				// Add to list of data transfers
-				transfers[nt].obj_id = sd->id;
-				transfers[nt].size = (size_t)sd->size;
-				transfers[nt].type = (fdcat_t)sd->type;
-				transfers[nt].data = (char *)data;
-				transfers[nt].special = sd->special;
-				nt++;
-			}
-			size_t nlongs = ((size_t)sd->size + 7) / 8;
-			if (nlongs > msglen / 8) {
-				wp_log(WP_ERROR,
-						"Excessively long buffer: length: %ld x uint64_t",
-						nlongs);
-				return;
-			}
-			cursor += (sizeof(struct pipe_elem_header) /
-						  sizeof(uint64_t)) +
-				  nlongs;
-		} else {
-			// Add to list of file descriptors passed along
-			ids[ni++] = sd->id;
-
-			cursor += (sizeof(struct pipe_elem_header) /
-					sizeof(uint64_t));
-		}
-	}
-	*nids = ni;
-	*ntransfers = nt;
-}
-
-void parse_and_prune_messages(struct message_tracker *mt,
-		struct fd_translation_map *map, bool on_display_side,
-		bool from_client, struct char_window *source_bytes,
-		struct char_window *dest_bytes, struct int_window *fds)
-{
-	bool anything_unknown = false;
-	struct char_window scan_bytes;
-	scan_bytes.data = dest_bytes->data;
-	scan_bytes.zone_start = dest_bytes->zone_start;
-	scan_bytes.zone_end = dest_bytes->zone_start;
-	scan_bytes.size = dest_bytes->size;
-
-	for (; source_bytes->zone_start < source_bytes->zone_end;) {
-		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
-			// Not enough remaining bytes to parse the header
-			wp_log(WP_DEBUG, "Insufficient bytes for header: %d %d",
-					source_bytes->zone_start,
-					source_bytes->zone_end);
-			break;
-		}
-		int msgsz = peek_message_size(
-				&source_bytes->data[source_bytes->zone_start]);
-		if (source_bytes->zone_start + msgsz > source_bytes->zone_end) {
-			wp_log(WP_DEBUG, "Insufficient bytes");
-			// Not enough remaining bytes to contain the message
-			break;
-		}
-		if (msgsz < 8) {
-			wp_log(WP_DEBUG, "Degenerate message, claimed len=%d",
-					msgsz);
-			// Not enough remaining bytes to contain the message
-			break;
-		}
-
-		/* We copy the message to the trailing end of the in-progress
-		 * buffer; the parser may elect to modify the message's size */
-		memcpy(&scan_bytes.data[scan_bytes.zone_start],
-				&source_bytes->data[source_bytes->zone_start],
-				(size_t)msgsz);
-		source_bytes->zone_start += msgsz;
-		scan_bytes.zone_end = scan_bytes.zone_start + msgsz;
-
-		enum parse_state pstate = handle_message(mt, map,
-				on_display_side, from_client, &scan_bytes, fds);
-		if (pstate == PARSE_UNKNOWN || pstate == PARSE_ERROR) {
-			anything_unknown = true;
-		}
-		scan_bytes.zone_start = scan_bytes.zone_end;
-	}
-	dest_bytes->zone_end = scan_bytes.zone_end;
-
-	if (anything_unknown) {
-		// All-un-owned buffers are assumed to have changed.
-		// (Note that in some cases, a new protocol could imply a change
-		// for an existing buffer; it may make sense to mark everything
-		// dirty, then.)
-		for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-			if (!cur->has_owner) {
-				cur->is_dirty = true;
-			}
-		}
-	}
-	return;
 }
