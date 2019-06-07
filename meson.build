@@ -49,7 +49,7 @@ subdir('protocols')
 
 executable(
 	'waypipe',
-	['waypipe.c', 'client.c', 'dmabuf.c', 'handlers.c', 'parsing.c', 'server.c', 'util.c'],
+	['waypipe.c', 'client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'util.c'],
 	dependencies : [
 		libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 		libffi,          # To call wayland protocol functions

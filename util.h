@@ -181,23 +181,20 @@ struct transfer {
 
 void cleanup_translation_map(struct fd_translation_map *map);
 
-/** Given a file descriptor, return which type code would be applied
- * to its shadow entry. (For example, FDC_PIPE_IR for a pipe-like
- * object that can only be read.) Sets *size if non-NULL and if
- * the object is an FDC_FILE. */
+/** Given a file descriptor, return which type code would be applied to its
+ * shadow entry. (For example, FDC_PIPE_IR for a pipe-like object that can only
+ * be read.) Sets *size if non-NULL and if the object is an FDC_FILE. */
 fdcat_t get_fd_type(int fd, size_t *size);
-/** Given a list of local file descriptors, produce matching global ids, and
- * register them into the translation map if not already done.  The specific
- * translate_fd function can also be provided with optional extra information.
+/** Given a local file descriptor, produce matching global id, and register it
+ * into the translation map if not already done. The function can also be
+ * provided with optional extra information.
  */
 struct dmabuf_slice_data;
 struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
 		struct dmabuf_slice_data *info);
-void translate_fds(struct fd_translation_map *map, int nfds, const int fds[],
-		int ids[]);
-/** Produce a list of file updates to transfer. All pointers will be to existing
- * memory. */
-void collect_updates(struct fd_translation_map *map, int *ntransfers,
+/** Given a struct shadow_fd, produce some number of corresponding file update
+ * transfer messages. All pointers will be to existing memory. */
+void collect_update(struct shadow_fd *cur, int *ntransfers,
 		struct transfer transfers[]);
 /** Set up metadata and headers for the data transfer to the channel. */
 struct block_transfer;
@@ -212,10 +209,10 @@ void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
  * file descriptors */
 void untranslate_ids(struct fd_translation_map *map, int nids, const int ids[],
 		int fds[]);
-/** Apply file updates to the translation map, creating entries when there are
+/** Apply a file update to the translation map, creating an entry when there is
  * none */
-void apply_updates(struct fd_translation_map *map, int ntransfers,
-		const struct transfer transfers[]);
+void apply_update(
+		struct fd_translation_map *map, const struct transfer *transf);
 
 /** Read the contents of a packed message into a newly allocated buffer */
 ssize_t read_size_then_buf(int fd, char **msg);
