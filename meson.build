@@ -44,6 +44,9 @@ wayland_scanner = dependency('wayland-scanner', native: true, version: '>=1.15')
 libgbm = dependency('gbm')
 libffi = dependency('libffi')
 rt = cc.find_library('rt')
+if cc.has_header('sys/sdt.h')
+	add_project_arguments('-DHAS_USDT=1', language : 'c')
+endif
 
 subdir('protocols')
 

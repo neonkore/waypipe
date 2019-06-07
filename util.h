@@ -30,6 +30,15 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#ifdef HAS_USDT
+#include <sys/sdt.h>
+#else
+#define DTRACE_PROBE(provider, probe) (void)0
+#define DTRACE_PROBE1(provider, probe, parm1) (void)0
+#define DTRACE_PROBE2(provider, probe, parm1, parm2) (void)0
+#define DTRACE_PROBE3(provider, probe, parm1, parm2, parm3) (void)0
+#endif
+
 // On SIGINT, this is set to true. The main program should then cleanup ASAP
 extern bool shutdown_flag;
 

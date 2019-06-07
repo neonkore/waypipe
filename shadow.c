@@ -261,6 +261,8 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 	if (blockrange_max > nblocks) {
 		blockrange_max = nblocks;
 	}
+	DTRACE_PROBE2(waypipe, construct_diff_enter, range_min, range_max);
+
 	diff_blocks[0] = 0;
 	bool skipping = true;
 	/* we paper over gaps of a given window size, to avoid fine grained
@@ -302,6 +304,7 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 			}
 		}
 	}
+
 	// We do not add a final 'skip' block, because the unpacking routine
 	if (!skipping) {
 		diff_blocks[last_header] |= blockrange_max - nskip;
@@ -314,6 +317,7 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 		}
 	}
 	*diffsize = cursor * 8 + ntrailing;
+	DTRACE_PROBE1(waypipe, construct_diff_exit, *diffsize);
 }
 static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		const char *__restrict__ diff)
@@ -327,6 +331,7 @@ static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		wp_log(WP_ERROR, "Trailing bytes mismatch for diff.");
 		return;
 	}
+	DTRACE_PROBE2(waypipe, apply_diff_enter, size, diffsize);
 	for (uint64_t i = 0; i < ndiffblocks;) {
 		uint64_t block = diff_blocks[i];
 		uint64_t nfrom = block >> 32;
@@ -343,6 +348,7 @@ static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 				8 * (nto - nfrom));
 		i += nto - nfrom + 1;
 	}
+	DTRACE_PROBE(waypipe, apply_diff_exit);
 	if (ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
 			base[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];

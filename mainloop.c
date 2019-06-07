@@ -563,6 +563,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 				return -1;
 			}
 			cmsg->state = CM_WAITING_FOR_PROGRAM;
+			DTRACE_PROBE(waypipe, chanmsg_program_wait);
 		}
 	}
 	return 0;
@@ -613,6 +614,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 		cmsg->cmsg_buffer = NULL;
 		cmsg->cmsg_size = 0;
 		cmsg->cmsg_end = 0;
+		DTRACE_PROBE(waypipe, chanmsg_channel_wait);
 	}
 	return 0;
 }
@@ -681,6 +683,7 @@ static int advance_waymsg_chanwrite(
 		}
 	}
 	if (bt->blocks_written == bt->nblocks) {
+		DTRACE_PROBE(waypipe, channel_write_end);
 		wp_log(WP_DEBUG,
 				"The %d-byte, %d block message from %s to channel has been written",
 				bt->total_size, bt->nblocks, progdesc);
@@ -811,6 +814,8 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		wmsg->dbuffer_carryover_start = 0;
 		wmsg->rbuffer_count = 0;
 		wmsg->state = WM_WAITING_FOR_CHANNEL;
+		DTRACE_PROBE1(waypipe, channel_write_start,
+				wmsg->cmsg.total_size);
 	}
 	return 0;
 }

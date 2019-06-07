@@ -48,6 +48,7 @@ Requirements:
 * libffi
 * libgbm (from a recent version of mesa)
 * scdoc (optional, to generate a man page)
+* sys/sdt.h (optional, to provide static tracepoints for profiling)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)
 
 [0] [https://mesonbuild.com/](https://mesonbuild.com/)
