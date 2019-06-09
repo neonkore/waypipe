@@ -83,19 +83,28 @@ void cleanup_render_data(struct render_data *data)
 	}
 }
 
-struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		struct dmabuf_slice_data *info)
+static long get_dmabuf_fd_size(int fd)
 {
 	ssize_t endp = lseek(fd, 0, SEEK_END);
 	if (endp == -1) {
 		wp_log(WP_ERROR,
 				"Failed to estimate dmabuf size with lseek: %s",
 				strerror(errno));
-		return NULL;
+		return -1;
 	}
 	if (lseek(fd, SEEK_SET, 0) == -1) {
 		wp_log(WP_ERROR, "Failed to reset dmabuf offset with lseek: %s",
 				strerror(errno));
+		return -1;
+	}
+	return endp;
+}
+
+struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
+		struct dmabuf_slice_data *info)
+{
+	ssize_t endp = get_dmabuf_fd_size(fd);
+	if (endp == -1) {
 		return NULL;
 	}
 	*size = (size_t)endp;
@@ -103,24 +112,25 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	/* Multiplanar formats are all rather badly supported by
 	 * drivers/libgbm/libdrm/compositors/applications/everything. */
 	struct gbm_import_fd_modifier_data data;
-	data.num_fds = 1;
-	data.fds[0] = fd;
-	if (info && info->num_planes == 1) {
-		// Assume only one plane contains contents? otherwise fall
-		// back....
+	if (info) {
+		// Select all plane metadata associated to planes linked to this
+		// fd
 		data.modifier = info->modifier;
-		int which = 0;
-		for (int i = 0; i < 4; i++) {
+		data.num_fds = 0;
+		for (unsigned int i = 0; i < info->num_planes; i++) {
 			if (info->using_planes[i]) {
-				which = i;
+				data.fds[data.num_fds] = fd;
+				data.strides[data.num_fds] = info->strides[i];
+				data.offsets[data.num_fds] = info->offsets[i];
+				data.num_fds++;
 			}
 		}
-		data.strides[0] = (int)info->strides[which];
-		data.offsets[0] = (int)info->offsets[which];
 		data.width = info->width;
 		data.height = info->height;
 		data.format = info->format;
 	} else {
+		data.num_fds = 1;
+		data.fds[0] = fd;
 		data.offsets[0] = 0;
 		data.strides[0] = 1024;
 		data.width = 256;
@@ -198,12 +208,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
 		// assuming the format is a very standard one which can be
 		// created by gbm_bo;
-		int which = 0;
-		for (int i = 0; i < (int)info->num_planes; i++) {
-			if (info->using_planes[i]) {
-				which = i;
-			}
-		}
+
 		/* Whether just size and modifiers suffice to replicate
 		 * a surface is driver dependent, and requires actual testing
 		 * with the hardware.
@@ -218,9 +223,40 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		 * buffers with minimal information, or even just getting
 		 * the size of the buffer contents.
 		 */
-		int eff_height = size / info->strides[which] + 1;
 		bo = gbm_bo_create_with_modifiers(rd->dev, info->width,
-				eff_height, info->format, modifiers, 2);
+				info->height, info->format, modifiers, 2);
+		int tfd = gbm_bo_get_fd(bo);
+		long csize = get_dmabuf_fd_size(tfd);
+		close(tfd);
+		if (csize != (long)size) {
+			wp_log(WP_ERROR,
+					"Created DMABUF size (%ld disagrees with original size (%ld), %s",
+					csize, size,
+					(csize > (long)size)
+							? "keeping anyway"
+							: "attempting taller");
+			if (csize < (long)size) {
+				// Retry, with height increased to hopefully
+				// contain enough bytes
+				uint32_t nheight =
+						((uint32_t)size +
+								info->strides[0] -
+								1) /
+						info->strides[0];
+				gbm_bo_destroy(bo);
+				bo = gbm_bo_create_with_modifiers(rd->dev,
+						info->width, nheight,
+						info->format, modifiers, 2);
+				int nfd = gbm_bo_get_fd(bo);
+				long nsize = get_dmabuf_fd_size(nfd);
+				close(nfd);
+				if (nsize < (long)size) {
+					wp_log(WP_ERROR,
+							"Trying to fudge dmabuf height to reach target size of %ld bytes; failed, got %ld",
+							size, nsize);
+				}
+			}
+		}
 	}
 	if (!bo) {
 		wp_log(WP_ERROR, "Failed to make dmabuf: %s", strerror(errno));
