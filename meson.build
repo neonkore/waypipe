@@ -52,18 +52,21 @@ libzstd = dependency('libzstd')
 
 subdir('protocols')
 
+waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'util.c']
+waypipe_dependencies = [
+        libgbm,          # General GPU buffer creation, aligned with dmabuf proto
+        libffi,          # To call wayland protocol functions
+        liblz4,          # Fast compression option
+        libzstd,         # Slow compression option
+        protos,          # Wayland protocol data
+        rt,              # For shared memory
+        wayland_client   # For wl_display_connnect
+]
+
 executable(
 	'waypipe',
-	['waypipe.c', 'client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'util.c'],
-	dependencies : [
-		libgbm,          # General GPU buffer creation, aligned with dmabuf proto
-		libffi,          # To call wayland protocol functions
-		liblz4,          # Fast compression option
-		libzstd,         # Slow compression option
-		protos,          # Wayland protocol data
-		rt,              # For shared memory
-		wayland_client   # For wl_display_connnect
-	],
+	['waypipe.c'] + waypipe_source_files,
+	dependencies : waypipe_dependencies,
 	install: true
 )
 
@@ -83,4 +86,8 @@ if scdoc.found()
 		install_dir: '@0@/man1'.format(mandir)
 	)
 endif
+
+# Testing
+test_diff = executable('diff_roundtrip', ['test/diff_roundtrip.c'] + waypipe_source_files, dependencies: waypipe_dependencies)
+test('Whether diff operations successfully roundtrip', test_diff)
 

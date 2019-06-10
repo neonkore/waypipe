@@ -355,7 +355,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
  *
  * Requires that `diff` point to a memory buffer of size `size + 8`.
  */
-static void construct_diff(size_t size, size_t range_min, size_t range_max,
+void construct_diff(size_t size, size_t range_min, size_t range_max,
 		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff)
 {
@@ -423,13 +423,13 @@ static void construct_diff(size_t size, size_t range_min, size_t range_max,
 	if (ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
 			diff[cursor * 8 + i] = changed[nblocks * 8 + i];
-			base[cursor * 8 + i] = changed[nblocks * 8 + i];
+			base[nblocks * 8 + i] = changed[nblocks * 8 + i];
 		}
 	}
 	*diffsize = cursor * 8 + ntrailing;
 	DTRACE_PROBE1(waypipe, construct_diff_exit, *diffsize);
 }
-static void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
+void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		const char *__restrict__ diff)
 {
 	uint64_t nblocks = size / 8;

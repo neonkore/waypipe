@@ -381,4 +381,11 @@ int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo);
 uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
 
+// exported for testing
+void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
+		const char *__restrict__ diff);
+void construct_diff(size_t size, size_t range_min, size_t range_max,
+		char *__restrict__ base, const char *__restrict__ changed,
+		size_t *diffsize, char *__restrict__ diff);
+
 #endif // WAYPIPE_UTIL_H
