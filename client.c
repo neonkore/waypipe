@@ -55,31 +55,27 @@ struct pidstack {
 	pid_t proc;
 };
 
-static int run_client_child(int chanfd, const char *drm_node, bool no_gpu,
-		const char *socket_path)
+int run_client(const char *socket_path, const char *drm_node,
+		enum compression_mode compression, bool oneshot, bool no_gpu,
+		pid_t eol_pid)
 {
-	wp_log(WP_DEBUG, "I'm a client on %s!", socket_path);
-	struct wl_display *display = wl_display_connect(NULL);
-	if (!display) {
-		wp_log(WP_ERROR, "Failed to connect to a wayland server.");
-		return EXIT_FAILURE;
-	}
-	int dispfd = wl_display_get_fd(display);
-	int retcode = main_interface_loop(
-			chanfd, dispfd, drm_node, no_gpu, true);
-	wl_display_disconnect(display);
-	return retcode;
-}
-
-int run_client(const char *socket_path, const char *drm_node, bool oneshot,
-		bool no_gpu, pid_t eol_pid)
-{
-	if (verify_connection() == -1) {
-		wp_log(WP_ERROR, "Failed to connect to a wayland compositor.");
-		if (eol_pid) {
-			waitpid(eol_pid, NULL, 0);
+	struct wl_display *display = NULL;
+	if (oneshot) {
+		display = wl_display_connect(NULL);
+		if (!display) {
+			wp_log(WP_ERROR,
+					"Failed to connect to a wayland server.");
+			return EXIT_FAILURE;
 		}
-		return EXIT_FAILURE;
+	} else {
+		if (verify_connection() == -1) {
+			wp_log(WP_ERROR,
+					"Failed to connect to a wayland compositor.");
+			if (eol_pid) {
+				waitpid(eol_pid, NULL, 0);
+			}
+			return EXIT_FAILURE;
+		}
 	}
 	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.");
 
@@ -89,6 +85,9 @@ int run_client(const char *socket_path, const char *drm_node, bool oneshot,
 		// Error messages already made
 		if (eol_pid) {
 			waitpid(eol_pid, NULL, 0);
+		}
+		if (display) {
+			wl_display_disconnect(display);
 		}
 		return EXIT_FAILURE;
 	}
@@ -143,8 +142,10 @@ int run_client(const char *socket_path, const char *drm_node, bool oneshot,
 			break;
 		} else {
 			if (oneshot) {
-				retcode = run_client_child(chanclient, drm_node,
-						no_gpu, socket_path);
+				retcode = main_interface_loop(chanclient,
+						wl_display_get_fd(display),
+						drm_node, compression, no_gpu,
+						true);
 				break;
 			} else {
 				pid_t npid = fork();
@@ -160,8 +161,23 @@ int run_client(const char *socket_path, const char *drm_node, bool oneshot,
 					}
 
 					close(channelsock);
-					run_client_child(chanclient, drm_node,
-							no_gpu, socket_path);
+
+					struct wl_display *local_display =
+							wl_display_connect(
+									NULL);
+					if (!local_display) {
+						wp_log(WP_ERROR,
+								"Failed to connect to a wayland server.");
+						return EXIT_FAILURE;
+					}
+					int dispfd = wl_display_get_fd(
+							local_display);
+					// ignore retcode ?
+					main_interface_loop(chanclient, dispfd,
+							drm_node, compression,
+							no_gpu, true);
+					wl_display_disconnect(local_display);
+
 					// exit path?
 					return EXIT_SUCCESS;
 				} else if (npid == -1) {
@@ -183,6 +199,9 @@ int run_client(const char *socket_path, const char *drm_node, bool oneshot,
 		}
 	}
 
+	if (display) {
+		wl_display_disconnect(display);
+	}
 	close(channelsock);
 	unlink(socket_path);
 	int cleanup_type = shutdown_flag ? WNOHANG : 0;

@@ -47,6 +47,8 @@ rt = cc.find_library('rt')
 if cc.has_header('sys/sdt.h')
 	add_project_arguments('-DHAS_USDT=1', language : 'c')
 endif
+liblz4 = dependency('liblz4')
+libzstd = dependency('libzstd')
 
 subdir('protocols')
 
@@ -56,6 +58,8 @@ executable(
 	dependencies : [
 		libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 		libffi,          # To call wayland protocol functions
+		liblz4,          # Fast compression option
+		libzstd,         # Slow compression option
 		protos,          # Wayland protocol data
 		rt,              # For shared memory
 		wayland_client   # For wl_display_connnect

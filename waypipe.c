@@ -38,11 +38,13 @@
 #include <time.h>
 #include <unistd.h>
 
-int run_server(const char *socket_path, const char *drm_node, bool oneshot,
+int run_server(const char *socket_path, const char *drm_node,
+		enum compression_mode compression, bool oneshot,
 		bool unlink_at_end, const char *application,
 		char *const app_argv[]);
-int run_client(const char *socket_path, const char *drm_node, bool oneshot,
-		bool no_gpu, pid_t eol_pid);
+int run_client(const char *socket_path, const char *drm_node,
+		enum compression_mode compression, bool oneshot, bool no_gpu,
+		pid_t eol_pid);
 
 /* Usage: Wrapped to 79 characters */
 static const char usage_string[] =
@@ -59,6 +61,7 @@ static const char usage_string[] =
 		"                 instances can connect.\n"
 		"\n"
 		"Options:\n"
+		"  -c, --compress C     select compression method from: lz4, zstd, none\n"
 		"  -d, --debug          print debug messages\n"
 		"  -h, --help           display this help and exit\n"
 		"  -n, --no-gpu         disable protocols which would use GPU resources\n"
@@ -175,7 +178,9 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_REMOTENODE 1003
 #define ARG_LOGIN_SHELL 1004
 
-static const struct option options[] = {{"debug", no_argument, NULL, 'd'},
+static const struct option options[] = {
+		{"compress", required_argument, NULL, 'c'},
+		{"debug", no_argument, NULL, 'd'},
 		{"help", no_argument, NULL, 'h'},
 		{"no-gpu", no_argument, NULL, 'n'},
 		{"oneshot", no_argument, NULL, 'o'},
@@ -202,6 +207,7 @@ int main(int argc, char **argv)
 	const char *drm_node = NULL;
 	char *remote_drm_node = NULL;
 	const char *socketpath = NULL;
+	enum compression_mode compression = COMP_NONE;
 
 	/* We do not parse any getopt arguments happening after the mode choice
 	 * string, so as not to interfere with them. */
@@ -225,7 +231,7 @@ int main(int argc, char **argv)
 
 	while (true) {
 		int option_index;
-		int opt = getopt_long(mode_argc, argv, "dhnos:v", options,
+		int opt = getopt_long(mode_argc, argv, "c:dhnos:v", options,
 				&option_index);
 
 		if (opt == -1) {
@@ -233,6 +239,17 @@ int main(int argc, char **argv)
 		}
 
 		switch (opt) {
+		case 'c':
+			if (!strcmp(optarg, "none")) {
+				compression = COMP_NONE;
+			} else if (!strcmp(optarg, "lz4")) {
+				compression = COMP_LZ4;
+			} else if (!strcmp(optarg, "zstd")) {
+				compression = COMP_ZSTD;
+			} else {
+				fail = true;
+			}
+			break;
 		case 'd':
 			debug = true;
 			break;
@@ -330,7 +347,8 @@ int main(int argc, char **argv)
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";
 		}
-		return run_client(socketpath, drm_node, oneshot, nogpu, 0);
+		return run_client(socketpath, drm_node, compression, oneshot,
+				nogpu, 0);
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
 		const char *application = app_argv[0];
@@ -346,8 +364,8 @@ int main(int argc, char **argv)
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-server.sock";
 		}
-		return run_server(socketpath, drm_node, oneshot, unlink_at_end,
-				application, app_argv);
+		return run_server(socketpath, drm_node, compression, oneshot,
+				unlink_at_end, application, app_argv);
 	} else {
 
 		if (!socketpath) {
@@ -391,6 +409,7 @@ int main(int argc, char **argv)
 
 			int nextra = 10 + debug + oneshot +
 				     2 * (remote_drm_node != NULL) +
+				     2 * (compression != COMP_NONE) +
 				     needs_login_shell;
 			char **arglist = calloc(argc + nextra, sizeof(char *));
 
@@ -413,6 +432,13 @@ int main(int argc, char **argv)
 			}
 			if (oneshot) {
 				arglist[dstidx + 1 + offset++] = "-o";
+			}
+			if (compression != COMP_NONE) {
+				arglist[dstidx + 1 + offset++] = "-c";
+				arglist[dstidx + 1 + offset++] =
+						compression == COMP_LZ4
+								? "lz4"
+								: "zstd";
 			}
 			if (needs_login_shell) {
 				arglist[dstidx + 1 + offset++] =
@@ -438,8 +464,8 @@ int main(int argc, char **argv)
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
-			return run_client(clientsock, drm_node, oneshot, nogpu,
-					conn_pid);
+			return run_client(clientsock, drm_node, compression,
+					oneshot, nogpu, conn_pid);
 		}
 	}
 }

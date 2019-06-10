@@ -59,8 +59,10 @@ int set_fnctl_flag(int fd, int the_flag);
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);
 
+enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
 int main_interface_loop(int chanfd, int progfd, const char *drm_node,
-		bool no_gpu, bool display_side);
+		enum compression_mode compression, bool no_gpu,
+		bool display_side);
 
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
 
@@ -89,6 +91,7 @@ struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;
 	int local_sign;
+	enum compression_mode compression;
 	struct render_data rdata;
 };
 
@@ -148,11 +151,15 @@ struct shadow_fd {
 	int refcount_protocol; // Number of references from protocol objects
 	int refcount_transfer; // Number of references from fd transfer logic
 
+	// common buffers for file-like types
+	char *mem_mirror;      // exact mirror of the contents
+	char *diff_buffer;     // target buffer for uncompressed diff
+	char *compress_buffer; // target buffer for compressed diff
+	size_t compress_space;
+
 	// File data
 	size_t file_size;
-	char *file_mem_local;   // mmap'd
-	char *file_mem_mirror;  // malloc'd
-	char *file_diff_buffer; // malloc'd
+	char *file_mem_local; // mmap'd
 	char file_shm_buf_name[256];
 
 	// Pipe data
@@ -168,8 +175,6 @@ struct shadow_fd {
 	// DMAbuf data
 	size_t dmabuf_size;
 	struct gbm_bo *dmabuf_bo;
-	char *dmabuf_mem_mirror;  // malloc'd
-	char *dmabuf_diff_buffer; // malloc'd
 	struct dmabuf_slice_data dmabuf_info;
 };
 
@@ -177,9 +182,14 @@ struct transfer {
 	size_t size;
 	fdcat_t type;
 	int obj_id;
-	int special; // type-specific extra data
+	// type-specific extra data
+	union {
+		int pipeclose;
+		int file_actual_size;
+		int raw; // < for obviously type-independent cases
+	} special;
 	// data vector must include space up to next 8-byte boundary
-	char *data;
+	const char *data;
 };
 
 void cleanup_translation_map(struct fd_translation_map *map);
@@ -197,8 +207,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
 		struct dmabuf_slice_data *info);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
-void collect_update(struct shadow_fd *cur, int *ntransfers,
-		struct transfer transfers[]);
+void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
+		int *ntransfers, struct transfer transfers[]);
 /** Apply a file update to the translation map, creating an entry when there is
  * none */
 void apply_update(

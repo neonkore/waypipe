@@ -17,6 +17,11 @@ like *ssh -X*.
 
 # OPTIONS
 
+*-c C, --compress C*
+	Select the compression method applied to data transfers. Options are
+	_none_ (for high-bandwidth networks), _lz4_ (intermediate), _zstd_
+	(slow connection). The default compression is _none_.
+
 *-d, --debug*
 	Print debug log messages.
 

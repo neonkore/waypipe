@@ -165,7 +165,7 @@ static void collect_updates(struct fd_translation_map *map, int *ntransfers,
 		struct transfer transfers[])
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		collect_update(cur, ntransfers, transfers);
+		collect_update(map, cur, ntransfers, transfers);
 	}
 }
 
@@ -290,7 +290,7 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 		sd->id = transfers[i].obj_id;
 		sd->type = (int)transfers[i].type;
 		sd->size = (int)transfers[i].size;
-		sd->special = transfers[i].special;
+		sd->special = transfers[i].special.raw;
 
 		size_t tsize = transfers[i].size;
 		size_t num_longs = (tsize + sizeof(uint64_t) - 1) /
@@ -299,7 +299,7 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 		bt->blocks[2 * i + 1].iov_base = sd;
 
 		bt->blocks[2 * i + 2].iov_len = sizeof(uint64_t) * num_longs;
-		bt->blocks[2 * i + 2].iov_base = transfers[i].data;
+		bt->blocks[2 * i + 2].iov_base = (void *)transfers[i].data;
 
 		total_size += sizeof(struct pipe_elem_header) +
 			      sizeof(uint64_t) * num_longs;
@@ -351,7 +351,7 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 				transfers[nt].size = (size_t)sd->size;
 				transfers[nt].type = (fdcat_t)sd->type;
 				transfers[nt].data = (char *)data;
-				transfers[nt].special = sd->special;
+				transfers[nt].special.raw = sd->special;
 				nt++;
 			}
 			size_t nlongs = ((size_t)sd->size + 7) / 8;
@@ -833,7 +833,8 @@ static int advance_waymsg_transfer(struct fd_translation_map *map,
 }
 
 int main_interface_loop(int chanfd, int progfd, const char *drm_node,
-		bool no_gpu, bool display_side)
+		enum compression_mode compression, bool no_gpu,
+		bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_fnctl_flag(chanfd, O_NONBLOCK | O_CLOEXEC) == -1) {
@@ -904,6 +905,7 @@ int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 			.local_sign = (display_side ? -1 : 1),
 			.list = NULL,
 			.max_local_id = 1,
+			.compression = compression,
 			.rdata = {.disabled = no_gpu,
 					.drm_node_path = drm_node,
 					.drm_fd = -1,

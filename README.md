@@ -47,6 +47,8 @@ Requirements:
 * wayland-protocols (>= 1.12, for the xdg-shell protocol, and others)
 * libffi
 * libgbm (from a recent version of mesa)
+* libzstd
+* liblz4
 * scdoc (optional, to generate a man page)
 * sys/sdt.h (optional, to provide static tracepoints for profiling)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)

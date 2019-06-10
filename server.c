@@ -59,7 +59,8 @@ static int connect_to_channel(const char *socket_path)
 	return chanfd;
 }
 
-int run_server(const char *socket_path, const char *drm_node, bool oneshot,
+int run_server(const char *socket_path, const char *drm_node,
+		enum compression_mode compression, bool oneshot,
 		bool unlink_at_end, const char *application,
 		char *const app_argv[])
 {
@@ -148,7 +149,7 @@ int run_server(const char *socket_path, const char *drm_node, bool oneshot,
 		wp_log(WP_DEBUG, "Oneshot connected");
 		if (chanfd != -1) {
 			retval = main_interface_loop(chanfd, server_link,
-					drm_node, false, false);
+					drm_node, compression, false, false);
 		} else {
 			retval = EXIT_FAILURE;
 		}
@@ -222,7 +223,8 @@ int run_server(const char *socket_path, const char *drm_node, bool oneshot,
 							socket_path);
 
 					return main_interface_loop(chanfd,
-							appfd, drm_node, false,
+							appfd, drm_node,
+							compression, false,
 							false);
 				} else if (npid == -1) {
 					wp_log(WP_DEBUG, "Fork failure");
