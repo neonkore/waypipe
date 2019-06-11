@@ -364,7 +364,6 @@ void construct_diff(size_t size, size_t range_min, size_t range_max,
 	const uint64_t *__restrict__ changed_blocks = (const uint64_t *)changed;
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
 	uint64_t ntrailing = size - 8 * nblocks;
-	uint64_t nskip = 0, ncopy = 0;
 	uint64_t cursor = 0;
 	uint64_t blockrange_min = range_min / 8;
 	uint64_t blockrange_max = (range_max + 7) / 8;
@@ -374,52 +373,58 @@ void construct_diff(size_t size, size_t range_min, size_t range_max,
 	DTRACE_PROBE2(waypipe, construct_diff_enter, range_min, range_max);
 
 	diff_blocks[0] = 0;
-	bool skipping = true;
 	/* we paper over gaps of a given window size, to avoid fine grained
 	 * context switches */
-	const uint64_t window_size = 128;
-	uint64_t last_header = 0;
-	for (uint64_t i = blockrange_min; i < blockrange_max; i++) {
-		uint64_t changed_val = changed_blocks[i];
-		uint64_t base_val = base_blocks[i];
-		if (skipping) {
-			if (base_val != changed_val) {
-				skipping = false;
-				last_header = cursor++;
-				diff_blocks[last_header] = i << 32;
-				nskip = 0;
+	const uint64_t window_size = 4;
 
-				diff_blocks[cursor++] = changed_val;
-				ncopy = 1;
-				base_blocks[i] = changed_val;
-			} else {
-				nskip++;
-			}
-		} else {
-			if (base_val == changed_val) {
-				nskip++;
-			} else {
-				nskip = 0;
-			}
-			base_blocks[i] = changed_val;
-			if (nskip > window_size) {
-				skipping = true;
-				cursor -= (nskip - 1);
-				ncopy -= (nskip - 1);
-				diff_blocks[last_header] |= i - (nskip - 1);
-				ncopy = 0;
-			} else {
-				diff_blocks[cursor++] = changed_val;
-				ncopy++;
-			}
+	uint64_t i = blockrange_min;
+	uint64_t changed_val = i < blockrange_max ? changed_blocks[i] : 0;
+	uint64_t base_val = i < blockrange_max ? base_blocks[i] : 0;
+	i++;
+	// Alternating scanners, ending with a mispredict each.
+	bool clear_exit = false;
+	while (i < blockrange_max) {
+		while (changed_val == base_val && i < blockrange_max) {
+			changed_val = changed_blocks[i];
+			base_val = base_blocks[i];
+			i++;
 		}
+		if (i == blockrange_max) {
+			/* it's possible that the last value actually; see exit
+			 * block */
+			clear_exit = true;
+			break;
+		}
+		uint64_t last_header = cursor++;
+		diff_blocks[last_header] = (i - 1) << 32;
+		diff_blocks[cursor++] = changed_val;
+		base_blocks[i - 1] = changed_val;
+		// changed_val != base_val, difference occurs at early index
+		uint64_t nskip = 0;
+		// we could only sentinel this assuming a tiny window size
+		while (i < blockrange_max && nskip <= window_size) {
+			base_val = base_blocks[i];
+			changed_val = changed_blocks[i];
+			base_blocks[i] = changed_val;
+			i++;
+			diff_blocks[cursor++] = changed_val;
+			nskip++;
+			nskip *= (base_val == changed_val);
+		}
+		cursor -= nskip;
+		diff_blocks[last_header] |= i - nskip;
+		/* our sentinel, at worst, causes overcopy by one. this is fine
+		 */
 	}
 
-	// We do not add a final 'skip' block, because the unpacking routine
-	if (!skipping) {
-		diff_blocks[last_header] |= blockrange_max - nskip;
-		cursor -= nskip;
+	/* If only the last block changed */
+	if (clear_exit && changed_val != base_val) {
+		diff_blocks[cursor++] =
+				(blockrange_max - 1) << 32 | blockrange_max;
+		diff_blocks[cursor++] = changed_val;
+		base_blocks[blockrange_max - 1] = changed_val;
 	}
+
 	if (ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
 			diff[cursor * 8 + i] = changed[nblocks * 8 + i];
@@ -602,16 +607,21 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 					cur->dmabuf_size +
 					sizeof(struct dmabuf_slice_data);
 		} else {
-			bool delta = memcmp(cur->mem_mirror, data,
-					cur->dmabuf_size);
+			// Depending on the buffer format, doing a memcpy first
+			// can be significantly faster.
+			// TODO: autodetect when this happens
+			char *tmp = data;
+
+			bool delta = memcmp(
+					cur->mem_mirror, tmp, cur->dmabuf_size);
 			if (delta) {
 				// TODO: damage region support!
 				size_t diffsize;
 				wp_log(WP_DEBUG, "Diff construction start");
 				construct_diff(cur->dmabuf_size, 0,
 						cur->dmabuf_size,
-						cur->mem_mirror, data,
-						&diffsize, cur->diff_buffer);
+						cur->mem_mirror, tmp, &diffsize,
+						cur->diff_buffer);
 				wp_log(WP_DEBUG,
 						"Diff construction end: %ld/%ld",
 						diffsize, cur->dmabuf_size);

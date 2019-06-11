@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int buf_ndiff(size_t size, const char *left, const char *right,
 		const char *leftname, const char *rightname)
@@ -79,23 +80,83 @@ int main(int argc, char **argv)
 	(void)argv;
 
 	bool all_success = true;
-	size_t bufsize = 333333;
+	{
+		size_t bufsize = 333333;
 
-	char *changed = calloc(bufsize, 1);
-	for (size_t i = 0; i < bufsize; i++) {
-		changed[i] = (i * 251) % 256;
+		char *changed = calloc(bufsize, 1);
+		for (size_t i = 0; i < bufsize; i++) {
+			changed[i] = (i * 251) % 256;
+		}
+		memset(changed + bufsize / 5, 0, bufsize / 7);
+		memset(changed + bufsize - bufsize / 17, 0, bufsize / 17);
+		char *zerobase = calloc(bufsize, 1);
+		char *zeroclone = calloc(bufsize, 1);
+		all_success &= ideal_round(bufsize, zerobase, changed,
+					       zeroclone) == EXIT_SUCCESS;
+
+		for (size_t i = 0; i < bufsize; i++) {
+			changed[i] = (char)(i >> 8);
+		}
+		memset(changed + 2 * bufsize / 3, 3, bufsize / 7);
+
+		all_success &= ideal_round(bufsize, zerobase, changed,
+					       zeroclone) == EXIT_SUCCESS;
+		memset(changed, 7, 1000);
+		memset(changed + bufsize - 7, 8, 7);
+		all_success &= ideal_round(bufsize, zerobase, changed,
+					       zeroclone) == EXIT_SUCCESS;
+
+		free(zerobase);
+		free(zeroclone);
+		free(changed);
 	}
-	memset(changed + bufsize / 5, 0, bufsize / 7);
 
-	char *zerobase = calloc(bufsize, 1);
-	char *zeroclone = calloc(bufsize, 1);
+	{
+		int size = 1000, offset = 300, subsize = 300;
+		int imgsize = size * size * sizeof(uint32_t);
+		char *img_changed = calloc(size * size, sizeof(uint32_t));
+		char *img_base = calloc(size * size, sizeof(uint32_t));
+		char *img_cloneA = calloc(size * size, sizeof(uint32_t));
+		char *img_cloneB = calloc(size * size, sizeof(uint32_t));
+		char *img_diff = calloc(size * size + 2, sizeof(uint32_t));
+		size_t diffsize = 0;
+		struct timespec t_before, t_after;
+		clock_gettime(CLOCK_MONOTONIC, &t_before);
+		for (int i = 0; i < 1000; i++) {
+			for (int x = offset; x < offset + subsize; x += 1) {
+				for (int y = offset; y < offset + subsize;
+						y += 3) {
+					img_changed[sizeof(uint32_t) *
+							(size_t)(size * x +
+									y)] =
+							i + x + y;
+				}
+			}
+			/* A data transfer for shm requires 1x construct_diff,
+			 * and 2x apply_diff */
+			construct_diff(imgsize, 0, imgsize, img_base,
+					img_changed, &diffsize, img_diff);
+			apply_diff(imgsize, img_cloneA, diffsize, img_diff);
+			apply_diff(imgsize, img_cloneB, diffsize, img_diff);
+		}
+		clock_gettime(CLOCK_MONOTONIC, &t_after);
+		int ich = 0;
+		if ((ich = buf_ndiff(imgsize, img_base, img_changed, "img_base",
+				     "img_changed")) > 0) {
+			fprintf(stderr, "Timing test, end result has %d discrepancies\n",
+					ich);
+			all_success = false;
+		}
+		double elapsed = (t_after.tv_sec - t_before.tv_sec) * 1.0 +
+				 (t_after.tv_nsec - t_before.tv_nsec) * 1e-9;
+		fprintf(stdout, "Timing test, took %f ms\n", elapsed * 1e3);
 
-	all_success &= ideal_round(bufsize, zerobase, changed, zeroclone) ==
-		       EXIT_SUCCESS;
-
-	free(zerobase);
-	free(zeroclone);
-	free(changed);
+		free(img_base);
+		free(img_diff);
+		free(img_changed);
+		free(img_cloneA);
+		free(img_cloneB);
+	}
 
 	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;
 }
