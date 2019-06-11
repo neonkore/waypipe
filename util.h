@@ -59,11 +59,6 @@ int set_fnctl_flag(int fd, int the_flag);
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);
 
-enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
-int main_interface_loop(int chanfd, int progfd, const char *drm_node,
-		enum compression_mode compression, bool no_gpu,
-		bool display_side);
-
 typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
 
 extern char waypipe_log_mode;
@@ -87,12 +82,12 @@ struct render_data {
 	const char *drm_node_path;
 	struct gbm_device *dev;
 };
+enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
 struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;
 	int local_sign;
 	enum compression_mode compression;
-	struct render_data rdata;
 };
 
 typedef enum {
@@ -192,6 +187,78 @@ struct transfer {
 	const char *data;
 };
 
+struct msg_handler {
+	const struct wl_interface *interface;
+	// these are structs packed densely with function pointers
+	const void *event_handlers;
+	const void *request_handlers;
+};
+struct wp_object {
+	/* An object used by the wayland protocol. Specific types may extend
+	 * this struct, using the following data as a header */
+	const struct wl_interface *type; // Use to lookup the message handler
+	uint32_t obj_id;
+};
+
+struct obj_list {
+	struct wp_object **objs;
+	int nobj;
+	int size;
+};
+struct message_tracker {
+	// objects all have a 'type'
+	// creating a new type <-> binding it in the 'interface' list, via
+	// registry. each type produces 'callbacks'
+	struct obj_list objects;
+};
+struct context {
+	struct globals *const g;
+	struct obj_list *const obj_list;
+	struct wp_object *obj;
+	bool drop_this_msg;
+	/* If true, running as waypipe client, and interfacing with compositor's
+	 * buffers */
+	const bool on_display_side;
+	/* The transferred message can be rewritten in place, and resized, as
+	 * long as there is space available. Setting 'fds_changed' will
+	 * prevent the fd zone start from autoincrementing after running
+	 * the function, which may be useful when injecting messages with fds */
+	const int message_available_space;
+	uint32_t *const message;
+	int message_length;
+	bool fds_changed;
+	struct int_window *const fds;
+};
+
+struct char_window {
+	char *data;
+	int size;
+	int zone_start;
+	int zone_end;
+};
+struct int_window {
+	int *data;
+	int size;
+	int zone_start;
+	int zone_end;
+};
+
+struct main_config {
+	const char *drm_node;
+	enum compression_mode compression;
+	bool no_gpu;
+	bool linear_dmabuf;
+};
+struct globals {
+	const struct main_config *config;
+	struct fd_translation_map map;
+	struct render_data render;
+	struct message_tracker tracker;
+};
+
+int main_interface_loop(int chanfd, int progfd,
+		const struct main_config *config, bool display_side);
+
 void cleanup_translation_map(struct fd_translation_map *map);
 
 /** Given a file descriptor, return which type code would be applied to its
@@ -203,7 +270,8 @@ fdcat_t get_fd_type(int fd, size_t *size);
  * provided with optional extra information.
  */
 struct dmabuf_slice_data;
-struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
+struct shadow_fd *translate_fd(struct fd_translation_map *map,
+		struct render_data *render, int fd,
 		struct dmabuf_slice_data *info);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
@@ -211,8 +279,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 		int *ntransfers, struct transfer transfers[]);
 /** Apply a file update to the translation map, creating an entry when there is
  * none */
-void apply_update(
-		struct fd_translation_map *map, const struct transfer *transf);
+void apply_update(struct fd_translation_map *map, struct render_data *render,
+		const struct transfer *transf);
 /** Get the shadow structure associated to a remote id, or NULL if it dne */
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 
@@ -261,62 +329,6 @@ struct kstack {
 
 void wait_on_children(struct kstack **children, int options);
 
-struct msg_handler {
-	const struct wl_interface *interface;
-	// these are structs packed densely with function pointers
-	const void *event_handlers;
-	const void *request_handlers;
-};
-struct wp_object {
-	/* An object used by the wayland protocol. Specific types may extend
-	 * this struct, using the following data as a header */
-	const struct wl_interface *type; // Use to lookup the message handler
-	uint32_t obj_id;
-};
-
-struct obj_list {
-	struct wp_object **objs;
-	int nobj;
-	int size;
-};
-struct message_tracker {
-	// objects all have a 'type'
-	// creating a new type <-> binding it in the 'interface' list, via
-	// registry. each type produces 'callbacks'
-	struct obj_list objects;
-};
-struct context {
-	struct message_tracker *const mt;
-	struct fd_translation_map *const map;
-	struct wp_object *obj;
-	bool drop_this_msg;
-	/* If true, running as waypipe client, and interfacing with compositor's
-	 * buffers */
-	const bool on_display_side;
-	/* The transferred message can be rewritten in place, and resized, as
-	 * long as there is space available. Setting 'fds_changed' will
-	 * prevent the fd zone start from autoincrementing after running
-	 * the function, which may be useful when injecting messages with fds */
-	const int message_available_space;
-	uint32_t *const message;
-	int message_length;
-	bool fds_changed;
-	struct int_window *const fds;
-};
-
-struct char_window {
-	char *data;
-	int size;
-	int zone_start;
-	int zone_end;
-};
-struct int_window {
-	int *data;
-	int size;
-	int zone_start;
-	int zone_end;
-};
-
 // parsing.c
 
 void listset_insert(struct obj_list *lst, struct wp_object *obj);
@@ -346,8 +358,7 @@ int peek_message_size(const void *data);
  * The start of fds will be moved, depending on how many fds were consumed.
  */
 enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
-enum parse_state handle_message(struct message_tracker *mt,
-		struct fd_translation_map *map, bool on_display_side,
+enum parse_state handle_message(struct globals *g, bool on_display_side,
 		bool from_client, struct char_window *chars,
 		struct int_window *fds);
 

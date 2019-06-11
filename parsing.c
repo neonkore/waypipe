@@ -318,8 +318,7 @@ int peek_message_size(const void *data)
 	return (int)(((const uint32_t *)data)[1] >> 16);
 }
 
-enum parse_state handle_message(struct message_tracker *mt,
-		struct fd_translation_map *map, bool display_side,
+enum parse_state handle_message(struct globals *g, bool display_side,
 		bool from_client, struct char_window *chars,
 		struct int_window *fds)
 {
@@ -334,7 +333,7 @@ enum parse_state handle_message(struct message_tracker *mt,
 		return PARSE_ERROR;
 	}
 	// display: object = 0?
-	struct wp_object *objh = listset_get(&mt->objects, obj);
+	struct wp_object *objh = listset_get(&g->tracker.objects, obj);
 
 	if (!objh || !objh->type) {
 		wp_log(WP_DEBUG, "Unidentified object %d with %s", obj,
@@ -382,8 +381,8 @@ enum parse_state handle_message(struct message_tracker *mt,
 
 	int fds_used = 0;
 	struct context ctx = {
-			.mt = mt,
-			.map = map,
+			.g = g,
+			.obj_list = &g->tracker.objects,
 			.obj = objh,
 			.on_display_side = display_side,
 			.drop_this_msg = false,
@@ -399,7 +398,7 @@ enum parse_state handle_message(struct message_tracker *mt,
 	invoke_msg_handler(intf, msg, !from_client, payload, len / 4 - 2,
 			&fds->data[fds->zone_start],
 			fds->zone_end - fds->zone_start, &fds_used, fn, &ctx,
-			mt);
+			&g->tracker);
 	if (ctx.drop_this_msg) {
 		wp_log(WP_DEBUG, "Dropping %s.%s, with %d fds", intf->name,
 				msg->name, fds_used);

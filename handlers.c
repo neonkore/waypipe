@@ -304,10 +304,10 @@ static void event_wl_display_delete_id(
 		void *data, struct wl_display *wl_display, uint32_t id)
 {
 	struct context *context = get_context(data, wl_display);
-	struct wp_object *obj = listset_get(&context->mt->objects, id);
+	struct wp_object *obj = listset_get(context->obj_list, id);
 	if (obj) {
-		listset_remove(&context->mt->objects, obj);
-		destroy_wp_object(context->map, obj);
+		listset_remove(context->obj_list, obj);
+		destroy_wp_object(&context->g->map, obj);
 	}
 }
 static void request_wl_display_get_registry(struct wl_client *client,
@@ -335,7 +335,7 @@ static void event_wl_registry_global(void *data,
 	requires_rnode |= !strcmp(interface, "zwp_linux_dmabuf_v1");
 	requires_rnode |= !strcmp(interface, "zwlr_export_dmabuf_manager_v1");
 	if (requires_rnode) {
-		if (init_render_data(&context->map->rdata) == -1) {
+		if (init_render_data(&context->g->render) == -1) {
 			/* A gpu connection supported by waypipe is required on
 			 * both sides, since data transfers may occur in both
 			 * directions, and
@@ -375,7 +375,7 @@ static void request_wl_registry_bind(struct wl_client *client,
 {
 	struct context *context = get_context(client, resource);
 	/* The object has already been created, but its type is NULL */
-	struct wp_object *the_object = listset_get(&context->mt->objects, id);
+	struct wp_object *the_object = listset_get(context->obj_list, id);
 	for (int i = 0; handlers[i].interface; i++) {
 		if (!strcmp(interface, handlers[i].interface->name)) {
 			// Set the object type
@@ -383,18 +383,16 @@ static void request_wl_registry_bind(struct wl_client *client,
 			if (handlers[i].interface ==
 					&wp_presentation_interface) {
 				// Replace the object with a specialized version
-				listset_remove(&context->mt->objects,
-						the_object);
+				listset_remove(context->obj_list, the_object);
 				free(the_object);
 				the_object = create_wp_object(
 						id, &wp_presentation_interface);
-				listset_insert(&context->mt->objects,
-						the_object);
+				listset_insert(context->obj_list, the_object);
 			}
 			return;
 		}
 	}
-	listset_remove(&context->mt->objects, the_object);
+	listset_remove(context->obj_list, the_object);
 	free(the_object);
 
 	wp_log(WP_DEBUG, "Binding fail name=%d %s id=%d (v%d)", name, interface,
@@ -598,7 +596,7 @@ static void request_wl_surface_commit(
 		return;
 	}
 	struct wp_object *obj = listset_get(
-			&context->mt->objects, surface->attached_buffer_id);
+			context->obj_list, surface->attached_buffer_id);
 	if (!obj) {
 		wp_log(WP_ERROR, "Attached buffer no longer exists");
 		return;
@@ -757,7 +755,8 @@ static void event_wl_keyboard_keymap(void *data,
 {
 	struct context *context = get_context(data, wl_keyboard);
 
-	struct shadow_fd *sfd = translate_fd(context->map, fd, NULL);
+	struct shadow_fd *sfd = translate_fd(
+			&context->g->map, &context->g->render, fd, NULL);
 	if (sfd->type != FDC_FILE || sfd->file_size != size) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d",
@@ -776,8 +775,9 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 {
 	struct context *context = get_context(client, resource);
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)listset_get(
-			&context->mt->objects, id);
-	struct shadow_fd *sfd = translate_fd(context->map, fd, NULL);
+			context->obj_list, id);
+	struct shadow_fd *sfd = translate_fd(
+			&context->g->map, &context->g->render, fd, NULL);
 	/* It may be valid for the file descriptor size to be larger than the
 	 * immediately advertised size, since the call to wl_shm.create_pool
 	 * may be followed by wl_shm_pool.resize, which then increases the size
@@ -816,8 +816,8 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 {
 	struct context *context = get_context(client, resource);
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
-	struct wp_buffer *the_buffer = (struct wp_buffer *)listset_get(
-			&context->mt->objects, id);
+	struct wp_buffer *the_buffer =
+			(struct wp_buffer *)listset_get(context->obj_list, id);
 	if (!the_buffer) {
 		wp_log(WP_ERROR, "No buffer available");
 		return;
@@ -850,7 +850,7 @@ static void event_zwlr_screencopy_frame_v1_ready(void *data,
 		return;
 	}
 	struct wp_object *obj = (struct wp_object *)listset_get(
-			&context->mt->objects, frame->buffer_id);
+			context->obj_list, frame->buffer_id);
 	if (!obj) {
 		wp_log(WP_ERROR, "frame copy target no longer exists");
 		return;
@@ -944,7 +944,7 @@ static void request_wp_presentation_feedback(struct wl_client *client,
 			(struct waypipe_presentation *)context->obj;
 	struct waypipe_presentation_feedback *feedback =
 			(struct waypipe_presentation_feedback *)listset_get(
-					&context->mt->objects, callback);
+					context->obj_list, callback);
 	(void)surface;
 
 	feedback->clock_delta_nsec = pres->clock_delta_nsec;
@@ -993,19 +993,19 @@ static void event_wl_drm_device(
 	}
 	/* The render node was already initialized in wl_registry.global,
 	 * so the render node path is provides has been checked */
-	int path_len = (int)strlen(context->map->rdata.drm_node_path);
+	int path_len = (int)strlen(context->g->render.drm_node_path);
 	int message_bytes = 8 + 4 + 4 * ((path_len + 1 + 3) / 4);
 	if (message_bytes > context->message_available_space) {
 		wp_log(WP_ERROR,
 				"Not enough space to modify DRM device advertisement from '%s' to '%s'",
-				name, context->map->rdata.drm_node_path);
+				name, context->g->render.drm_node_path);
 		return;
 	}
 	context->message_length = message_bytes;
 	uint32_t *payload = context->message + 2;
 	memset(payload, 0, (size_t)message_bytes - 8);
 	payload[0] = (uint32_t)path_len + 1;
-	memcpy(context->message + 3, context->map->rdata.drm_node_path,
+	memcpy(context->message + 3, context->g->render.drm_node_path,
 			(size_t)path_len);
 	uint32_t meth = (context->message[1] << 16) >> 16;
 	context->message[1] = meth | ((uint32_t)message_bytes << 16);
@@ -1017,8 +1017,8 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 		int32_t offset2, int32_t stride2)
 {
 	struct context *context = get_context(client, resource);
-	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
-			&context->mt->objects, id);
+	struct wp_buffer *buf =
+			(struct wp_buffer *)listset_get(context->obj_list, id);
 	struct dmabuf_slice_data info;
 	info.width = (uint32_t)width;
 	info.height = (uint32_t)height;
@@ -1030,7 +1030,8 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 	info.strides[2] = (uint32_t)stride2;
 	info.modifier = 0;
 	info.format = format;
-	struct shadow_fd *sfd = translate_fd(context->map, name, &info);
+	struct shadow_fd *sfd = translate_fd(
+			&context->g->map, &context->g->render, name, &info);
 	if (sfd->type != FDC_DMABUF) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not a dmabuf (type=%d)",
@@ -1056,8 +1057,10 @@ static void event_zwp_linux_dmabuf_v1_modifier(void *data,
 	struct context *context = get_context(data, zwp_linux_dmabuf_v1);
 	(void)format;
 	uint64_t modifier = modifier_hi * 0x100000000uL * modifier_lo;
-	(void)modifier;
-	(void)context;
+	// Prevent all advertisements for dmabufs with modifiers
+	if (modifier && context->g->config->linear_dmabuf) {
+		context->drop_this_msg = true;
+	}
 }
 static void event_zwp_linux_buffer_params_v1_created(void *data,
 		struct zwp_linux_buffer_params_v1 *zwp_linux_buffer_params_v1,
@@ -1189,7 +1192,7 @@ static void deduplicate_dmabuf_fds(
 	struct gbm_bo *temp_bos[MAX_DMABUF_PLANES];
 	memset(temp_bos, 0, sizeof(temp_bos));
 	for (int i = 0; i < params->nplanes; i++) {
-		handles[i] = get_unique_dmabuf_handle(&context->map->rdata,
+		handles[i] = get_unique_dmabuf_handle(&context->g->render,
 				params->add[i].fd, &temp_bos[i]);
 	}
 	for (int i = 0; i < params->nplanes; i++) {
@@ -1255,8 +1258,8 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		 * handle */
 		info.format = dmabuf_get_simple_format_for_plane(format, i);
 
-		struct shadow_fd *sfd = translate_fd(
-				context->map, params->add[i].fd, &info);
+		struct shadow_fd *sfd = translate_fd(&context->g->map,
+				&context->g->render, params->add[i].fd, &info);
 		if (sfd->type != FDC_DMABUF) {
 			wp_log(WP_ERROR,
 					"fd #%d for linux-dmabuf request wasn't a dmabuf",
@@ -1282,7 +1285,7 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 {
 	struct context *context = get_context(client, resource);
 	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
-			&context->mt->objects, buffer_id);
+			context->obj_list, buffer_id);
 
 	// There isn't really that much unnecessary copying. Note that
 	// 'create' may modify messages

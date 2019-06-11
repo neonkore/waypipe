@@ -128,11 +128,12 @@ static ssize_t iovec_write(int conn, const char *buf, size_t buflen,
 	return ret;
 }
 
-static void translate_fds(struct fd_translation_map *map, int nfds,
-		const int fds[], int ids[])
+static void translate_fds(struct fd_translation_map *map,
+		struct render_data *render, int nfds, const int fds[],
+		int ids[])
 {
 	for (int i = 0; i < nfds; i++) {
-		ids[i] = translate_fd(map, fds[i], NULL)->remote_id;
+		ids[i] = translate_fd(map, render, fds[i], NULL)->remote_id;
 	}
 }
 /** Given a list of global ids, and an up-to-date translation map, produce local
@@ -153,11 +154,12 @@ static void untranslate_ids(struct fd_translation_map *map, int nids,
 	}
 }
 
-static void apply_updates(struct fd_translation_map *map, int ntransfers,
+static void apply_updates(struct fd_translation_map *map,
+		struct render_data *render, int ntransfers,
 		const struct transfer transfers[])
 {
 	for (int i = 0; i < ntransfers; i++) {
-		apply_update(map, &transfers[i]);
+		apply_update(map, render, &transfers[i]);
 	}
 }
 
@@ -179,8 +181,7 @@ static void collect_updates(struct fd_translation_map *map, int *ntransfers,
  * The new size of the message buffer, after compaction, is `data_newsize`
  * The number of file descriptors read by the protocol is `fds_used`.
  */
-static void parse_and_prune_messages(struct message_tracker *mt,
-		struct fd_translation_map *map, bool on_display_side,
+static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		bool from_client, struct char_window *source_bytes,
 		struct char_window *dest_bytes, struct int_window *fds)
 {
@@ -221,8 +222,8 @@ static void parse_and_prune_messages(struct message_tracker *mt,
 		source_bytes->zone_start += msgsz;
 		scan_bytes.zone_end = scan_bytes.zone_start + msgsz;
 
-		enum parse_state pstate = handle_message(mt, map,
-				on_display_side, from_client, &scan_bytes, fds);
+		enum parse_state pstate = handle_message(g, on_display_side,
+				from_client, &scan_bytes, fds);
 		if (pstate == PARSE_UNKNOWN || pstate == PARSE_ERROR) {
 			anything_unknown = true;
 		}
@@ -235,7 +236,8 @@ static void parse_and_prune_messages(struct message_tracker *mt,
 		// (Note that in some cases, a new protocol could imply a change
 		// for an existing buffer; it may make sense to mark everything
 		// dirty, then.)
-		for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+		for (struct shadow_fd *cur = g->map.list; cur;
+				cur = cur->next) {
 			if (!cur->has_owner) {
 				cur->is_dirty = true;
 			}
@@ -423,8 +425,7 @@ struct chan_msg_state {
 	char *cmsg_buffer;
 };
 
-static int interpret_chanmsg(struct chan_msg_state *cmsg,
-		struct fd_translation_map *map, struct message_tracker *mt,
+static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 		bool display_side)
 {
 	// Parsing decomposition
@@ -449,9 +450,9 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 			cmsg->cmsg_size, cmsg->rbuffer_count, ntransfers,
 			cmsg->dbuffer_end);
 
-	apply_updates(map, ntransfers, transfers);
+	apply_updates(&g->map, &g->render, ntransfers, transfers);
 
-	untranslate_ids(map, cmsg->rbuffer_count, cmsg->rbuffer,
+	untranslate_ids(&g->map, cmsg->rbuffer_count, cmsg->rbuffer,
 			cmsg->tfbuffer);
 	cmsg->tfbuffer_count = cmsg->rbuffer_count;
 	if (cmsg->tfbuffer_count > 0) {
@@ -484,8 +485,8 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		fds.zone_start = 0;
 		fds.zone_end = cmsg->fbuffer_count;
 		fds.size = cmsg->fbuffer_maxsize;
-		parse_and_prune_messages(mt, map, display_side, display_side,
-				&src, &dst, &fds);
+		parse_and_prune_messages(g, display_side, display_side, &src,
+				&dst, &fds);
 		if (src.zone_start != cmsg->dbuffer_end) {
 			wp_log(WP_ERROR,
 					"did not expect partial messages over channel, only parsed %d/%d bytes",
@@ -507,8 +508,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 	return 0;
 }
 static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
-		bool display_side, struct fd_translation_map *map,
-		struct message_tracker *mt)
+		bool display_side, struct globals *g)
 {
 	// Read header, then read main contents
 	if (cmsg->cmsg_size == 0) {
@@ -558,8 +558,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 			}
 		}
 		if (cmsg->cmsg_end == cmsg->cmsg_size) {
-			if (interpret_chanmsg(cmsg, map, mt, display_side) ==
-					-1) {
+			if (interpret_chanmsg(cmsg, g, display_side) == -1) {
 				return -1;
 			}
 			cmsg->state = CM_WAITING_FOR_PROGRAM;
@@ -569,7 +568,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 	return 0;
 }
 static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
-		bool display_side, struct fd_translation_map *map)
+		bool display_side, struct globals *g)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// Write as much as possible
@@ -600,7 +599,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 					wc, nfds_written, cmsg->tfbuffer_count);
 			// We send as many fds as we can with the first batch
 			decref_transferred_fds(
-					map, nfds_written, cmsg->tfbuffer);
+					&g->map, nfds_written, cmsg->tfbuffer);
 			memmove(cmsg->tfbuffer, cmsg->tfbuffer + nfds_written,
 					(size_t)nfds_written * sizeof(int));
 			cmsg->tfbuffer_count -= nfds_written;
@@ -608,7 +607,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	}
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
 		wp_log(WP_DEBUG, "Write to the %s succeeded", progdesc);
-		close_local_pipe_ends(map);
+		close_local_pipe_ends(&g->map);
 		cmsg->state = CM_WAITING_FOR_CHANNEL;
 		free(cmsg->cmsg_buffer);
 		cmsg->cmsg_buffer = NULL;
@@ -618,8 +617,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	}
 	return 0;
 }
-static int advance_chanmsg_transfer(struct fd_translation_map *map,
-		struct message_tracker *mt, int chanfd, int progfd,
+static int advance_chanmsg_transfer(struct globals *g, int chanfd, int progfd,
 		bool display_side, struct chan_msg_state *cmsg,
 		bool any_changes)
 {
@@ -627,11 +625,9 @@ static int advance_chanmsg_transfer(struct fd_translation_map *map,
 		return 0;
 	}
 	if (cmsg->state == CM_WAITING_FOR_CHANNEL) {
-		return advance_chanmsg_chanread(
-				cmsg, chanfd, display_side, map, mt);
+		return advance_chanmsg_chanread(cmsg, chanfd, display_side, g);
 	} else {
-		return advance_chanmsg_progwrite(
-				cmsg, progfd, display_side, map);
+		return advance_chanmsg_progwrite(cmsg, progfd, display_side, g);
 	}
 }
 
@@ -702,8 +698,8 @@ static int advance_waymsg_chanwrite(
 	return 0;
 }
 static int advance_waymsg_progread(struct way_msg_state *wmsg,
-		struct fd_translation_map *map, struct message_tracker *mt,
-		int progfd, bool display_side, bool progsock_readable)
+		struct globals *g, int progfd, bool display_side,
+		bool progsock_readable)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// We have data to read from programs/pipes
@@ -750,15 +746,15 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		dst.zone_end = 0;
 		dst.size = wmsg->dbuffer_edited_maxsize;
 
-		parse_and_prune_messages(mt, map, display_side, !display_side,
-				&src, &dst, &wmsg->fds);
+		parse_and_prune_messages(g, display_side, !display_side, &src,
+				&dst, &wmsg->fds);
 
 		/* Translate all fds in the zone read by the protocol,
 		 * creating shadow structures if needed. The window-queue
 		 * is then reset */
 		wmsg->rbuffer_count = wmsg->fds.zone_start;
-		translate_fds(map, wmsg->fds.zone_start, wmsg->fds.data,
-				wmsg->rbuffer);
+		translate_fds(&g->map, &g->render, wmsg->fds.zone_start,
+				wmsg->fds.data, wmsg->rbuffer);
 		memmove(wmsg->fds.data, wmsg->fds.data + wmsg->fds.zone_start,
 				sizeof(int) * (size_t)(wmsg->fds.zone_end -
 							      wmsg->fds.zone_start));
@@ -786,14 +782,14 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		}
 	}
 
-	read_readable_pipes(map);
-	collect_updates(map, &ntransfers, transfers);
+	read_readable_pipes(&g->map);
+	collect_updates(&g->map, &ntransfers, transfers);
 	if (ntransfers > 0) {
 		pack_pipe_message(&wmsg->cmsg, wmsg->rbuffer_count,
 				wmsg->rbuffer, ntransfers, transfers);
 
 		decref_transferred_rids(
-				map, wmsg->rbuffer_count, wmsg->rbuffer);
+				&g->map, wmsg->rbuffer_count, wmsg->rbuffer);
 		wp_log(WP_DEBUG,
 				"Packed message size (%d fds, %d blobs, %d blocks): %d",
 				wmsg->rbuffer_count, ntransfers,
@@ -819,22 +815,20 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	}
 	return 0;
 }
-static int advance_waymsg_transfer(struct fd_translation_map *map,
-		struct message_tracker *mt, int chanfd, int progfd,
+static int advance_waymsg_transfer(struct globals *g, int chanfd, int progfd,
 		bool display_side, struct way_msg_state *wmsg,
 		bool progsock_readable)
 {
 	if (wmsg->state == WM_WAITING_FOR_CHANNEL) {
 		return advance_waymsg_chanwrite(wmsg, chanfd, display_side);
 	} else {
-		return advance_waymsg_progread(wmsg, map, mt, progfd,
-				display_side, progsock_readable);
+		return advance_waymsg_progread(wmsg, g, progfd, display_side,
+				progsock_readable);
 	}
 }
 
-int main_interface_loop(int chanfd, int progfd, const char *drm_node,
-		enum compression_mode compression, bool no_gpu,
-		bool display_side)
+int main_interface_loop(int chanfd, int progfd,
+		const struct main_config *config, bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_fnctl_flag(chanfd, O_NONBLOCK | O_CLOEXEC) == -1) {
@@ -901,21 +895,22 @@ int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 	chan_msg.dbuffer_edited =
 			malloc((size_t)chan_msg.dbuffer_edited_maxsize);
 
-	struct fd_translation_map fdtransmap = {
+	struct globals g;
+	g.config = config;
+	g.map = (struct fd_translation_map){
 			.local_sign = (display_side ? -1 : 1),
 			.list = NULL,
 			.max_local_id = 1,
-			.compression = compression,
-			.rdata = {.disabled = no_gpu,
-					.drm_node_path = drm_node,
-					.drm_fd = -1,
-					.dev = NULL}};
-	struct message_tracker mtracker;
-	init_message_tracker(&mtracker);
+			.compression = config->compression};
+	g.render = (struct render_data){.drm_node_path = config->drm_node,
+			.drm_fd = -1,
+			.dev = NULL,
+			.disabled = config->no_gpu};
+	init_message_tracker(&g.tracker);
 
 	while (!shutdown_flag) {
 		struct pollfd *pfds = NULL;
-		int psize = 2 + count_npipes(&fdtransmap);
+		int psize = 2 + count_npipes(&g.map);
 		pfds = calloc((size_t)psize, sizeof(struct pollfd));
 		pfds[0].fd = chanfd;
 		pfds[1].fd = progfd;
@@ -932,8 +927,7 @@ int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 			pfds[1].events |= POLLOUT;
 		}
 		bool check_read = way_msg.state == WM_WAITING_FOR_PROGRAM;
-		int npoll = 2 +
-			    fill_with_pipes(&fdtransmap, pfds + 2, check_read);
+		int npoll = 2 + fill_with_pipes(&g.map, pfds + 2, check_read);
 
 		int r = poll(pfds, (nfds_t)npoll, -1);
 		if (r == -1) {
@@ -951,7 +945,7 @@ int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 			}
 		}
 
-		mark_pipe_object_statuses(&fdtransmap, npoll - 2, pfds + 2);
+		mark_pipe_object_statuses(&g.map, npoll - 2, pfds + 2);
 		bool progsock_readable = pfds[1].revents & POLLIN;
 		bool chanmsg_active = (pfds[0].revents & POLLIN) ||
 				      (pfds[1].revents & POLLOUT);
@@ -965,23 +959,22 @@ int main_interface_loop(int chanfd, int progfd, const char *drm_node,
 
 		// Q: randomize the order of these?, to highlight accidental
 		// dependencies?
-		if (advance_chanmsg_transfer(&fdtransmap, &mtracker, chanfd,
-				    progfd, display_side, &chan_msg,
-				    chanmsg_active) == -1) {
+		if (advance_chanmsg_transfer(&g, chanfd, progfd, display_side,
+				    &chan_msg, chanmsg_active) == -1) {
 			break;
 		}
-		if (advance_waymsg_transfer(&fdtransmap, &mtracker, chanfd,
-				    progfd, display_side, &way_msg,
-				    progsock_readable) == -1) {
+		if (advance_waymsg_transfer(&g, chanfd, progfd, display_side,
+				    &way_msg, progsock_readable) == -1) {
 			break;
 		}
 		// Periodic maintenance. It doesn't matter who does this
-		flush_writable_pipes(&fdtransmap);
-		close_rclosed_pipes(&fdtransmap);
+		flush_writable_pipes(&g.map);
+		close_rclosed_pipes(&g.map);
 	}
 
-	cleanup_message_tracker(&fdtransmap, &mtracker);
-	cleanup_translation_map(&fdtransmap);
+	cleanup_message_tracker(&g.map, &g.tracker);
+	cleanup_translation_map(&g.map);
+	cleanup_render_data(&g.render);
 	free(way_msg.dbuffer);
 	free(way_msg.fds.data);
 	free(way_msg.rbuffer);

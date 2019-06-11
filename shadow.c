@@ -110,7 +110,6 @@ void cleanup_translation_map(struct fd_translation_map *map)
 		shadow->next = NULL;
 		destroy_unlinked_sfd(map, shadow);
 	}
-	cleanup_render_data(&map->rdata);
 }
 fdcat_t get_fd_type(int fd, size_t *size)
 {
@@ -265,7 +264,8 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 	}
 }
 
-struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
+struct shadow_fd *translate_fd(struct fd_translation_map *map,
+		struct render_data *render, int fd,
 		struct dmabuf_slice_data *info)
 {
 	struct shadow_fd *cur = map->list;
@@ -327,8 +327,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map, int fd,
 	} else if (shadow->type == FDC_DMABUF) {
 		shadow->dmabuf_size = 0;
 
-		init_render_data(&map->rdata);
-		shadow->dmabuf_bo = import_dmabuf(&map->rdata, shadow->fd_local,
+		init_render_data(render);
+		shadow->dmabuf_bo = import_dmabuf(render, shadow->fd_local,
 				&shadow->dmabuf_size, info);
 		if (!shadow->dmabuf_bo) {
 			return shadow;
@@ -675,7 +675,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 	}
 }
 
-void apply_update(struct fd_translation_map *map, const struct transfer *transf)
+void apply_update(struct fd_translation_map *map, struct render_data *render,
+		const struct transfer *transf)
 {
 	struct shadow_fd *cur = get_shadow_for_rid(map, transf->obj_id);
 	if (cur) {
@@ -907,7 +908,7 @@ void apply_update(struct fd_translation_map *map, const struct transfer *transf)
 				shadow->dmabuf_size);
 		// The file can only actually be created when we know what type
 		// it is?
-		if (init_render_data(&map->rdata) == 1) {
+		if (init_render_data(render) == 1) {
 			shadow->fd_local = -1;
 			return;
 		}
@@ -919,7 +920,7 @@ void apply_update(struct fd_translation_map *map, const struct transfer *transf)
 				act_size - sizeof(struct dmabuf_slice_data);
 
 		shadow->dmabuf_bo = make_dmabuf(
-				&map->rdata, contents, contents_size, info);
+				render, contents, contents_size, info);
 		if (!shadow->dmabuf_bo) {
 			shadow->fd_local = -1;
 			return;

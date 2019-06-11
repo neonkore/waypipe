@@ -55,9 +55,8 @@ struct pidstack {
 	pid_t proc;
 };
 
-int run_client(const char *socket_path, const char *drm_node,
-		enum compression_mode compression, bool oneshot, bool no_gpu,
-		pid_t eol_pid)
+int run_client(const char *socket_path, const struct main_config *config,
+		bool oneshot, pid_t eol_pid)
 {
 	struct wl_display *display = NULL;
 	if (oneshot) {
@@ -144,8 +143,7 @@ int run_client(const char *socket_path, const char *drm_node,
 			if (oneshot) {
 				retcode = main_interface_loop(chanclient,
 						wl_display_get_fd(display),
-						drm_node, compression, no_gpu,
-						true);
+						config, true);
 				break;
 			} else {
 				pid_t npid = fork();
@@ -174,8 +172,7 @@ int run_client(const char *socket_path, const char *drm_node,
 							local_display);
 					// ignore retcode ?
 					main_interface_loop(chanclient, dispfd,
-							drm_node, compression,
-							no_gpu, true);
+							config, true);
 					wl_display_disconnect(local_display);
 
 					// exit path?

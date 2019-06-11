@@ -38,13 +38,11 @@
 #include <time.h>
 #include <unistd.h>
 
-int run_server(const char *socket_path, const char *drm_node,
-		enum compression_mode compression, bool oneshot,
-		bool unlink_at_end, const char *application,
+int run_server(const char *socket_path, const struct main_config *config,
+		bool oneshot, bool unlink_at_end, const char *application,
 		char *const app_argv[]);
-int run_client(const char *socket_path, const char *drm_node,
-		enum compression_mode compression, bool oneshot, bool no_gpu,
-		pid_t eol_pid);
+int run_client(const char *socket_path, const struct main_config *config,
+		bool oneshot, pid_t eol_pid);
 
 /* Usage: Wrapped to 79 characters */
 static const char usage_string[] =
@@ -75,6 +73,7 @@ static const char usage_string[] =
 		"      --remote-node R  ssh mode: set the remote render node path\n"
 		"      --login-shell    server mode: if server CMD is empty, run a login shell\n"
 		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
+		"      --linear-dmabuf  only permit gpu buffers without modifier flags\n"
 		"\n";
 
 static int usage(int retcode)
@@ -177,6 +176,7 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_DRMNODE 1002
 #define ARG_REMOTENODE 1003
 #define ARG_LOGIN_SHELL 1004
+#define ARG_LINEAR_DMABUF 1005
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -190,6 +190,7 @@ static const struct option options[] = {
 		{"drm-node", required_argument, NULL, ARG_DRMNODE},
 		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
+		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
 		{0, 0, NULL, 0}};
 
 enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
@@ -204,6 +205,7 @@ int main(int argc, char **argv)
 	bool oneshot = false;
 	bool unlink_at_end = false;
 	bool login_shell = false;
+	bool linear_dmabuf = false;
 	const char *drm_node = NULL;
 	char *remote_drm_node = NULL;
 	const char *socketpath = NULL;
@@ -289,6 +291,9 @@ int main(int argc, char **argv)
 			}
 			login_shell = true;
 			break;
+		case ARG_LINEAR_DMABUF:
+			linear_dmabuf = true;
+			break;
 		default:
 			fail = true;
 			break;
@@ -343,12 +348,18 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	struct main_config config = {
+			.drm_node = drm_node,
+			.compression = compression,
+			.no_gpu = nogpu,
+			.linear_dmabuf = linear_dmabuf,
+	};
+
 	if (mode == MODE_CLIENT) {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";
 		}
-		return run_client(socketpath, drm_node, compression, oneshot,
-				nogpu, 0);
+		return run_client(socketpath, &config, oneshot, 0);
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
 		const char *application = app_argv[0];
@@ -364,8 +375,8 @@ int main(int argc, char **argv)
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-server.sock";
 		}
-		return run_server(socketpath, drm_node, compression, oneshot,
-				unlink_at_end, application, app_argv);
+		return run_server(socketpath, &config, oneshot, unlink_at_end,
+				application, app_argv);
 	} else {
 
 		if (!socketpath) {
@@ -464,8 +475,8 @@ int main(int argc, char **argv)
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
-			return run_client(clientsock, drm_node, compression,
-					oneshot, nogpu, conn_pid);
+			return run_client(
+					clientsock, &config, oneshot, conn_pid);
 		}
 	}
 }
