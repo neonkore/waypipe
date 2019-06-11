@@ -49,18 +49,22 @@ if cc.has_header('sys/sdt.h')
 endif
 liblz4 = dependency('liblz4')
 libzstd = dependency('libzstd')
+libavcodec = dependency('libavcodec')
+libavutil = dependency('libavutil')
+libswscale = dependency('libswscale')
 
 subdir('protocols')
 
 waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'util.c']
 waypipe_dependencies = [
-        libgbm,          # General GPU buffer creation, aligned with dmabuf proto
-        libffi,          # To call wayland protocol functions
-        liblz4,          # Fast compression option
-        libzstd,         # Slow compression option
-        protos,          # Wayland protocol data
-        rt,              # For shared memory
-        wayland_client   # For wl_display_connnect
+	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
+	libffi,          # To call wayland protocol functions
+	liblz4,          # Fast compression option
+	libzstd,         # Slow compression option
+	libavcodec,libavutil,libswscale, # Video encoding
+	protos,          # Wayland protocol data
+	rt,              # For shared memory
+	wayland_client   # For wl_display_connnect
 ]
 
 executable(

@@ -120,6 +120,9 @@ struct dmabuf_slice_data {
 	uint32_t strides[4];
 	uint32_t offsets[4];
 	uint64_t modifier;
+
+	// which update type to expect
+	bool using_video;
 };
 
 struct shadow_fd {
@@ -171,6 +174,15 @@ struct shadow_fd {
 	size_t dmabuf_size;
 	struct gbm_bo *dmabuf_bo;
 	struct dmabuf_slice_data dmabuf_info;
+
+	struct AVCodec *video_codec;
+	struct AVCodecContext *video_context;
+	struct AVFrame *video_reg_frame;
+	struct AVFrame *video_yuv_frame;
+	struct AVPacket *video_packet;
+	struct SwsContext *video_color_context;
+	char *video_buffer;
+	int64_t video_frameno;
 };
 
 struct transfer {
@@ -248,6 +260,7 @@ struct main_config {
 	enum compression_mode compression;
 	bool no_gpu;
 	bool linear_dmabuf;
+	bool video_if_possible;
 };
 struct globals {
 	const struct main_config *config;

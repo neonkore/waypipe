@@ -74,6 +74,7 @@ static const char usage_string[] =
 		"      --login-shell    server mode: if server CMD is empty, run a login shell\n"
 		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
 		"      --linear-dmabuf  only permit gpu buffers without modifier flags\n"
+		"      --video          compress certain linear dmabufs only with a video codec\n"
 		"\n";
 
 static int usage(int retcode)
@@ -177,6 +178,7 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_REMOTENODE 1003
 #define ARG_LOGIN_SHELL 1004
 #define ARG_LINEAR_DMABUF 1005
+#define ARG_VIDEO 1006
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -191,7 +193,7 @@ static const struct option options[] = {
 		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
 		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
-		{0, 0, NULL, 0}};
+		{"video", no_argument, NULL, ARG_VIDEO}, {0, 0, NULL, 0}};
 
 enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
 
@@ -201,15 +203,19 @@ int main(int argc, char **argv)
 	bool version = false;
 	bool fail = false;
 	bool debug = false;
-	bool nogpu = false;
 	bool oneshot = false;
 	bool unlink_at_end = false;
 	bool login_shell = false;
-	bool linear_dmabuf = false;
-	const char *drm_node = NULL;
 	char *remote_drm_node = NULL;
 	const char *socketpath = NULL;
-	enum compression_mode compression = COMP_NONE;
+
+	struct main_config config = {
+			.drm_node = NULL,
+			.compression = COMP_NONE,
+			.no_gpu = false,
+			.linear_dmabuf = false,
+			.video_if_possible = false,
+	};
 
 	/* We do not parse any getopt arguments happening after the mode choice
 	 * string, so as not to interfere with them. */
@@ -243,11 +249,11 @@ int main(int argc, char **argv)
 		switch (opt) {
 		case 'c':
 			if (!strcmp(optarg, "none")) {
-				compression = COMP_NONE;
+				config.compression = COMP_NONE;
 			} else if (!strcmp(optarg, "lz4")) {
-				compression = COMP_LZ4;
+				config.compression = COMP_LZ4;
 			} else if (!strcmp(optarg, "zstd")) {
-				compression = COMP_ZSTD;
+				config.compression = COMP_ZSTD;
 			} else {
 				fail = true;
 			}
@@ -259,7 +265,7 @@ int main(int argc, char **argv)
 			help = true;
 			break;
 		case 'n':
-			nogpu = true;
+			config.no_gpu = true;
 			break;
 		case 'o':
 			oneshot = true;
@@ -277,7 +283,7 @@ int main(int argc, char **argv)
 			unlink_at_end = true;
 			break;
 		case ARG_DRMNODE:
-			drm_node = optarg;
+			config.drm_node = optarg;
 			break;
 		case ARG_REMOTENODE:
 			if (mode != MODE_SSH) {
@@ -292,7 +298,10 @@ int main(int argc, char **argv)
 			login_shell = true;
 			break;
 		case ARG_LINEAR_DMABUF:
-			linear_dmabuf = true;
+			config.linear_dmabuf = true;
+			break;
+		case ARG_VIDEO:
+			config.video_if_possible = true;
 			break;
 		default:
 			fail = true;
@@ -347,13 +356,6 @@ int main(int argc, char **argv)
 		wp_log(WP_ERROR, "Failed to set signal action for SIGCHLD");
 		return EXIT_FAILURE;
 	}
-
-	struct main_config config = {
-			.drm_node = drm_node,
-			.compression = compression,
-			.no_gpu = nogpu,
-			.linear_dmabuf = linear_dmabuf,
-	};
 
 	if (mode == MODE_CLIENT) {
 		if (!socketpath) {
@@ -420,7 +422,8 @@ int main(int argc, char **argv)
 
 			int nextra = 10 + debug + oneshot +
 				     2 * (remote_drm_node != NULL) +
-				     2 * (compression != COMP_NONE) +
+				     2 * (config.compression != COMP_NONE) +
+				     config.video_if_possible +
 				     needs_login_shell;
 			char **arglist = calloc(argc + nextra, sizeof(char *));
 
@@ -444,16 +447,19 @@ int main(int argc, char **argv)
 			if (oneshot) {
 				arglist[dstidx + 1 + offset++] = "-o";
 			}
-			if (compression != COMP_NONE) {
+			if (config.compression != COMP_NONE) {
 				arglist[dstidx + 1 + offset++] = "-c";
 				arglist[dstidx + 1 + offset++] =
-						compression == COMP_LZ4
+						config.compression == COMP_LZ4
 								? "lz4"
 								: "zstd";
 			}
 			if (needs_login_shell) {
 				arglist[dstidx + 1 + offset++] =
 						"--login-shell";
+			}
+			if (config.video_if_possible) {
+				arglist[dstidx + 1 + offset++] = "--video";
 			}
 			if (remote_drm_node) {
 				arglist[dstidx + 1 + offset++] = "--drm-node";

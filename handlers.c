@@ -1232,8 +1232,7 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 	if (!context->on_display_side) {
 		reintroduce_add_msgs(context, params);
 	}
-	struct dmabuf_slice_data info = {
-			.width = width,
+	struct dmabuf_slice_data info = {.width = width,
 			.height = height,
 			.format = format,
 			.num_planes = params->nplanes,
@@ -1245,7 +1244,7 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 					params->add[1].offset,
 					params->add[2].offset,
 					params->add[3].offset},
-	};
+			.using_video = false};
 	for (int i = 0; i < params->nplanes; i++) {
 		memset(info.using_planes, 0, sizeof(info.using_planes));
 		for (int k = 0; k < params->nplanes; k++) {
@@ -1257,6 +1256,11 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		/* replace the format with something the driver can probably
 		 * handle */
 		info.format = dmabuf_get_simple_format_for_plane(format, i);
+		if (params->nplanes == 1 && format == 0x34325258 &&
+				context->g->config->video_if_possible) {
+			// attempt video codec
+			info.using_video = true;
+		}
 
 		struct shadow_fd *sfd = translate_fd(&context->g->map,
 				&context->g->render, params->add[i].fd, &info);
