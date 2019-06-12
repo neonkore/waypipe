@@ -63,6 +63,8 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #include <virtual-keyboard-unstable-v1-server-defs.h>
 #include <wayland-drm-client-defs.h>
 #include <wayland-drm-server-defs.h>
+#include <wlr-export-dmabuf-unstable-v1-client-defs.h>
+#include <wlr-export-dmabuf-unstable-v1-server-defs.h>
 #include <wlr-screencopy-unstable-v1-client-defs.h>
 #include <wlr-screencopy-unstable-v1-server-defs.h>
 #include <xdg-shell-client-defs.h>
@@ -182,6 +184,25 @@ struct wp_linux_dmabuf_params {
 	int nplanes;
 };
 
+struct wp_export_dmabuf_frame {
+	struct wp_object base;
+
+	uint32_t width;
+	uint32_t height;
+	uint32_t format;
+	uint64_t modifier;
+
+	// At the moment, no message reordering support, for lack of a client
+	// to test it with
+	struct {
+		struct shadow_fd *buffer;
+		uint32_t offset;
+		uint32_t stride;
+		uint64_t modifier;
+	} objects[MAX_DMABUF_PLANES];
+	uint32_t nobjects;
+};
+
 static void free_damage_stack(struct damage_record **root)
 {
 	if (root && *root) {
@@ -252,6 +273,15 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 				free(r->add[i].msg);
 			}
 		}
+	} else if (object->type == &zwlr_export_dmabuf_frame_v1_interface) {
+		struct wp_export_dmabuf_frame *r =
+				(struct wp_export_dmabuf_frame *)object;
+		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
+			if (r->objects[i].buffer) {
+				shadow_decref_protocol(
+						map, r->objects[i].buffer);
+			}
+		}
 	}
 	free(object);
 }
@@ -283,6 +313,8 @@ struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			params->add[i].fd = -1;
 		}
+	} else if (type == &zwlr_export_dmabuf_frame_v1_interface) {
+		new_obj = calloc(1, sizeof(struct wp_export_dmabuf_frame));
 	} else {
 		new_obj = calloc(1, sizeof(struct wp_object));
 	}
@@ -349,8 +381,6 @@ static void event_wl_registry_global(void *data,
 	}
 
 	bool unsupported = false;
-	// todo: needs a working and portable test client
-	unsupported |= !strcmp(interface, "zwlr_export_dmabuf_manager_v1");
 	// deprecated, and waypipe doesn't have logic for it anyway
 	unsupported |= !strcmp(interface, "wl_shell");
 	if (unsupported) {
@@ -1300,6 +1330,123 @@ static void request_zwp_linux_buffer_params_v1_create_immed(
 	return;
 }
 
+static void zwlr_export_dmabuf_frame_v1_frame(void *data,
+		struct zwlr_export_dmabuf_frame_v1 *zwlr_export_dmabuf_frame_v1,
+		uint32_t width, uint32_t height, uint32_t offset_x,
+		uint32_t offset_y, uint32_t buffer_flags, uint32_t flags,
+		uint32_t format, uint32_t mod_high, uint32_t mod_low,
+		uint32_t num_objects)
+{
+	struct context *context =
+			get_context(data, zwlr_export_dmabuf_frame_v1);
+	struct wp_export_dmabuf_frame *frame =
+			(struct wp_export_dmabuf_frame *)context->obj;
+
+	frame->width = width;
+	frame->height = height;
+	(void)offset_x;
+	(void)offset_y;
+	// the 'transient' flag could be cleared, technically
+	(void)flags;
+	(void)buffer_flags;
+	frame->format = format;
+	frame->modifier = mod_high * 0x100000000uL + mod_low;
+	frame->nobjects = num_objects;
+	if (frame->nobjects > MAX_DMABUF_PLANES) {
+		wp_log(WP_ERROR, "Too many (%u) frame objects required",
+				frame->nobjects);
+		frame->nobjects = MAX_DMABUF_PLANES;
+	}
+}
+static void zwlr_export_dmabuf_frame_v1_object(void *data,
+		struct zwlr_export_dmabuf_frame_v1 *zwlr_export_dmabuf_frame_v1,
+		uint32_t index, int32_t fd, uint32_t size, uint32_t offset,
+		uint32_t stride, uint32_t plane_index)
+{
+	struct context *context =
+			get_context(data, zwlr_export_dmabuf_frame_v1);
+	struct wp_export_dmabuf_frame *frame =
+			(struct wp_export_dmabuf_frame *)context->obj;
+	if (index > frame->nobjects) {
+		wp_log(WP_ERROR, "Cannot add frame object with index %u >= %u",
+				index, frame->nobjects);
+		return;
+	}
+	if (frame->objects[index].buffer) {
+		wp_log(WP_ERROR,
+				"Cannot add frame object with index %u, already used",
+				frame->nobjects);
+		return;
+	}
+
+	frame->objects[index].offset = offset;
+	frame->objects[index].stride = stride;
+
+	// for lack of a test program, we assume all dmabufs passed in here are
+	// distinct, and hence need no 'multiplane' adjustments
+	struct dmabuf_slice_data info = {.width = frame->width,
+			.height = frame->height,
+			.format = frame->format,
+			.num_planes = frame->nobjects,
+			.strides = {frame->objects[0].stride,
+					frame->objects[1].stride,
+					frame->objects[2].stride,
+					frame->objects[3].stride},
+			.offsets = {frame->objects[0].offset,
+					frame->objects[1].offset,
+					frame->objects[2].offset,
+					frame->objects[3].offset},
+			.using_planes = {false, false, false, false},
+			.modifier = frame->modifier,
+			.using_video = false};
+	info.using_planes[index] = true;
+
+	struct shadow_fd *sfd = translate_fd(
+			&context->g->map, &context->g->render, fd, &info);
+	if (sfd->type != FDC_DMABUF) {
+		wp_log(WP_ERROR,
+				"fd #%d for wlr-export-dmabuf frame wasn't a dmabuf",
+				index);
+		return;
+	}
+	if (sfd->dmabuf_size < size) {
+		wp_log(WP_ERROR,
+				"Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
+				index, (uint32_t)sfd->dmabuf_size, size);
+	}
+
+	// Convert the stored fds to buffer pointers now.
+	frame->objects[index].buffer = shadow_incref_protocol(sfd);
+
+	// in practice, index+1?
+	(void)plane_index;
+}
+static void zwlr_export_dmabuf_frame_v1_ready(void *data,
+		struct zwlr_export_dmabuf_frame_v1 *zwlr_export_dmabuf_frame_v1,
+		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
+{
+	struct context *context =
+			get_context(data, zwlr_export_dmabuf_frame_v1);
+	struct wp_export_dmabuf_frame *frame =
+			(struct wp_export_dmabuf_frame *)context->obj;
+	if (!context->on_display_side) {
+		/* The client side does not update the buffer */
+		return;
+	}
+
+	(void)tv_sec_hi;
+	(void)tv_sec_lo;
+	(void)tv_nsec;
+	for (uint32_t i = 0; i < frame->nobjects; i++) {
+		struct shadow_fd *sfd = frame->objects[i].buffer;
+		if (sfd) {
+			sfd->is_dirty = true;
+			sfd->dirty_interval_max = INT32_MAX;
+			sfd->dirty_interval_min = INT32_MIN;
+		}
+	}
+}
+
 static const struct wl_display_listener wl_display_event_handler = {
 		.error = event_wl_display_error,
 		.delete_id = event_wl_display_delete_id};
@@ -1364,6 +1511,12 @@ static const struct zwp_linux_buffer_params_v1_interface
 				.create = request_zwp_linux_buffer_params_v1_create,
 				.create_immed = request_zwp_linux_buffer_params_v1_create_immed,
 };
+static const struct zwlr_export_dmabuf_frame_v1_listener
+		zwlr_export_dmabuf_frame_v1_event_handler = {
+				.frame = zwlr_export_dmabuf_frame_v1_frame,
+				.object = zwlr_export_dmabuf_frame_v1_object,
+				.ready = zwlr_export_dmabuf_frame_v1_ready,
+};
 
 const struct msg_handler handlers[] = {
 		{&wl_display_interface, &wl_display_event_handler,
@@ -1382,6 +1535,9 @@ const struct msg_handler handlers[] = {
 		{&zwp_linux_buffer_params_v1_interface,
 				&zwp_linux_buffer_params_v1_event_handler,
 				&zwp_linux_buffer_params_v1_request_handler},
+		{&zwlr_export_dmabuf_frame_v1_interface,
+				&zwlr_export_dmabuf_frame_v1_event_handler,
+				NULL},
 
 		/* List all other known global object interface types, so
 		 * that the parsing code can identify all fd usages */
@@ -1407,11 +1563,13 @@ const struct msg_handler handlers[] = {
 		// linux-dmabuf
 		{&zwp_linux_dmabuf_v1_interface,
 				&zwp_linux_dmabuf_v1_event_handler, NULL},
-		// linux-dmabuf
+		// screencopy-manager
 		{&zwlr_screencopy_manager_v1_interface, NULL, NULL},
-		// linux-dmabuf
+		// wayland-drm
 		{&wl_drm_interface, &wl_drm_event_handler,
 				&wl_drm_request_handler},
+		// wlr-export-dmabuf
+		{&zwlr_export_dmabuf_manager_v1_interface, NULL, NULL},
 
 		{NULL, NULL, NULL}};
 const struct wl_interface *the_display_interface = &wl_display_interface;

@@ -359,7 +359,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		shadow->diff_buffer = NULL;
 		shadow->type = FDC_DMABUF;
 
-		if (info->using_video) {
+		if (info && info->using_video) {
 			// Try to set up a video encoding and a video decoding
 			// stream with AVCodec, although transmissions in each
 			// direction are relatively independent. TODO: use
@@ -845,6 +845,15 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 			bool delta = memcmp(
 					cur->mem_mirror, tmp, cur->dmabuf_size);
 			if (delta) {
+				if (!cur->diff_buffer) {
+					// This can happen in reverse-transport
+					// scenarios
+					cur->diff_buffer = calloc(
+							align(cur->dmabuf_size,
+									8),
+							1);
+				}
+
 				// TODO: damage region support!
 				size_t diffsize;
 				wp_log(WP_DEBUG, "Diff construction start");

@@ -15,7 +15,7 @@ protocols = [
 	['input-method-unstable-v2'],
 	['virtual-keyboard-unstable-v1'],
 	['wlr-screencopy-unstable-v1'],
-#	['wlr-export-dmabuf-unstable-v1'],
+	['wlr-export-dmabuf-unstable-v1'],
 	['wayland-drm'],
 ]
 

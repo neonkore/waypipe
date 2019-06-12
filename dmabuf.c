@@ -142,7 +142,7 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	struct gbm_bo *bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER,
 			&data, GBM_BO_USE_RENDERING);
 	if (!bo) {
-		wp_log(WP_ERROR, "Failed to import dmabuf to gbm bo",
+		wp_log(WP_ERROR, "Failed to import dmabuf to gbm bo: %s",
 				strerror(errno));
 		return NULL;
 	}
