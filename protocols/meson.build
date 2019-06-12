@@ -3,43 +3,46 @@ wayland_dir = wayland_client.get_pkgconfig_variable('pkgdatadir')
 
 wayland_scanner_prog = find_program(wayland_scanner.get_pkgconfig_variable('wayland_scanner'))
 
-wayland_scanner_data = generator(
-	wayland_scanner_prog,
-	output: '@BASENAME@-data.c',
-	arguments: ['public-code', '@INPUT@', '@OUTPUT@'],
-)
-
-# TODO: modify wayland scanner to produce only the required information to trace the protocol
-wayland_scanner_client = generator(
-	wayland_scanner_prog,
-	output: '@BASENAME@-client-defs.h',
-	arguments: ['client-header', '@INPUT@', '@OUTPUT@'],
-)
-wayland_scanner_server = generator(
-	wayland_scanner_prog,
-	output: '@BASENAME@-server-defs.h',
-	arguments: ['server-header', '@INPUT@', '@OUTPUT@'],
-)
-
+# The last argument in each list should be the protocol name; appending
+# .xml , and path-concatenating the preceding elements, should produce a path
+# to a protocol xml file.
 protocols = [
-    [wayland_dir, 'wayland.xml'],
-    [wl_protocol_dir, 'stable/xdg-shell/xdg-shell.xml'],
-    [wl_protocol_dir, 'stable/presentation-time/presentation-time.xml'],
-    [wl_protocol_dir, 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml'],
-    ['gtk-primary-selection.xml'],
-    ['input-method-unstable-v2.xml'],
-    ['virtual-keyboard-unstable-v1.xml'],
-    ['wlr-screencopy-unstable-v1.xml'],
-    ['wayland-drm.xml'],
+	[wayland_dir, 'wayland'],
+	[wl_protocol_dir, 'stable/xdg-shell/', 'xdg-shell'],
+	[wl_protocol_dir, 'stable/presentation-time/', 'presentation-time'],
+	[wl_protocol_dir, 'unstable/linux-dmabuf/', 'linux-dmabuf-unstable-v1'],
+	['gtk-primary-selection'],
+	['input-method-unstable-v2'],
+	['virtual-keyboard-unstable-v1'],
+	['wlr-screencopy-unstable-v1'],
+#	['wlr-export-dmabuf-unstable-v1'],
+	['wayland-drm'],
 ]
 
 protocols_src = []
 protocols_headers = []
 foreach path_parts : protocols
-	xml = join_paths(path_parts)
-	protocols_src += wayland_scanner_data.process(xml)
-	protocols_headers += wayland_scanner_client.process(xml)
-	protocols_headers += wayland_scanner_server.process(xml)
+	xml = join_paths(path_parts) + '.xml'
+	base_name = path_parts[-1]
+
+	protocols_src += custom_target(
+		'@0@ code'.format(base_name),
+		output : '@0@-data.c'.format(base_name),
+		input : xml,
+		command : [wayland_scanner_prog, 'public-code', '@INPUT@', '@OUTPUT@'],
+	)
+	protocols_headers += custom_target(
+		'@0@ client-header'.format(base_name),
+		output : '@0@-client-defs.h'.format(base_name),
+		input : xml,
+		command : [wayland_scanner_prog, 'client-header', '@INPUT@', '@OUTPUT@'],
+	)
+	protocols_headers += custom_target(
+		'@0@ server-header'.format(base_name),
+		output : '@0@-server-defs.h'.format(base_name),
+		input : xml,
+		command : [wayland_scanner_prog, 'server-header', '@INPUT@', '@OUTPUT@'],
+	)
 endforeach
 
 # the src files do not require the headers
