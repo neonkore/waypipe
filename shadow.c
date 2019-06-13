@@ -114,7 +114,6 @@ static void destroy_unlinked_sfd(
 	free(shadow);
 	(void)map;
 }
-
 void cleanup_translation_map(struct fd_translation_map *map)
 {
 	struct shadow_fd *cur = map->list;
@@ -125,7 +124,31 @@ void cleanup_translation_map(struct fd_translation_map *map)
 		shadow->next = NULL;
 		destroy_unlinked_sfd(map, shadow);
 	}
+	ZSTD_freeCCtx(map->zstd_ccontext);
+	ZSTD_freeDCtx(map->zstd_dcontext);
+	free(map->lz4_state_buffer);
 }
+void setup_translation_map(struct fd_translation_map *map, bool display_side,
+		enum compression_mode comp)
+{
+	map->local_sign = display_side ? -1 : 1;
+	map->list = NULL;
+	map->max_local_id = 1;
+	map->compression = comp;
+	map->zstd_ccontext = NULL;
+	map->zstd_dcontext = NULL;
+	map->lz4_state_buffer = NULL;
+	if (comp == COMP_LZ4) {
+		map->lz4_state_buffer = calloc((size_t)LZ4_sizeofState(), 1);
+	}
+	if (comp == COMP_ZSTD) {
+		map->zstd_ccontext = ZSTD_createCCtx();
+		map->zstd_dcontext = ZSTD_createDCtx();
+		ZSTD_CCtx_setParameter(
+				map->zstd_ccontext, ZSTD_c_compressionLevel, 5);
+	}
+}
+
 fdcat_t get_fd_type(int fd, size_t *size)
 {
 	struct stat fsdata;
@@ -207,8 +230,8 @@ static void compress_buffer(struct fd_translation_map *map, size_t isize,
 		*wbuf = ibuf;
 		return;
 	case COMP_LZ4: {
-		int ws = LZ4_compress_default(
-				ibuf, mbuf, (int)isize, (int)msize);
+		int ws = LZ4_compress_fast_extState(map->lz4_state_buffer, ibuf,
+				mbuf, (int)isize, (int)msize, 1);
 		if (ws == 0) {
 			wp_log(WP_ERROR,
 					"Lz4 compression failed for %d bytes in %d of space",
@@ -219,7 +242,8 @@ static void compress_buffer(struct fd_translation_map *map, size_t isize,
 		return;
 	}
 	case COMP_ZSTD: {
-		size_t ws = ZSTD_compress(mbuf, msize, ibuf, isize, 5);
+		size_t ws = ZSTD_compress2(
+				map->zstd_ccontext, mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws)) {
 			wp_log(WP_ERROR,
 					"Zstd compression failed for %d bytes in %d of space: %s",
@@ -265,7 +289,8 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		return;
 	}
 	case COMP_ZSTD: {
-		size_t ws = ZSTD_decompress(mbuf, msize, ibuf, isize);
+		size_t ws = ZSTD_decompressDCtx(
+				map->zstd_dcontext, mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws) || (size_t)ws != msize) {
 			wp_log(WP_ERROR,
 					"Zstd decompression failed for %d bytes to %d of space: %s",

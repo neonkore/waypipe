@@ -84,12 +84,20 @@ struct render_data {
 	const char *drm_node_path;
 	struct gbm_device *dev;
 };
+typedef struct ZSTD_CCtx_s ZSTD_CCtx;
+typedef struct ZSTD_DCtx_s ZSTD_DCtx;
 enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
 struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;
 	int local_sign;
+	// Compression information is globally shared, to save memory, and
+	// because most rapidly changing application buffers have similar
+	// content.
 	enum compression_mode compression;
+	void *lz4_state_buffer;
+	ZSTD_CCtx *zstd_ccontext;
+	ZSTD_DCtx *zstd_dcontext;
 };
 
 typedef enum {
@@ -324,6 +332,8 @@ struct globals {
 int main_interface_loop(int chanfd, int progfd,
 		const struct main_config *config, bool display_side);
 
+void setup_translation_map(struct fd_translation_map *map, bool display_side,
+		enum compression_mode compression);
 void cleanup_translation_map(struct fd_translation_map *map);
 
 /** Given a file descriptor, return which type code would be applied to its

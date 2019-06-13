@@ -897,15 +897,11 @@ int main_interface_loop(int chanfd, int progfd,
 
 	struct globals g;
 	g.config = config;
-	g.map = (struct fd_translation_map){
-			.local_sign = (display_side ? -1 : 1),
-			.list = NULL,
-			.max_local_id = 1,
-			.compression = config->compression};
 	g.render = (struct render_data){.drm_node_path = config->drm_node,
 			.drm_fd = -1,
 			.dev = NULL,
 			.disabled = config->no_gpu};
+	setup_translation_map(&g.map, display_side, config->compression);
 	init_message_tracker(&g.tracker);
 
 	while (!shutdown_flag) {
