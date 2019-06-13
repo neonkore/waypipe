@@ -250,31 +250,71 @@ static uint32_t merge_assym(const struct ext_interval *lower,
  * If `ia` and `ib` are disjoint, then nothing is written to `o`. Otherwise,
  * this function writes between one and three disjoint intervals into `o`.
  * It returns the number of intervals written. */
-static uint32_t merge_intervals(const struct ext_interval *ia,
-		const struct ext_interval *ib, struct ext_interval o[static 3])
+static uint32_t merge_intervals(const struct ext_interval *a,
+		const struct ext_interval *b, struct ext_interval o[static 3])
 {
 	/* Naive, but still very casework-intensive, solution: the overlapping
 	 * portion of a series of intervals is replaced by a single solid
 	 * interval, and the tail portions are extended. */
-	int a_low = eint_low(ia);
-	int a_high = eint_high(ia);
-	int b_low = eint_low(ib);
-	int b_high = eint_high(ib);
+	int a_low = eint_low(a);
+	int a_high = eint_high(a);
+	int b_low = eint_low(b);
+	int b_high = eint_high(b);
+
+	if (a->stride == b->stride && (a->rep > 1 || b->rep > 1)) {
+		/* Special case: merge two horizontally aligned buffers */
+		int common_stride = a->rep > 1 ? a->stride : b->stride;
+		int mod_a = a->start % common_stride,
+		    mod_b = b->start % common_stride;
+		if (a->width == b->width && mod_a == mod_b) {
+			if (a->start + a->rep * a->stride == b->start) {
+				o[0] = (struct ext_interval){
+						.start = a->start,
+						.width = a->width,
+						.stride = common_stride,
+						.rep = a->rep + b->rep,
+				};
+				return 1;
+			}
+			if (b->start + b->rep * b->stride == a->start) {
+				o[0] = (struct ext_interval){
+						.start = b->start,
+						.width = b->width,
+						.stride = common_stride,
+						.rep = a->rep + b->rep,
+				};
+				return 1;
+			}
+		}
+
+		/* Special case: don't merge two parallel buffers */
+		if (mod_a > mod_b) {
+			mod_b += common_stride;
+		}
+		int gap_ab = mod_b - (mod_a + a->width);
+		if (mod_b > mod_a) {
+			mod_a += common_stride;
+		}
+		int gap_ba = mod_a - (mod_b + b->width);
+		if (gap_ab > MERGE_MARGIN && gap_ba > MERGE_MARGIN) {
+			return 0;
+		}
+	}
 
 	// TODO: combine consecutive regions with matching width (vstack)
 
 	// Categorize by symmetry class
 	if (a_low >= b_low && a_high <= b_high) {
-		return merge_contained(ib, ia, o);
+		return merge_contained(b, a, o);
 	}
 	if (b_low >= a_low && b_high <= a_high) {
-		return merge_contained(ia, ib, o);
+		return merge_contained(a, b, o);
 	}
 	if (a_low <= b_low) {
-		return merge_assym(ia, ib, o);
+		return merge_assym(a, b, o);
 	}
 	if (b_low <= a_low) {
-		return merge_assym(ib, ia, o);
+		return merge_assym(b, a, o);
 	}
 	abort();
 }
