@@ -517,7 +517,8 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
 	}
 
 	/* If only the last block changed */
-	if (clear_exit && changed_val != base_val) {
+	if ((clear_exit || blockrange_min + 1 == blockrange_max) &&
+			changed_val != base_val) {
 		diff_blocks[cursor++] =
 				(blockrange_max - 1) << 32 | blockrange_max;
 		diff_blocks[cursor++] = changed_val;
@@ -560,10 +561,13 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 								8),
 						(int)nblocks);
 				uint64_t maxb = (uint64_t)min(
-						floordiv(ei.start + r * ei.stride +
+						ceildiv(ei.start + r * ei.stride +
 										ei.width,
 								8),
 						(int)nblocks);
+				if (minb >= maxb) {
+					continue;
+				}
 				cursor = run_interval_diff(minb, maxb,
 						changed_blocks, base_blocks,
 						diff_blocks, cursor);
