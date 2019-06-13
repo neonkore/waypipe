@@ -88,12 +88,162 @@ struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
 	return NULL;
 }
 
+static int count_num_args(const struct wl_message *msg)
+{
+	int n = 0;
+	for (const char *c = msg->signature; *c; c++) {
+		n += (strchr("afhionsu", *c) != NULL);
+	}
+	return n;
+}
+static int count_subhandler_call_types(
+		int n, const void *fns, const struct wl_message *msgs)
+{
+	int m = 0;
+	for (int k = 0; k < n; k++) {
+		void (*fn)(void) = ((void (*const *)(void))fns)[k];
+		if (!fn) {
+			continue;
+		}
+		m += count_num_args(&msgs[k]) + 2;
+	}
+	return m;
+}
+static int compute_num_call_types(int *nhandlers, int *nfunctions)
+{
+	int num_call_types = 0;
+	int i = 0;
+	int nfuncs = 0;
+	for (; handlers[i].interface; i++) {
+		// todo: modify generator produce symmetric tables with no
+		// event/req distinction
+		const struct msg_handler *handler = &handlers[i];
+		if (handler->event_handlers) {
+			num_call_types += count_subhandler_call_types(
+					handler->interface->event_count,
+					handler->event_handlers,
+					handler->interface->events);
+			nfuncs += handler->interface->event_count;
+		}
+		if (handler->request_handlers) {
+			num_call_types += count_subhandler_call_types(
+					handler->interface->method_count,
+					handler->request_handlers,
+					handler->interface->methods);
+			nfuncs += handler->interface->method_count;
+		}
+	}
+	*nhandlers = i;
+	*nfunctions = nfuncs;
+	return num_call_types;
+}
+static int setup_subhandler_cif(int n, const void *fns,
+		const struct wl_message *msgs, int *i_types, ffi_type **types,
+		ffi_cif *cifs, bool is_event)
+{
+	int nused = 0;
+	for (int k = 0; k < n; k++) {
+		void (*fn)(void) = ((void (*const *)(void))fns)[k];
+		if (!fn) {
+			continue;
+		}
+		ffi_type **type_offset = &types[*i_types];
+
+		/* The first two types are reserved here for &context,NULL */
+		types[(*i_types)++] = &ffi_type_pointer;
+		types[(*i_types)++] = &ffi_type_pointer;
+
+		int nargs = count_num_args(&msgs[k]);
+		for (const char *c = msgs[k].signature; *c; c++) {
+			switch (*c) {
+			case 'a':
+				types[(*i_types)++] = &ffi_type_pointer;
+				break;
+			case 'f':
+				types[(*i_types)++] = &ffi_type_sint32;
+				break;
+			case 'h':
+				types[(*i_types)++] = &ffi_type_sint32;
+				break;
+			case 'i':
+				types[(*i_types)++] = &ffi_type_sint32;
+				break;
+			case 'o':
+				types[(*i_types)++] = &ffi_type_pointer;
+				break;
+			case 'n':
+				types[(*i_types)++] =
+						is_event ? &ffi_type_pointer
+							 : &ffi_type_uint32;
+				break;
+			case 's':
+				types[(*i_types)++] = &ffi_type_pointer;
+				break;
+			case 'u':
+				types[(*i_types)++] = &ffi_type_uint32;
+				break;
+			default:
+				break;
+			}
+		}
+		ffi_prep_cif(&cifs[k], FFI_DEFAULT_ABI,
+				(unsigned int)(nargs + 2), &ffi_type_void,
+				type_offset);
+		nused++;
+	}
+	return nused;
+}
+
 void init_message_tracker(struct message_tracker *mt)
 {
 	memset(mt, 0, sizeof(*mt));
 
 	listset_insert(&mt->objects,
 			create_wp_object(1, the_display_interface));
+
+	/* Precompute the ffi_cif structures, as ffi_prep_cif takes about as
+	 * much time as ffi_call_cif,
+	 * and for dense (i.e, damage heavy) message streams both are called
+	 * /very/ often */
+	int nhandlers = 0;
+	int nfunctions = 0;
+	int num_call_types = compute_num_call_types(&nhandlers, &nfunctions);
+	mt->cif_arg_table = calloc((size_t)num_call_types, sizeof(ffi_type *));
+	mt->cif_table = calloc((size_t)nfunctions, sizeof(ffi_cif));
+	mt->event_cif_cache = calloc((size_t)nhandlers, sizeof(ffi_cif *));
+	mt->request_cif_cache = calloc((size_t)nhandlers, sizeof(ffi_cif *));
+
+	ffi_cif *cif_table = mt->cif_table;
+	int i_calltypes = 0;
+	int i_functions = 0;
+	int k = 0;
+	for (int i_handler = 0; handlers[i_handler].interface; i_handler++) {
+		const struct msg_handler *handler = &handlers[i_handler];
+		if (handler->event_handlers) {
+			ffi_cif **cache = (ffi_cif **)mt->event_cif_cache;
+			k += setup_subhandler_cif(
+					handler->interface->event_count,
+					handler->event_handlers,
+					handler->interface->events,
+					&i_calltypes, mt->cif_arg_table,
+					&cif_table[i_functions], true);
+			cache[i_handler] = &cif_table[i_functions];
+			i_functions += handler->interface->event_count;
+		}
+		if (handler->request_handlers) {
+			ffi_cif **cache = (ffi_cif **)mt->request_cif_cache;
+			k += setup_subhandler_cif(
+					handler->interface->method_count,
+					handler->request_handlers,
+					handler->interface->methods,
+					&i_calltypes, mt->cif_arg_table,
+					&cif_table[i_functions], false);
+			cache[i_handler] = &cif_table[i_functions];
+			i_functions += handler->interface->method_count;
+		}
+	}
+	wp_log(WP_DEBUG, "Set up %d ffi functions, with %d types total", k,
+			i_calltypes);
 }
 void cleanup_message_tracker(
 		struct fd_translation_map *map, struct message_tracker *mt)
@@ -102,17 +252,20 @@ void cleanup_message_tracker(
 		destroy_wp_object(map, mt->objects.objs[i]);
 	}
 	free(mt->objects.objs);
+	free(mt->cif_table);
+	free(mt->cif_arg_table);
+	free(mt->event_cif_cache);
+	free(mt->request_cif_cache);
 }
 
-const struct msg_handler *get_handler_for_interface(
-		const struct wl_interface *intf)
+static int get_handler_idx_for_interface(const struct wl_interface *intf)
 {
 	for (int i = 0; handlers[i].interface; i++) {
 		if (handlers[i].interface == intf) {
-			return &handlers[i];
+			return i;
 		}
 	}
-	return NULL;
+	return -1;
 }
 
 struct uarg {
@@ -129,24 +282,23 @@ struct uarg {
 	};
 };
 
-static void invoke_msg_handler(const struct wl_interface *intf,
+/* Parse the message payload and apply it to a function, creating new objects
+ * and consuming fds */
+static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 		const struct wl_message *msg, bool is_event,
 		const uint32_t *const payload, const int paylen,
 		const int *const fd_list, const int fdlen, int *fds_used,
 		void (*const func)(void), struct context *ctx,
 		struct message_tracker *mt)
 {
-	ffi_type *call_types[30];
+	/* The types to match these arguments are set up once in
+	 * `setup_subhandler_cif` */
 	void *call_args_ptr[30];
 	if (strlen(msg->signature) > 30) {
 		wp_log(WP_ERROR, "Overly long signature for %s.%s: %s",
 				intf->name, msg->name, msg->signature);
 	}
 	struct uarg call_args_val[30];
-
-	call_types[0] = &ffi_type_pointer;
-	call_types[1] = &ffi_type_pointer;
-
 	void *nullptr = NULL;
 	void *addr_of_ctx = ctx;
 	call_args_ptr[0] = &addr_of_ctx;
@@ -183,8 +335,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			// fixed allocation. waypipe won't reallocate anyway
 			call_args_val[nargs].arr.alloc = (size_t)-1;
 			call_args_ptr[nargs] = &call_args_val[nargs].arr;
-			call_types[nargs] = &ffi_type_pointer;
-
 			i += ((len + 3) / 4);
 		} break;
 		case 'h': {
@@ -193,7 +343,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			}
 			call_args_val[nargs].si = fd_list[(*fds_used)++];
 			call_args_ptr[nargs] = &call_args_val[nargs].si;
-			call_types[nargs] = &ffi_type_sint32; // see typedef
 			nargs++;
 		} break;
 		case 'f': {
@@ -203,7 +352,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			wl_fixed_t v = *((const wl_fixed_t *)&payload[i++]);
 			call_args_val[nargs].fxd = v;
 			call_args_ptr[nargs] = &call_args_val[nargs].fxd;
-			call_types[nargs] = &ffi_type_sint32; // see typedef
 			nargs++;
 		} break;
 		case 'i': {
@@ -213,7 +361,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			int32_t v = (int32_t)payload[i++];
 			call_args_val[nargs].si = v;
 			call_args_ptr[nargs] = &call_args_val[nargs].si;
-			call_types[nargs] = &ffi_type_sint32;
 			nargs++;
 		} break;
 		case 'o': {
@@ -225,7 +372,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			// May always be null, in case client messes up
 			call_args_val[nargs].obj = lo;
 			call_args_ptr[nargs] = &call_args_val[nargs].obj;
-			call_types[nargs] = &ffi_type_pointer;
 			nargs++;
 		} break;
 		case 'n': {
@@ -242,12 +388,10 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 				call_args_val[nargs].obj = new_obj;
 				call_args_ptr[nargs] =
 						&call_args_val[nargs].obj;
-				call_types[nargs] = &ffi_type_pointer;
 				nargs++;
 			} else {
 				call_args_val[nargs].ui = new_obj->obj_id;
 				call_args_ptr[nargs] = &call_args_val[nargs].ui;
-				call_types[nargs] = &ffi_type_uint32;
 				nargs++;
 			}
 		} break;
@@ -262,7 +406,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			const char *str = (const char *)&payload[i];
 			call_args_val[nargs].str = str;
 			call_args_ptr[nargs] = &call_args_val[nargs].str;
-			call_types[nargs] = &ffi_type_pointer;
 			nargs++;
 
 			i += ((len + 3) / 4);
@@ -274,7 +417,6 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 			uint32_t v = payload[i++];
 			call_args_val[nargs].ui = v;
 			call_args_ptr[nargs] = &call_args_val[nargs].ui;
-			call_types[nargs] = &ffi_type_uint32;
 			nargs++;
 		} break;
 
@@ -306,10 +448,7 @@ static void invoke_msg_handler(const struct wl_interface *intf,
 	}
 
 	if (func) {
-		ffi_cif call_cif;
-		ffi_prep_cif(&call_cif, FFI_DEFAULT_ABI, (unsigned int)nargs,
-				&ffi_type_void, call_types);
-		ffi_call(&call_cif, func, NULL, call_args_ptr);
+		ffi_call(cif, func, NULL, call_args_ptr);
 	}
 }
 
@@ -365,17 +504,24 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		return PARSE_UNKNOWN;
 	}
 
-	const struct msg_handler *handler =
-			get_handler_for_interface(objh->type);
+	const int handler_idx = get_handler_idx_for_interface(objh->type);
+	const struct msg_handler *handler = &handlers[handler_idx];
 	void (*fn)(void) = NULL;
+	ffi_cif *cif = NULL;
 	if (handler) {
 		if (from_client && handler->request_handlers) {
 			fn = ((void (*const *)(
 					void))handler->request_handlers)[meth];
+			ffi_cif *cif_list = g->tracker.request_cif_cache
+							    [handler_idx];
+			cif = &cif_list[meth];
 		}
 		if (!from_client && handler->event_handlers) {
 			fn = ((void (*const *)(
 					void))handler->event_handlers)[meth];
+			ffi_cif *cif_list =
+					g->tracker.event_cif_cache[handler_idx];
+			cif = &cif_list[meth];
 		}
 	}
 
@@ -395,7 +541,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	};
 	const uint32_t *payload = ctx.message + 2;
 
-	invoke_msg_handler(intf, msg, !from_client, payload, len / 4 - 2,
+	invoke_msg_handler(cif, intf, msg, !from_client, payload, len / 4 - 2,
 			&fds->data[fds->zone_start],
 			fds->zone_end - fds->zone_start, &fds_used, fn, &ctx,
 			&g->tracker);

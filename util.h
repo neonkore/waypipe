@@ -266,6 +266,14 @@ struct message_tracker {
 	// creating a new type <-> binding it in the 'interface' list, via
 	// registry. each type produces 'callbacks'
 	struct obj_list objects;
+
+	// Precomputed signatures for active functions. The arg table contains
+	// a concatenated list of all argument type signature vectors. The
+	// request/event cache elements are vectors of ffi_cif types
+	void *cif_arg_table;
+	void *cif_table;
+	void **event_cif_cache;
+	void **request_cif_cache;
 };
 struct context {
 	struct globals *const g;
