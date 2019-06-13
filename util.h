@@ -52,6 +52,8 @@ static inline int clamp(int v, int lower, int upper)
 	return max(min(v, upper), lower);
 }
 static inline int align(int v, int m) { return m * ((v + m - 1) / m); }
+static inline int floordiv(int v, int u) { return v / u; }
+static inline int ceildiv(int v, int u) { return (v + u - 1) / u; }
 
 /** Set the given flag with fcntl. Silently return -1 on failure. */
 int set_fnctl_flag(int fd, int the_flag);
@@ -125,6 +127,50 @@ struct dmabuf_slice_data {
 	bool using_video;
 };
 
+// Q: use uint32_t everywhere?
+struct ext_interval {
+	/* A slight modification of the standard 'damage' rectangle
+	 * formulation, written to be agnostic of whatever buffers
+	 * underlie the system.
+	 *
+	 * [start,start+width),[start+stride,start+stride+width),
+	 * ... [start+(rep-1)*stride,start+(rep-1)*stride+width) */
+	int32_t start;
+	/* Subinterval width */
+	int32_t width;
+	/* Number of distinct subinterval start positions. For a single
+	 * interval, this is one. */
+	int32_t rep;
+	/* Spacing between start positions, should be > width, unless
+	 * the is only one subinterval, in which case the value shouldn't
+	 * matter and is conventionally set to 0. */
+	int32_t stride;
+};
+#define DAMAGE_EVERYTHING ((struct ext_interval *)-1)
+
+struct damage {
+	/* Interval-based damage tracking. If damage is NULL, there is
+	 * no recorded damage. If damage is DAMAGE_EVERYTHING, the entire
+	 * region should be updated. If ndamage_rects > 0, then
+	 * damage points to an array of struct damage_interval objects. */
+	struct ext_interval *damage;
+	int ndamage_rects;
+
+	int acc_damage_stat, acc_count;
+};
+
+/** Given an array of extended intervals, update the base damage structure
+ * so that it contains a reasonably small disjoint set of extended intervals
+ * which contains the old base set and the new set. */
+void merge_damage_records(struct damage *base, int nintervals,
+		const struct ext_interval *const new_list);
+/** Return a single interval containing the entire damaged region */
+void get_damage_interval(const struct damage *base, int *min, int *max);
+/** Set damage to empty  */
+void reset_damage(struct damage *base);
+/** Expand damage to cover everything */
+void damage_everything(struct damage *base);
+
 struct shadow_fd {
 	struct shadow_fd *next; // singly-linked list
 	fdcat_t type;
@@ -134,9 +180,7 @@ struct shadow_fd {
 	bool has_owner; // Are there protocol handlers which control the
 			// is_dirty flag?
 	bool is_dirty;  // If so, should this file be scanned for updates?
-	/* Very simple damage tracking. This [min,max) interval contains all
-	 * expected changes since the last synchronization. */
-	int dirty_interval_min, dirty_interval_max;
+	struct damage damage;
 
 	/* There are two types of reference counts for shadow_fd objects;
 	 * a struct shadow_fd can only be safely deleted when both counts are
@@ -408,7 +452,7 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
 // exported for testing
 void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		const char *__restrict__ diff);
-void construct_diff(size_t size, size_t range_min, size_t range_max,
+void construct_diff(size_t size, const struct damage *__restrict__ damage,
 		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff);
 

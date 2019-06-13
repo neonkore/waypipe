@@ -133,6 +133,8 @@ struct wp_surface {
 	struct wp_object base;
 
 	struct damage_record *damage_stack;
+	int damage_stack_len;
+
 	uint32_t attached_buffer_id;
 	int32_t scale;
 	int32_t transform;
@@ -636,6 +638,10 @@ static void request_wl_surface_commit(
 				"Buffer to commit has the wrong type, and may have been recycled");
 		return;
 	}
+	if (surface->damage_stack_len == 0) {
+		// No damage to report
+		return;
+	}
 	struct wp_buffer *buf = (struct wp_buffer *)obj;
 	if (buf->type == BUF_DMA) {
 		for (int i = 0; i < buf->dmabuf_nplanes; i++) {
@@ -654,8 +660,7 @@ static void request_wl_surface_commit(
 
 			// detailed damage tracking is not yet supported
 			sfd->is_dirty = true;
-			sfd->dirty_interval_max = INT32_MAX;
-			sfd->dirty_interval_min = INT32_MIN;
+			damage_everything(&sfd->damage);
 		}
 		return;
 	} else if (buf->type != BUF_SHM) {
@@ -673,14 +678,23 @@ static void request_wl_surface_commit(
 		return;
 	}
 	sfd->is_dirty = true;
-	int intv_max = INT32_MIN, intv_min = INT32_MAX;
 	int bpp = get_shm_bytes_per_pixel(buf->shm_format);
 	if (bpp == -1) {
-		sfd->dirty_interval_max = INT32_MAX;
-		sfd->dirty_interval_min = INT32_MIN;
+		damage_everything(&sfd->damage);
 		free_damage_stack(&surface->damage_stack);
+		surface->damage_stack_len = 0;
 		return;
 	}
+
+	struct ext_interval *damage_array =
+			malloc(sizeof(struct ext_interval) *
+					(size_t)surface->damage_stack_len);
+	if (!damage_array) {
+		wp_log(WP_ERROR, "Failed to allocate damage array");
+		damage_everything(&sfd->damage);
+		return;
+	}
+	int i = 0;
 
 	// Translate damage stack into damage records for the fd buffer
 	struct damage_record *rec = surface->damage_stack;
@@ -697,22 +711,24 @@ static void request_wl_surface_commit(
 			ylow = clamp(ylow, 0, buf->shm_height);
 			yhigh = clamp(yhigh, 0, buf->shm_height);
 
-			int low = buf->shm_offset + buf->shm_stride * ylow +
-				  bpp * xlow;
-			int high = buf->shm_offset + buf->shm_stride * yhigh +
-				   bpp * xhigh;
-			intv_max = max(intv_max, high);
-			intv_min = min(intv_min, low);
+			damage_array[i].start = buf->shm_offset +
+						buf->shm_stride * ylow +
+						bpp * xlow;
+			damage_array[i].rep = yhigh - ylow;
+			damage_array[i].stride = buf->shm_stride;
+			damage_array[i].width = bpp * (xhigh - xlow);
+			i++;
 		}
 
 		struct damage_record *nxt = rec->next;
 		free(rec);
 		rec = nxt;
 	}
-	surface->damage_stack = NULL;
 
-	sfd->dirty_interval_max = max(sfd->dirty_interval_max, intv_max);
-	sfd->dirty_interval_min = min(sfd->dirty_interval_min, intv_min);
+	merge_damage_records(&sfd->damage, i, damage_array);
+	free(damage_array);
+	surface->damage_stack = NULL;
+	surface->damage_stack_len = 0;
 }
 static void request_wl_surface_destroy(
 		struct wl_client *client, struct wl_resource *resource)
@@ -741,6 +757,7 @@ static void request_wl_surface_damage(struct wl_client *client,
 	struct wp_surface *surface = (struct wp_surface *)context->obj;
 	damage->next = surface->damage_stack;
 	surface->damage_stack = damage;
+	surface->damage_stack_len++;
 }
 static void request_wl_surface_damage_buffer(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y,
@@ -763,6 +780,7 @@ static void request_wl_surface_damage_buffer(struct wl_client *client,
 	struct wp_surface *surface = (struct wp_surface *)context->obj;
 	damage->next = surface->damage_stack;
 	surface->damage_stack = damage;
+	surface->damage_stack_len++;
 }
 static void request_wl_surface_set_buffer_transform(struct wl_client *client,
 		struct wl_resource *resource, int32_t transform)
@@ -913,10 +931,11 @@ static void event_zwlr_screencopy_frame_v1_ready(void *data,
 	sfd->is_dirty = true;
 	/* The protocol guarantees that the buffer attributes match those of the
 	 * written frame */
-	int start = buffer->shm_offset;
-	int end = buffer->shm_offset + buffer->shm_height * buffer->shm_stride;
-	sfd->dirty_interval_min = min(start, sfd->dirty_interval_min);
-	sfd->dirty_interval_max = max(end, sfd->dirty_interval_max);
+	const struct ext_interval interval = {.start = buffer->shm_offset,
+			.width = buffer->shm_height * buffer->shm_stride,
+			.stride = 0,
+			.rep = 1};
+	merge_damage_records(&sfd->damage, 1, &interval);
 
 	(void)tv_sec_lo;
 	(void)tv_sec_hi;
@@ -1441,8 +1460,7 @@ static void zwlr_export_dmabuf_frame_v1_ready(void *data,
 		struct shadow_fd *sfd = frame->objects[i].buffer;
 		if (sfd) {
 			sfd->is_dirty = true;
-			sfd->dirty_interval_max = INT32_MAX;
-			sfd->dirty_interval_min = INT32_MIN;
+			damage_everything(&sfd->damage);
 		}
 	}
 }

@@ -55,7 +55,7 @@ libswscale = dependency('libswscale')
 
 subdir('protocols')
 
-waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'util.c']
+waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c']
 waypipe_dependencies = [
 	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 	libffi,          # To call wayland protocol functions

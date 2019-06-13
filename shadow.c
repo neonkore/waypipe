@@ -303,8 +303,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	shadow->type = FDC_UNKNOWN;
 	// File changes must be propagated
 	shadow->is_dirty = true;
-	shadow->dirty_interval_max = INT32_MAX;
-	shadow->dirty_interval_min = INT32_MIN;
+	damage_everything(&shadow->damage);
 	shadow->has_owner = false;
 	/* Start the number of expected transfers to channel remaining at one,
 	 * and number of protocol objects referencing this shadow_fd at zero.*/
@@ -467,36 +466,16 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	return shadow;
 }
 
-/** Construct a very simple binary diff format, designed to be fast for small
- * changes in big files, and entire-file changes in essentially random files.
- * Tries not to read beyond the end of the input buffers, because they are often
- * mmap'd. Simultaneously updates the `base` buffer to match the `changed`
- * buffer.
- *
- * Requires that `diff` point to a memory buffer of size `size + 8`.
- */
-void construct_diff(size_t size, size_t range_min, size_t range_max,
-		char *__restrict__ base, const char *__restrict__ changed,
-		size_t *diffsize, char *__restrict__ diff)
-{
-	uint64_t nblocks = size / 8;
-	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
-	const uint64_t *__restrict__ changed_blocks = (const uint64_t *)changed;
-	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
-	uint64_t ntrailing = size - 8 * nblocks;
-	uint64_t cursor = 0;
-	uint64_t blockrange_min = range_min / 8;
-	uint64_t blockrange_max = (range_max + 7) / 8;
-	if (blockrange_max > nblocks) {
-		blockrange_max = nblocks;
-	}
-	DTRACE_PROBE2(waypipe, construct_diff_enter, range_min, range_max);
+#define DIFF_WINDOW_SIZE 4
 
-	diff_blocks[0] = 0;
+static uint64_t run_interval_diff(uint64_t blockrange_min,
+		uint64_t blockrange_max,
+		const uint64_t *__restrict__ changed_blocks,
+		uint64_t *__restrict__ base_blocks,
+		uint64_t *__restrict__ diff_blocks, uint64_t cursor)
+{
 	/* we paper over gaps of a given window size, to avoid fine grained
 	 * context switches */
-	const uint64_t window_size = 4;
-
 	uint64_t i = blockrange_min;
 	uint64_t changed_val = i < blockrange_max ? changed_blocks[i] : 0;
 	uint64_t base_val = i < blockrange_max ? base_blocks[i] : 0;
@@ -522,7 +501,7 @@ void construct_diff(size_t size, size_t range_min, size_t range_max,
 		// changed_val != base_val, difference occurs at early index
 		uint64_t nskip = 0;
 		// we could only sentinel this assuming a tiny window size
-		while (i < blockrange_max && nskip <= window_size) {
+		while (i < blockrange_max && nskip <= DIFF_WINDOW_SIZE) {
 			base_val = base_blocks[i];
 			changed_val = changed_blocks[i];
 			base_blocks[i] = changed_val;
@@ -544,14 +523,70 @@ void construct_diff(size_t size, size_t range_min, size_t range_max,
 		diff_blocks[cursor++] = changed_val;
 		base_blocks[blockrange_max - 1] = changed_val;
 	}
+	return cursor;
+}
 
+/** Construct a very simple binary diff format, designed to be fast for small
+ * changes in big files, and entire-file changes in essentially random files.
+ * Tries not to read beyond the end of the input buffers, because they are often
+ * mmap'd. Simultaneously updates the `base` buffer to match the `changed`
+ * buffer.
+ *
+ * Requires that `diff` point to a memory buffer of size `size + 8`.
+ */
+void construct_diff(size_t size, const struct damage *__restrict__ damage,
+		char *__restrict__ base, const char *__restrict__ changed,
+		size_t *diffsize, char *__restrict__ diff)
+{
+	DTRACE_PROBE1(waypipe, construct_diff_enter, damage->ndamage_rects);
+
+	uint64_t nblocks = (uint64_t)floordiv((int)size, 8);
+	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
+	const uint64_t *__restrict__ changed_blocks = (const uint64_t *)changed;
+
+	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
+	uint64_t ntrailing = size - 8 * nblocks;
+	uint64_t cursor = 0;
+
+	if (damage->damage == DAMAGE_EVERYTHING) {
+		cursor = run_interval_diff(0, nblocks, changed_blocks,
+				base_blocks, diff_blocks, cursor);
+	} else {
+		for (int b = 0; b < damage->ndamage_rects; b++) {
+			struct ext_interval ei = damage->damage[b];
+			for (int r = 0; r < ei.rep; r++) {
+				uint64_t minb = (uint64_t)min(
+						floordiv(ei.start + r * ei.stride,
+								8),
+						(int)nblocks);
+				uint64_t maxb = (uint64_t)min(
+						floordiv(ei.start + r * ei.stride +
+										ei.width,
+								8),
+						(int)nblocks);
+				cursor = run_interval_diff(minb, maxb,
+						changed_blocks, base_blocks,
+						diff_blocks, cursor);
+			}
+		}
+	}
+
+	bool tail_change = false;
 	if (ntrailing > 0) {
+		for (uint64_t i = 0; i < ntrailing; i++) {
+			tail_change |= base[nblocks * 8 + i] !=
+				       changed[nblocks * 8 + i];
+		}
+	}
+	if (tail_change) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
 			diff[cursor * 8 + i] = changed[nblocks * 8 + i];
 			base[nblocks * 8 + i] = changed[nblocks * 8 + i];
 		}
+		*diffsize = cursor * 8 + ntrailing;
+	} else {
+		*diffsize = cursor * 8;
 	}
-	*diffsize = cursor * 8 + ntrailing;
 	DTRACE_PROBE1(waypipe, construct_diff_exit, *diffsize);
 }
 void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
@@ -562,7 +597,7 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
 	uint64_t ntrailing = size - 8 * nblocks;
-	if (ntrailing != (diffsize - 8 * ndiffblocks)) {
+	if (diffsize % 8 != 0 && ntrailing != (diffsize - 8 * ndiffblocks)) {
 		wp_log(WP_ERROR, "Trailing bytes mismatch for diff.");
 		return;
 	}
@@ -602,14 +637,9 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 		}
 		// Clear dirty state
 		cur->is_dirty = false;
-		int intv_min = clamp(cur->dirty_interval_min, 0,
-				(int)cur->file_size);
-		int intv_max = clamp(cur->dirty_interval_max, 0,
-				(int)cur->file_size);
-		cur->dirty_interval_min = INT32_MAX;
-		cur->dirty_interval_max = INT32_MIN;
-
 		if (!cur->mem_mirror) {
+			reset_damage(&cur->damage);
+
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
 			cur->mem_mirror = calloc(align(cur->file_size, 8), 1);
@@ -633,14 +663,23 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 			transfers[nt].obj_id = cur->remote_id;
 			transfers[nt].special.file_actual_size = cur->file_size;
 		}
+
+		int intv_min, intv_max;
+		get_damage_interval(&cur->damage, &intv_min, &intv_max);
+		intv_min = clamp(intv_min, 0, (int)cur->file_size);
+		intv_max = clamp(intv_max, 0, (int)cur->file_size);
 		if (intv_min >= intv_max) {
+			reset_damage(&cur->damage);
 			return;
 		}
+		// todo: make the 'memcmp' fine grained, depending on damage
+		// complexity
 		bool delta = memcmp(cur->file_mem_local + intv_min,
 					     (cur->mem_mirror + intv_min),
 					     (size_t)(intv_max - intv_min)) !=
 			     0;
 		if (!delta) {
+			reset_damage(&cur->damage);
 			return;
 		}
 		if (!cur->diff_buffer) {
@@ -651,10 +690,10 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 
 		size_t diffsize;
 		wp_log(WP_DEBUG, "Diff construction start");
-		construct_diff(cur->file_size, (size_t)intv_min,
-				(size_t)intv_max, cur->mem_mirror,
+		construct_diff(cur->file_size, &cur->damage, cur->mem_mirror,
 				cur->file_mem_local, &diffsize,
 				cur->diff_buffer);
+		reset_damage(&cur->damage);
 		wp_log(WP_DEBUG, "Diff construction end: %ld/%ld", diffsize,
 				cur->file_size);
 		if (diffsize > 0) {
@@ -857,8 +896,10 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 				// TODO: damage region support!
 				size_t diffsize;
 				wp_log(WP_DEBUG, "Diff construction start");
-				construct_diff(cur->dmabuf_size, 0,
-						cur->dmabuf_size,
+				struct damage everything = {
+						.damage = DAMAGE_EVERYTHING,
+						.ndamage_rects = 0};
+				construct_diff(cur->dmabuf_size, &everything,
 						cur->mem_mirror, tmp, &diffsize,
 						cur->diff_buffer);
 				wp_log(WP_DEBUG,
@@ -1105,8 +1146,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 	shadow->fd_local = -1;
 	shadow->type = transf->type;
 	shadow->is_dirty = false;
-	shadow->dirty_interval_max = INT32_MIN;
-	shadow->dirty_interval_min = INT32_MAX;
+	reset_damage(&shadow->damage);
 	/* Start the object reference at one, so that, if it is owned by
 	 * some known protocol object, it can not be deleted until the fd
 	 * has at least be transferred over the Wayland connection */

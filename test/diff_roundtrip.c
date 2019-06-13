@@ -52,12 +52,17 @@ static int buf_ndiff(size_t size, const char *left, const char *right,
 	return nchanged;
 }
 
+static const struct damage damage_all = {
+		.damage = DAMAGE_EVERYTHING,
+		.ndamage_rects = 0,
+};
+
 static int ideal_round(
 		size_t bufsize, char *base, const char *changed, char *other)
 {
 	char *diff = calloc(bufsize + 8, 1);
 	size_t diffsize = 0;
-	construct_diff(bufsize, 0, bufsize, base, changed, &diffsize, diff);
+	construct_diff(bufsize, &damage_all, base, changed, &diffsize, diff);
 	apply_diff(bufsize, other, diffsize, diff);
 	free(diff);
 	int nch = 0;
@@ -134,7 +139,7 @@ int main(int argc, char **argv)
 			}
 			/* A data transfer for shm requires 1x construct_diff,
 			 * and 2x apply_diff */
-			construct_diff(imgsize, 0, imgsize, img_base,
+			construct_diff(imgsize, &damage_all, img_base,
 					img_changed, &diffsize, img_diff);
 			apply_diff(imgsize, img_cloneA, diffsize, img_diff);
 			apply_diff(imgsize, img_cloneB, diffsize, img_diff);
