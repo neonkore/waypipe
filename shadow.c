@@ -114,6 +114,23 @@ static void destroy_unlinked_sfd(
 	free(shadow);
 	(void)map;
 }
+static void cleanup_threads(struct fd_translation_map *map)
+{
+	pthread_mutex_lock(&map->work_state_mutex);
+	map->next_thread_task = THREADTASK_STOP;
+	map->task_id++;
+	map->nthreads_completed = 0;
+	pthread_mutex_unlock(&map->work_state_mutex);
+
+	pthread_cond_broadcast(&map->work_needed_notify);
+	for (int i = 0; i < map->nthreads - 1; i++) {
+		pthread_join(map->threads[i].thread, NULL);
+	}
+	pthread_mutex_destroy(&map->work_state_mutex);
+	pthread_cond_destroy(&map->work_done_notify);
+	pthread_cond_destroy(&map->work_needed_notify);
+	free(map->threads);
+}
 void cleanup_translation_map(struct fd_translation_map *map)
 {
 	struct shadow_fd *cur = map->list;
@@ -127,7 +144,55 @@ void cleanup_translation_map(struct fd_translation_map *map)
 	ZSTD_freeCCtx(map->zstd_ccontext);
 	ZSTD_freeDCtx(map->zstd_dcontext);
 	free(map->lz4_state_buffer);
+
+	if (map->nthreads > 1) {
+		cleanup_threads(map);
+	}
 }
+static void worker_run_compresseddiff(struct fd_translation_map *map, int index)
+{
+	(void)map;
+	(void)index;
+}
+static void *worker_thread_main(void *arg)
+{
+	struct thread_data *data = arg;
+	struct fd_translation_map *map = data->map;
+
+	wp_log(WP_DEBUG, "Opening worker thread %d", data->index);
+
+	/* The loop is globally locked by default, and only unlocked in
+	 * pthread_cond_wait. Yes, there are fancier and faster schemes. */
+	pthread_mutex_lock(&map->work_state_mutex);
+	while (1) {
+		if (map->task_id != data->last_task_id) {
+			data->last_task_id = map->task_id;
+			if (map->next_thread_task == THREADTASK_STOP) {
+				break;
+			}
+			// Do work!
+			if (map->next_thread_task ==
+					THREADTASK_MAKE_COMPRESSEDDIFF) {
+				pthread_mutex_unlock(&map->work_state_mutex);
+				// The main thread should not have modified
+				// any worker-related state since updating
+				// its task id
+				worker_run_compresseddiff(map, data->index);
+				pthread_mutex_lock(&map->work_state_mutex);
+			}
+			map->nthreads_completed++;
+			pthread_cond_signal(&map->work_done_notify);
+		}
+
+		pthread_cond_wait(&map->work_needed_notify,
+				&map->work_state_mutex);
+	}
+	pthread_mutex_unlock(&map->work_state_mutex);
+
+	wp_log(WP_DEBUG, "Closing worker thread %d", data->index);
+	return NULL;
+}
+
 void setup_translation_map(struct fd_translation_map *map, bool display_side,
 		enum compression_mode comp)
 {
@@ -140,12 +205,73 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 	map->lz4_state_buffer = NULL;
 	if (comp == COMP_LZ4) {
 		map->lz4_state_buffer = calloc((size_t)LZ4_sizeofState(), 1);
-	}
-	if (comp == COMP_ZSTD) {
+	} else if (comp == COMP_ZSTD) {
 		map->zstd_ccontext = ZSTD_createCCtx();
 		map->zstd_dcontext = ZSTD_createDCtx();
 		ZSTD_CCtx_setParameter(
 				map->zstd_ccontext, ZSTD_c_compressionLevel, 5);
+	}
+
+	// platform dependent
+	long nt = sysconf(_SC_NPROCESSORS_ONLN);
+
+	map->nthreads = ceildiv((int)nt, 2);
+	wp_log(WP_ERROR, "Num threads: %d", map->nthreads);
+
+	// 1 ms wakeup for other threads, assuming mild CPU load.
+	float thread_switch_delay = 0.001f; // seconds
+	float scan_proc_irate = 0.5e-9f;    // seconds/byte
+	float comp_proc_irate = 0.f;        // seconds/bytes
+	if (comp == COMP_LZ4) {
+		// 0.15 seconds on uncompressable 1e8 bytes
+		comp_proc_irate = 1.5e-9f;
+	} else if (comp == COMP_ZSTD) {
+		// 0.5 seconds on uncompressable 1e8 bytes
+		comp_proc_irate = 5e-9f;
+	}
+	float proc_irate = scan_proc_irate + comp_proc_irate;
+	if (map->nthreads > 1) {
+		map->scancomp_thread_threshold =
+				(int)((thread_switch_delay * map->nthreads) /
+						(proc_irate * (map->nthreads -
+									      1)));
+
+	} else {
+		map->scancomp_thread_threshold = INT32_MAX;
+	}
+	// stop task won't be called unless the main task id is incremented
+	map->next_thread_task = THREADTASK_STOP;
+	map->nthreads_completed = 0;
+	map->task_id = 0;
+	if (map->nthreads > 1) {
+		pthread_mutex_init(&map->work_state_mutex, NULL);
+		pthread_cond_init(&map->work_done_notify, NULL);
+		pthread_cond_init(&map->work_needed_notify, NULL);
+
+		// The main thread has index zero, and will, since computations
+		// block it anyway, share part of the workload
+		map->threads = calloc(
+				map->nthreads - 1, sizeof(struct thread_data));
+		bool had_failures = false;
+		for (int i = 0; i < map->nthreads - 1; i++) {
+			// false sharing is negligible for cold data
+			map->threads[i].map = map;
+			map->threads[i].index = i + 1;
+			map->threads[i].thread = 0;
+			map->threads[i].last_task_id = 0;
+			int ret = pthread_create(&map->threads[i].thread, NULL,
+					worker_thread_main, &map->threads[i]);
+			if (ret == -1) {
+				wp_log(WP_ERROR, "Thread creation failed");
+				had_failures = true;
+				break;
+			}
+		}
+
+		if (had_failures) {
+			cleanup_threads(map);
+			map->nthreads = 1;
+		}
 	}
 }
 

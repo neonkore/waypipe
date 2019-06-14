@@ -52,6 +52,7 @@ libzstd = dependency('libzstd')
 libavcodec = dependency('libavcodec')
 libavutil = dependency('libavutil')
 libswscale = dependency('libswscale')
+pthreads = dependency('threads')
 
 subdir('protocols')
 
@@ -62,6 +63,7 @@ waypipe_dependencies = [
 	liblz4,          # Fast compression option
 	libzstd,         # Slow compression option
 	libavcodec,libavutil,libswscale, # Video encoding
+	pthreads,        # To run expensive computations in parallel
 	protos,          # Wayland protocol data
 	rt,              # For shared memory
 	wayland_client   # For wl_display_connnect
@@ -92,7 +94,7 @@ if scdoc.found()
 endif
 
 # Testing
-test_diff = executable('diff_roundtrip', ['test/diff_roundtrip.c'] + waypipe_source_files, dependencies: waypipe_dependencies)
+test_diff = executable('diff_roundtrip', ['test/diff_roundtrip.c'] + ['shadow.c', 'util.c', 'dmabuf.c', 'interval.c'], dependencies: waypipe_dependencies)
 test('Whether diff operations successfully roundtrip', test_diff)
 test_damage = executable('damage_merge', ['test/damage_merge.c'] + ['interval.c', 'util.c'])
 test('If damage rectangles merge efficiently', test_damage)

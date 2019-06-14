@@ -25,6 +25,7 @@
 #ifndef WAYPIPE_UTIL_H
 #define WAYPIPE_UTIL_H
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -89,6 +90,21 @@ struct render_data {
 	const char *drm_node_path;
 	struct gbm_device *dev;
 };
+
+enum thread_task {
+	THREADTASK_STOP,
+	THREADTASK_MAKE_COMPRESSEDDIFF,
+};
+struct thread_data {
+	pthread_t thread;
+	struct fd_translation_map *map;
+	/* This determines, based on the state stored in the map's linked
+	 * shadow structure target, which work is performed, and where
+	 * data should be read and written */
+	int index;
+	int last_task_id;
+};
+
 typedef struct ZSTD_CCtx_s ZSTD_CCtx;
 typedef struct ZSTD_DCtx_s ZSTD_DCtx;
 enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
@@ -96,13 +112,39 @@ struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;
 	int local_sign;
-	// Compression information is globally shared, to save memory, and
-	// because most rapidly changing application buffers have similar
-	// content.
+	/* Compression information is globally shared, to save memory, and
+	 * because most rapidly changing application buffers have similar
+	 * content and use the same settings */
 	enum compression_mode compression;
 	void *lz4_state_buffer;
 	ZSTD_CCtx *zstd_ccontext;
 	ZSTD_DCtx *zstd_dcontext;
+	/* The latency of a multithreaded operation can be approximated with two
+	 * main components: the context switching time to get all threads
+	 * working (and then notify the original thread), and the time to
+	 * perform the (fully parallel) work. If the context switching time is
+	 * the same for all threads, then there is a threshold beyond which it
+	 * is helpful to run multithreaded (with as many threads as possible),
+	 * below which a single-threaded approach is faster. */
+	int scancomp_thread_threshold;
+	/* Threads. These should only be used for computational work;
+	 * communication should be limited to task descriptions, with pointers
+	 * to e.g. the condition variables used to notify when work is done or
+	 * not */
+	int nthreads;
+	struct thread_data *threads;
+	struct shadow_fd *thread_target;
+	/* `work_state` guards `nthreads_completed`, `next_thread_task`,
+	 * and `task_id`. `work_needed_notify` signals when to check for an
+	 * increased task counter; `work_done_notify` lets the main thread
+	 * know that a task has been done.
+	 */
+	pthread_cond_t work_done_notify;
+	pthread_cond_t work_needed_notify;
+	pthread_mutex_t work_state_mutex;
+	int task_id;
+	int nthreads_completed;
+	enum thread_task next_thread_task;
 };
 
 typedef enum {
