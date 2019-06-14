@@ -84,6 +84,13 @@ void wp_log_handler(const char *file, int line, log_cat_t level,
  * true. The `options` flag will be passed to waitpid */
 bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options);
 
+/** A helper type, since very often buffers and their sizes are passed together
+ * (or returned together) as arguments */
+struct bytebuf {
+	size_t size;
+	char *data;
+};
+
 struct render_data {
 	bool disabled;
 	int drm_fd;
@@ -285,7 +292,6 @@ struct shadow_fd {
 };
 
 struct transfer {
-	size_t size;
 	fdcat_t type;
 	int obj_id;
 	// type-specific extra data
@@ -294,8 +300,11 @@ struct transfer {
 		int file_actual_size;
 		int raw; // < for obviously type-independent cases
 	} special;
-	// data vector must include space up to next 8-byte boundary
-	const char *data;
+
+	int nblocks;
+	// each subtransfer must include space up to the next 8-byte boundary.
+	// they will all be concatenated by the writev call
+	struct bytebuf *subtransfers;
 };
 
 struct msg_handler {
@@ -398,7 +407,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
-		int *ntransfers, struct transfer transfers[]);
+		int *ntransfers, struct transfer transfers[], int *nblocks,
+		struct bytebuf blocks[]);
 /** Apply a file update to the translation map, creating an entry when there is
  * none */
 void apply_update(struct fd_translation_map *map, struct render_data *render,

@@ -154,20 +154,13 @@ static void untranslate_ids(struct fd_translation_map *map, int nids,
 	}
 }
 
-static void apply_updates(struct fd_translation_map *map,
-		struct render_data *render, int ntransfers,
-		const struct transfer transfers[])
-{
-	for (int i = 0; i < ntransfers; i++) {
-		apply_update(map, render, &transfers[i]);
-	}
-}
-
 static void collect_updates(struct fd_translation_map *map, int *ntransfers,
-		struct transfer transfers[])
+		struct transfer transfers[], int *nblocks,
+		struct bytebuf blocks[])
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		collect_update(map, cur, ntransfers, transfers);
+		collect_update(map, cur, ntransfers, transfers, nblocks,
+				blocks);
 	}
 }
 
@@ -277,7 +270,12 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 	// TODO: network byte order everything, content aware, somewhere in the
 	// chain!
 
-	bt->nblocks = ntransfers * 2 + 1;
+	bt->nblocks = 1;
+	for (int i = 0; i < ntransfers; i++) {
+		// header + data blocks
+		bt->nblocks += 1 + transfers[i].nblocks;
+	}
+
 	bt->ntransfers = ntransfers;
 	bt->transfer_block_headers = calloc((size_t)bt->ntransfers,
 			sizeof(struct pipe_elem_header));
@@ -287,24 +285,37 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 			(size_t)nids * sizeof(struct pipe_elem_header);
 	size_t total_size = header_size;
 
+	int i_block = 1;
 	for (int i = 0; i < ntransfers; i++) {
 		struct pipe_elem_header *sd = &bt->transfer_block_headers[i];
 		sd->id = transfers[i].obj_id;
 		sd->type = (int)transfers[i].type;
-		sd->size = (int)transfers[i].size;
+		sd->size = 0;
+		for (int k = 0; k < transfers[i].nblocks; k++) {
+			sd->size += transfers[i].subtransfers[k].size;
+		}
 		sd->special = transfers[i].special.raw;
 
-		size_t tsize = transfers[i].size;
-		size_t num_longs = (tsize + sizeof(uint64_t) - 1) /
-				   sizeof(uint64_t);
-		bt->blocks[2 * i + 1].iov_len = sizeof(struct pipe_elem_header);
-		bt->blocks[2 * i + 1].iov_base = sd;
+		bt->blocks[i_block].iov_len = sizeof(struct pipe_elem_header);
+		bt->blocks[i_block].iov_base = sd;
 
-		bt->blocks[2 * i + 2].iov_len = sizeof(uint64_t) * num_longs;
-		bt->blocks[2 * i + 2].iov_base = (void *)transfers[i].data;
+		for (int k = 0; k < transfers[i].nblocks; k++) {
+			bt->blocks[i_block + 1 + k].iov_len =
+					transfers[i].subtransfers[k].size;
+			bt->blocks[i_block + 1 + k].iov_base =
+					transfers[i].subtransfers[k].data;
+		}
+		size_t num_longs = (size_t)ceildiv(sd->size, sizeof(uint64_t));
+		size_t extrabytes =
+				num_longs * sizeof(uint64_t) - (size_t)sd->size;
+		// each block should space for <=8 trailing bytes anyway
+		bt->blocks[i_block + transfers[i].nblocks].iov_len +=
+				extrabytes;
 
 		total_size += sizeof(struct pipe_elem_header) +
 			      sizeof(uint64_t) * num_longs;
+
+		i_block += 1 + transfers[i].nblocks;
 	}
 
 	uint64_t *cursor = calloc(header_size, 1);
@@ -324,10 +335,12 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 }
 
 /** Unpack the buffer containing message data, the id list, and file updates.
- * All returned pointers refer to positions in the source buffer. */
+ * All returned pointers refer to positions in the source buffer.
+ * Each transfer structure will point to the single block containing its
+ * concatenated data */
 static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 		char **waymsg, int *nids, int ids[], int *ntransfers,
-		struct transfer transfers[])
+		struct transfer transfers[], struct bytebuf blocks[])
 {
 	if (msglen % 8 != 0) {
 		wp_log(WP_ERROR, "Unpacking uneven message, size %ld=%ld mod 8",
@@ -350,10 +363,12 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 			} else {
 				// Add to list of data transfers
 				transfers[nt].obj_id = sd->id;
-				transfers[nt].size = (size_t)sd->size;
 				transfers[nt].type = (fdcat_t)sd->type;
-				transfers[nt].data = (char *)data;
 				transfers[nt].special.raw = sd->special;
+				blocks[nt].data = (char *)data;
+				blocks[nt].size = (size_t)sd->size;
+				transfers[nt].nblocks = 1;
+				transfers[nt].subtransfers = &blocks[nt];
 				nt++;
 			}
 			size_t nlongs = ((size_t)sd->size + 7) / 8;
@@ -440,17 +455,20 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 
 	int ntransfers = 0;
 	struct transfer transfers[50];
+	struct bytebuf blocks[50];
 	unpack_pipe_message((size_t)cmsg->cmsg_size, cmsg->cmsg_buffer,
 			&cmsg->dbuffer_end, &cmsg->dbuffer,
 			&cmsg->rbuffer_count, cmsg->rbuffer, &ntransfers,
-			transfers);
+			transfers, blocks);
 
 	wp_log(WP_DEBUG,
 			"Read %d byte msg, %d fds, %d transfers. Data buffer has %d bytes",
 			cmsg->cmsg_size, cmsg->rbuffer_count, ntransfers,
 			cmsg->dbuffer_end);
 
-	apply_updates(&g->map, &g->render, ntransfers, transfers);
+	for (int i = 0; i < ntransfers; i++) {
+		apply_update(&g->map, &g->render, &transfers[i]);
+	}
 
 	untranslate_ids(&g->map, cmsg->rbuffer_count, cmsg->rbuffer,
 			cmsg->tfbuffer);
@@ -703,8 +721,9 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// We have data to read from programs/pipes
-	int ntransfers = 0;
+	int ntransfers = 0, nblocks = 0;
 	struct transfer transfers[50];
+	struct bytebuf blocks[100];
 	ssize_t rc = -1;
 	int old_fbuffer_end = wmsg->fds.zone_end;
 	if (progsock_readable) {
@@ -775,15 +794,18 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 					"We are transferring a data buffer with %ld bytes",
 					dst.zone_end);
 			transfers[0].obj_id = 0;
-			transfers[0].size = dst.zone_end;
-			transfers[0].data = wmsg->dbuffer_edited;
+			transfers[0].nblocks = 1;
+			transfers[0].subtransfers = &blocks[0];
+			blocks[0].size = dst.zone_end;
+			blocks[0].data = wmsg->dbuffer_edited;
 			transfers[0].type = FDC_UNKNOWN;
 			ntransfers = 1;
+			nblocks = 1;
 		}
 	}
 
 	read_readable_pipes(&g->map);
-	collect_updates(&g->map, &ntransfers, transfers);
+	collect_updates(&g->map, &ntransfers, transfers, &nblocks, blocks);
 	if (ntransfers > 0) {
 		pack_pipe_message(&wmsg->cmsg, wmsg->rbuffer_count,
 				wmsg->rbuffer, ntransfers, transfers);
