@@ -42,7 +42,7 @@ static int buf_ndiff(size_t size, const char *left, const char *right,
 	for (size_t i = 0; i < size; i++) {
 		nchanged += (left[i] != right[i]);
 		if (left[i] != right[i]) {
-			fprintf(stderr, "Disagreement at i=%d, %s=%02x, %s=%02x\n",
+			printf("Disagreement at i=%d, %s=%02x, %s=%02x\n",
 					(int)i, leftname,
 					(uint32_t)(uint8_t)left[i], rightname,
 					(uint32_t)(uint8_t)right[i]);
@@ -67,12 +67,12 @@ static int ideal_round(
 	free(diff);
 	int nch = 0;
 	if ((nch = buf_ndiff(bufsize, changed, base, "changed", "base"))) {
-		fprintf(stderr, "Diff failed, base and changed disagree, at %d bytes\n",
+		printf("Diff failed, base and changed disagree, at %d bytes\n",
 				nch);
 		return EXIT_FAILURE;
 	}
 	if ((nch = buf_ndiff(bufsize, changed, other, "changed", "other"))) {
-		fprintf(stderr, "Diff failed, other and changed disagree, at %d bytes\n",
+		printf("Diff failed, other and changed disagree, at %d bytes\n",
 				nch);
 		return EXIT_FAILURE;
 	}
@@ -148,13 +148,13 @@ int main(int argc, char **argv)
 		int ich = 0;
 		if ((ich = buf_ndiff(imgsize, img_base, img_changed, "img_base",
 				     "img_changed")) > 0) {
-			fprintf(stderr, "Timing test, end result has %d discrepancies\n",
+			printf("Timing test, end result has %d discrepancies\n",
 					ich);
 			all_success = false;
 		}
 		double elapsed = (t_after.tv_sec - t_before.tv_sec) * 1.0 +
 				 (t_after.tv_nsec - t_before.tv_nsec) * 1e-9;
-		fprintf(stdout, "Timing test, took %f ms\n", elapsed * 1e3);
+		printf("Timing test, took %f ms\n", elapsed * 1e3);
 
 		free(img_base);
 		free(img_diff);

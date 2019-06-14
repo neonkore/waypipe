@@ -94,4 +94,6 @@ endif
 # Testing
 test_diff = executable('diff_roundtrip', ['test/diff_roundtrip.c'] + waypipe_source_files, dependencies: waypipe_dependencies)
 test('Whether diff operations successfully roundtrip', test_diff)
+test_damage = executable('damage_merge', ['test/damage_merge.c'] + ['interval.c', 'util.c'])
+test('If damage rectangles merge efficiently', test_damage)
 

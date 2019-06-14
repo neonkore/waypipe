@@ -29,9 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* This value must be larger than 8, or diffs will explode */
-#define MERGE_MARGIN 1024
-
 static inline int eint_low(const struct ext_interval *i) { return i->start; }
 static inline int eint_high(const struct ext_interval *i)
 {
@@ -51,7 +48,8 @@ static struct ext_interval containing_interval(
 /** Given two intervals A,B of matching stride, produce an interval containing
  * both, where start % stride matches A */
 static struct ext_interval merge_fc_aligned(const struct ext_interval *a,
-		const struct ext_interval *b, int common_stride)
+		const struct ext_interval *b, int common_stride,
+		int merge_margin)
 {
 	const int mod_a = a->start % common_stride;
 	const int mod_b = b->start % common_stride;
@@ -59,7 +57,7 @@ static struct ext_interval merge_fc_aligned(const struct ext_interval *a,
 		    (mod_a > mod_b ? common_stride : 0);
 	// Increase width to minimum level implied by e.g. long single intervals
 	width = max(width, max(a->width, b->width));
-	if (width >= common_stride - MERGE_MARGIN) {
+	if (width >= common_stride - merge_margin) {
 		return containing_interval(a, b);
 	}
 
@@ -78,8 +76,8 @@ static struct ext_interval merge_fc_aligned(const struct ext_interval *a,
 
 /** Given two intervals, produce a third minimal /single/ interval which
  * contains both of them and has no internal gaps less than MERGE_MARGIN */
-static struct ext_interval merge_fully_consumed(
-		const struct ext_interval *a, const struct ext_interval *b)
+static struct ext_interval merge_fully_consumed(const struct ext_interval *a,
+		const struct ext_interval *b, int merge_margin)
 {
 	if ((a->rep > 1 && b->rep > 1 && a->stride != b->stride) ||
 			(a->rep == 1 && b->rep == 1)) {
@@ -89,8 +87,10 @@ static struct ext_interval merge_fully_consumed(
 	}
 	int stride = a->rep == 1 ? b->stride : a->stride;
 
-	struct ext_interval a_aligned = merge_fc_aligned(a, b, stride);
-	struct ext_interval b_aligned = merge_fc_aligned(b, a, stride);
+	struct ext_interval a_aligned =
+			merge_fc_aligned(a, b, stride, merge_margin);
+	struct ext_interval b_aligned =
+			merge_fc_aligned(b, a, stride, merge_margin);
 
 	if (a_aligned.rep * a_aligned.width < b_aligned.rep * b_aligned.width) {
 		return a_aligned;
@@ -128,7 +128,7 @@ static struct ext_interval drop_ends(
 
 static uint32_t merge_contained(const struct ext_interval *outer,
 		const struct ext_interval *inner,
-		struct ext_interval o[static 3])
+		struct ext_interval o[static 3], int merge_margin)
 {
 	if (outer->stride == 0 || outer->rep == 1) {
 		// Fast exit, when one part is a solid interval
@@ -146,10 +146,10 @@ static uint32_t merge_contained(const struct ext_interval *outer,
 	int nlower = 0;
 	int nupper = 0;
 	if (outer->rep > 1) {
-		int low_cutoff = eint_low(inner) - MERGE_MARGIN;
+		int low_cutoff = eint_low(inner) - merge_margin;
 		nlower = ceildiv(low_cutoff - outer->start - outer->width,
 				outer->stride);
-		int high_cutoff = eint_high(inner) + MERGE_MARGIN + 1;
+		int high_cutoff = eint_high(inner) + merge_margin + 1;
 		nupper = outer->rep -
 			 ceildiv(high_cutoff - outer->start, outer->stride);
 	}
@@ -162,15 +162,15 @@ static uint32_t merge_contained(const struct ext_interval *outer,
 
 	uint32_t n = 0;
 	struct ext_interval couter = drop_ends(outer, nlower, nupper);
-	o[n++] = merge_fully_consumed(inner, &couter);
+	o[n++] = merge_fully_consumed(inner, &couter, merge_margin);
 
 	/* Adjust lower/upper after the fact, because merging the inner interval
 	 * can expand the area covered the first/last subintervals in the
 	 * central area, so that they conflict with the last/first elements in
 	 * the first/last tails */
 	if (outer->rep > 1) {
-		int low_cutoff = eint_low(&o[0]) - MERGE_MARGIN;
-		int high_cutoff = eint_high(&o[0]) + MERGE_MARGIN + 1;
+		int low_cutoff = eint_low(&o[0]) - merge_margin;
+		int high_cutoff = eint_high(&o[0]) + merge_margin + 1;
 
 		int nlower = ceildiv(low_cutoff - outer->start - outer->width,
 				outer->stride);
@@ -192,9 +192,9 @@ static uint32_t merge_contained(const struct ext_interval *outer,
  * any lower than the other */
 static uint32_t merge_assym(const struct ext_interval *lower,
 		const struct ext_interval *upper,
-		struct ext_interval o[static 3])
+		struct ext_interval o[static 3], int merge_margin)
 {
-	if (eint_high(lower) < eint_low(upper) - MERGE_MARGIN) {
+	if (eint_high(lower) < eint_low(upper) - merge_margin) {
 		// No change, segments do not overlap
 		return 0;
 	}
@@ -209,12 +209,12 @@ static uint32_t merge_assym(const struct ext_interval *lower,
 	int nlower = 0;
 	int nupper = 0;
 	if (lower->rep > 1) {
-		int cutoff = eint_low(upper) - MERGE_MARGIN;
+		int cutoff = eint_low(upper) - merge_margin;
 		nlower = ceildiv(cutoff - lower->start - lower->width,
 				lower->stride);
 	}
 	if (upper->rep > 1) {
-		int cutoff = eint_high(lower) + MERGE_MARGIN + 1;
+		int cutoff = eint_high(lower) + merge_margin + 1;
 		nupper = upper->rep -
 			 ceildiv(cutoff - upper->start, upper->stride);
 	}
@@ -222,10 +222,10 @@ static uint32_t merge_assym(const struct ext_interval *lower,
 	uint32_t n = 0;
 	struct ext_interval clower = drop_head(lower, lower->rep - nlower);
 	struct ext_interval cupper = drop_tail(upper, upper->rep - nupper);
-	o[n++] = merge_fully_consumed(&clower, &cupper);
+	o[n++] = merge_fully_consumed(&clower, &cupper, merge_margin);
 
 	if (lower->rep > 1) {
-		int low_cutoff = eint_low(&o[0]) - MERGE_MARGIN;
+		int low_cutoff = eint_low(&o[0]) - merge_margin;
 		int nlower = ceildiv(low_cutoff - lower->start - lower->width,
 				lower->stride);
 		if (nlower > 0) {
@@ -233,7 +233,7 @@ static uint32_t merge_assym(const struct ext_interval *lower,
 		}
 	}
 	if (upper->rep > 1) {
-		int high_cutoff = eint_high(&o[0]) + MERGE_MARGIN + 1;
+		int high_cutoff = eint_high(&o[0]) + merge_margin + 1;
 		int nupper = upper->rep -
 			     ceildiv(high_cutoff - upper->start, upper->stride);
 		if (nupper > 0) {
@@ -251,7 +251,8 @@ static uint32_t merge_assym(const struct ext_interval *lower,
  * this function writes between one and three disjoint intervals into `o`.
  * It returns the number of intervals written. */
 static uint32_t merge_intervals(const struct ext_interval *a,
-		const struct ext_interval *b, struct ext_interval o[static 3])
+		const struct ext_interval *b, struct ext_interval o[static 3],
+		int merge_margin)
 {
 	/* Naive, but still very casework-intensive, solution: the overlapping
 	 * portion of a series of intervals is replaced by a single solid
@@ -296,7 +297,7 @@ static uint32_t merge_intervals(const struct ext_interval *a,
 			mod_a += common_stride;
 		}
 		int gap_ba = mod_a - (mod_b + b->width);
-		if (gap_ab > MERGE_MARGIN && gap_ba > MERGE_MARGIN) {
+		if (gap_ab > merge_margin && gap_ba > merge_margin) {
 			return 0;
 		}
 	}
@@ -305,16 +306,16 @@ static uint32_t merge_intervals(const struct ext_interval *a,
 
 	// Categorize by symmetry class
 	if (a_low >= b_low && a_high <= b_high) {
-		return merge_contained(b, a, o);
+		return merge_contained(b, a, o, merge_margin);
 	}
 	if (b_low >= a_low && b_high <= a_high) {
-		return merge_contained(a, b, o);
+		return merge_contained(a, b, o, merge_margin);
 	}
 	if (a_low <= b_low) {
-		return merge_assym(a, b, o);
+		return merge_assym(a, b, o, merge_margin);
 	}
 	if (b_low <= a_low) {
-		return merge_assym(b, a, o);
+		return merge_assym(b, a, o, merge_margin);
 	}
 	abort();
 }
@@ -322,9 +323,9 @@ static uint32_t merge_intervals(const struct ext_interval *a,
 /** If the internal gaps of an extended interval are too large, replace the
  * interval with a single contiguous block. Also, get rid of meaningless
  * strides */
-static struct ext_interval smooth_gaps(struct ext_interval i)
+static struct ext_interval smooth_gaps(struct ext_interval i, int merge_margin)
 {
-	if (i.width > i.stride - MERGE_MARGIN) {
+	if (i.width > i.stride - merge_margin) {
 		i.width = i.stride * (i.rep - 1) + i.width;
 		i.rep = 1;
 	}
@@ -334,108 +335,28 @@ static struct ext_interval smooth_gaps(struct ext_interval i)
 	return i;
 }
 
-bool check_subset_property(int nsup, const struct ext_interval *sup, int nsub,
-		const struct ext_interval *sub, int nsup2,
-		const struct ext_interval *sup2)
+void merge_core(const int old_count, struct ext_interval *old_list,
+		const int new_count, const struct ext_interval *const new_list,
+		int *dst_count, struct ext_interval **dst_list,
+		int merge_margin)
 {
-	// Verify that the new set of intervals covers the old.
-	int minv = INT32_MAX, maxv = INT32_MIN;
-	for (int i = 0; i < nsup; i++) {
-		minv = min(minv, eint_low(&sup[i]));
-		maxv = max(maxv, eint_high(&sup[i]));
-	}
-	for (int i = 0; i < nsup2; i++) {
-		minv = min(minv, eint_low(&sup2[i]));
-		maxv = max(maxv, eint_high(&sup2[i]));
-	}
-	for (int i = 0; i < nsub; i++) {
-		minv = min(minv, eint_low(&sub[i]));
-		maxv = max(maxv, eint_high(&sub[i]));
-	}
-	if (minv > maxv) {
-		return true;
-	}
-	char *test = calloc(maxv - minv, 1);
-	// Fast & stupid containment test
-	for (int i = 0; i < nsub; i++) {
-		struct ext_interval e = sub[i];
-		for (int k = 0; k < e.rep; k++) {
-			memset(&test[e.start + e.stride * k - minv], 1,
-					e.width);
-		}
-	}
-	for (int i = 0; i < nsup; i++) {
-		struct ext_interval e = sup[i];
-		for (int k = 0; k < e.rep; k++) {
-			if (memchr(&test[e.start + e.stride * k - minv], 2,
-					    e.width) != NULL) {
-				wp_log(WP_ERROR, "Internal overlap fail, sup1");
-				free(test);
-				return false;
-			}
-
-			memset(&test[e.start + e.stride * k - minv], 2,
-					e.width);
-		}
-	}
-	for (int i = 0; i < nsup2; i++) {
-		struct ext_interval e = sup2[i];
-		for (int k = 0; k < e.rep; k++) {
-			if (memchr(&test[e.start + e.stride * k - minv], 2,
-					    e.width) != NULL) {
-				wp_log(WP_ERROR, "Internal overlap fail, sup2");
-				free(test);
-				return false;
-			}
-			memset(&test[e.start + e.stride * k - minv], 2,
-					e.width);
-		}
-	}
-	bool yes = memchr(test, 1, maxv - minv) == NULL;
-	int count = 0;
-	if (!yes) {
-		for (int i = 0; i < maxv - minv; i++) {
-			count += test[i] == 1;
-			if (test[i] == 1) {
-				wp_log(WP_ERROR, "Fail at %d", i + minv);
-			}
-		}
-		wp_log(WP_ERROR, "Fail count: %d/%d", count, maxv - minv);
-	}
-	free(test);
-	return yes;
-}
-
-void merge_damage_records(struct damage *base, int nintervals,
-		const struct ext_interval *const new_list)
-{
-	for (int i = 0; i < nintervals; i++) {
-		base->acc_damage_stat += new_list[i].width * new_list[i].rep;
-		base->acc_count++;
-	}
-
-	// Fast return if there is nothing to do
-	if (base->damage == DAMAGE_EVERYTHING || nintervals <= 0) {
-		return;
-	}
 
 	/* Naive merging. With each pass, introduce an additional interval.
 	 * There will be at most a factor of 2 expansion, so we plan ahead by
 	 * factor-4 expanding. */
-	int space = max(base->ndamage_rects, 16) * 4;
+	int space = max(old_count, 16) * 4;
 	struct ext_interval *scratch =
 			calloc(space, sizeof(struct ext_interval));
-	memcpy(scratch, base->damage,
-			base->ndamage_rects * sizeof(struct ext_interval));
-	int used = base->ndamage_rects;
+	memcpy(scratch, old_list, old_count * sizeof(struct ext_interval));
+	int used = old_count;
 
 	// Standard dynamic resizing
-	int queue_space = nintervals * 2;
+	int queue_space = new_count * 2;
 	struct ext_interval *queue =
-			calloc(nintervals * 2, sizeof(struct ext_interval));
+			calloc(new_count * 2, sizeof(struct ext_interval));
 	int z = 0;
-	for (int i = 0; i < nintervals; i++) {
-		queue[z++] = smooth_gaps(new_list[i]);
+	for (int i = 0; i < new_count; i++) {
+		queue[z++] = smooth_gaps(new_list[i], merge_margin);
 	}
 	while (z > 0) {
 		/* In each round, merge the incoming interval with every other
@@ -453,7 +374,8 @@ void merge_damage_records(struct damage *base, int nintervals,
 			const struct ext_interval test = scratch[read_index++];
 
 			struct ext_interval products[3];
-			uint32_t ne = merge_intervals(&intv, &test, products);
+			uint32_t ne = merge_intervals(
+					&intv, &test, products, merge_margin);
 			if (ne == 0) {
 				// No change, keep inspected element unchanged
 				scratch[write_index++] = test;
@@ -539,13 +461,35 @@ void merge_damage_records(struct damage *base, int nintervals,
 		}
 	}
 
-	base->damage = realloc(
-			base->damage, sizeof(struct ext_interval) * used);
-	memcpy(base->damage, scratch, sizeof(struct ext_interval) * used);
+	struct ext_interval *dst =
+			realloc(old_list, sizeof(struct ext_interval) * used);
+	memcpy(dst, scratch, sizeof(struct ext_interval) * used);
 	free(scratch);
 	free(queue);
-	base->ndamage_rects = used;
+
+	*dst_list = dst;
+	*dst_count = used;
 }
+
+/* This value must be larger than 8, or diffs will explode */
+#define MERGE_MARGIN 1024
+void merge_damage_records(struct damage *base, int nintervals,
+		const struct ext_interval *const new_list)
+{
+	for (int i = 0; i < nintervals; i++) {
+		base->acc_damage_stat += new_list[i].width * new_list[i].rep;
+		base->acc_count++;
+	}
+
+	// Fast return if there is nothing to do
+	if (base->damage == DAMAGE_EVERYTHING || nintervals <= 0) {
+		return;
+	}
+
+	merge_core(base->ndamage_rects, base->damage, nintervals, new_list,
+			&base->ndamage_rects, &base->damage, MERGE_MARGIN);
+}
+
 void get_damage_interval(const struct damage *base, int *minincl, int *maxexcl)
 {
 	if (base->damage == DAMAGE_EVERYTHING) {
