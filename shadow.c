@@ -73,45 +73,44 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
 	return NULL;
 }
 static void destroy_unlinked_sfd(
-		struct fd_translation_map *map, struct shadow_fd *shadow)
+		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
-	if (shadow->type == FDC_FILE) {
-		munmap(shadow->file_mem_local, shadow->file_size);
-		free(shadow->mem_mirror);
-		free(shadow->diff_buffer);
-		free(shadow->compress_buffer);
-		if (shadow->file_shm_buf_name[0]) {
-			shm_unlink(shadow->file_shm_buf_name);
+	if (sfd->type == FDC_FILE) {
+		munmap(sfd->file_mem_local, sfd->file_size);
+		free(sfd->mem_mirror);
+		free(sfd->diff_buffer);
+		free(sfd->compress_buffer);
+		if (sfd->file_shm_buf_name[0]) {
+			shm_unlink(sfd->file_shm_buf_name);
 		}
-	} else if (shadow->type == FDC_DMABUF) {
-		destroy_dmabuf(shadow->dmabuf_bo);
-		free(shadow->mem_mirror);
-		free(shadow->diff_buffer);
-		free(shadow->compress_buffer);
+	} else if (sfd->type == FDC_DMABUF) {
+		destroy_dmabuf(sfd->dmabuf_bo);
+		free(sfd->mem_mirror);
+		free(sfd->diff_buffer);
+		free(sfd->compress_buffer);
 
-		sws_freeContext(shadow->video_color_context);
-		av_frame_free(&shadow->video_reg_frame);
-		av_frame_free(&shadow->video_yuv_frame);
-		avcodec_free_context(&shadow->video_context);
-		av_packet_free(&shadow->video_packet);
-		free(shadow->video_buffer);
+		sws_freeContext(sfd->video_color_context);
+		av_frame_free(&sfd->video_reg_frame);
+		av_frame_free(&sfd->video_yuv_frame);
+		avcodec_free_context(&sfd->video_context);
+		av_packet_free(&sfd->video_packet);
+		free(sfd->video_buffer);
 
-	} else if (fdcat_ispipe(shadow->type)) {
-		if (shadow->pipe_fd != shadow->fd_local &&
-				shadow->pipe_fd != -1 &&
-				shadow->pipe_fd != -2) {
-			close(shadow->pipe_fd);
+	} else if (fdcat_ispipe(sfd->type)) {
+		if (sfd->pipe_fd != sfd->fd_local && sfd->pipe_fd != -1 &&
+				sfd->pipe_fd != -2) {
+			close(sfd->pipe_fd);
 		}
-		free(shadow->pipe_recv.data);
-		free(shadow->pipe_send.data);
+		free(sfd->pipe_recv.data);
+		free(sfd->pipe_send.data);
 	}
-	if (shadow->fd_local != -2 && shadow->fd_local != -1) {
-		if (close(shadow->fd_local) == -1) {
+	if (sfd->fd_local != -2 && sfd->fd_local != -1) {
+		if (close(sfd->fd_local) == -1) {
 			wp_log(WP_ERROR, "Incorrect close(%d): %s",
-					shadow->fd_local, strerror(errno));
+					sfd->fd_local, strerror(errno));
 		}
 	}
-	free(shadow);
+	free(sfd);
 	(void)map;
 }
 static void cleanup_threads(struct fd_translation_map *map)
@@ -136,10 +135,10 @@ void cleanup_translation_map(struct fd_translation_map *map)
 	struct shadow_fd *cur = map->list;
 	map->list = NULL;
 	while (cur) {
-		struct shadow_fd *shadow = cur;
-		cur = shadow->next;
-		shadow->next = NULL;
-		destroy_unlinked_sfd(map, shadow);
+		struct shadow_fd *tmp = cur;
+		cur = tmp->next;
+		tmp->next = NULL;
+		destroy_unlinked_sfd(map, tmp);
 	}
 	ZSTD_freeCCtx(map->zstd_ccontext);
 	ZSTD_freeDCtx(map->zstd_dcontext);
@@ -434,80 +433,77 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd,
 		struct dmabuf_slice_data *info)
 {
-	struct shadow_fd *cur = map->list;
-	while (cur) {
-		if (cur->fd_local == fd) {
-			return cur;
-		}
-		cur = cur->next;
+	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
+	if (sfd) {
+		return sfd;
 	}
 
 	// Create a new translation map.
-	struct shadow_fd *shadow = calloc(1, sizeof(struct shadow_fd));
-	shadow->next = map->list;
-	map->list = shadow;
-	shadow->fd_local = fd;
-	shadow->file_mem_local = NULL;
-	shadow->mem_mirror = NULL;
-	shadow->file_size = (size_t)-1;
-	shadow->remote_id = (map->max_local_id++) * map->local_sign;
-	shadow->type = FDC_UNKNOWN;
+	sfd = calloc(1, sizeof(struct shadow_fd));
+	sfd->next = map->list;
+	map->list = sfd;
+	sfd->fd_local = fd;
+	sfd->file_mem_local = NULL;
+	sfd->mem_mirror = NULL;
+	sfd->file_size = (size_t)-1;
+	sfd->remote_id = (map->max_local_id++) * map->local_sign;
+	sfd->type = FDC_UNKNOWN;
 	// File changes must be propagated
-	shadow->is_dirty = true;
-	damage_everything(&shadow->damage);
-	shadow->has_owner = false;
+	sfd->is_dirty = true;
+	damage_everything(&sfd->damage);
+	sfd->has_owner = false;
 	/* Start the number of expected transfers to channel remaining at one,
 	 * and number of protocol objects referencing this shadow_fd at zero.*/
-	shadow->refcount_transfer = 1;
-	shadow->refcount_protocol = 0;
+	sfd->refcount_transfer = 1;
+	sfd->refcount_protocol = 0;
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
 
 	size_t fsize = 0;
-	shadow->type = get_fd_type(fd, &fsize);
-	if (shadow->type == FDC_FILE) {
+	sfd->type = get_fd_type(fd, &fsize);
+	if (sfd->type == FDC_FILE) {
 		// We have a file-like object
-		shadow->file_size = fsize;
+		sfd->file_size = fsize;
 		// both r/w permissions, because the size the allocates the
 		// memory does not always have to be the size that modifies it
-		shadow->file_mem_local = mmap(NULL, shadow->file_size,
+		sfd->file_mem_local = mmap(NULL, sfd->file_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (!shadow->file_mem_local) {
+		if (!sfd->file_mem_local) {
 			wp_log(WP_ERROR, "Mmap failed!");
-			return shadow;
+			return sfd;
 		}
 		// This will be created at the first transfer
-		shadow->mem_mirror = NULL;
-	} else if (fdcat_ispipe(shadow->type)) {
+		sfd->mem_mirror = NULL;
+	} else if (fdcat_ispipe(sfd->type)) {
 		// Make this end of the pipe nonblocking, so that we can include
 		// it in our main loop.
-		set_fnctl_flag(shadow->fd_local, O_NONBLOCK);
-		shadow->pipe_fd = shadow->fd_local;
+		set_fnctl_flag(sfd->fd_local, O_NONBLOCK);
+		sfd->pipe_fd = sfd->fd_local;
 
 		// Allocate a reasonably small read buffer
-		shadow->pipe_recv.size = 16384;
-		shadow->pipe_recv.data = calloc(shadow->pipe_recv.size, 1);
+		sfd->pipe_recv.size = 16384;
+		sfd->pipe_recv.data = calloc(sfd->pipe_recv.size, 1);
 
-		shadow->pipe_onlyhere = true;
-	} else if (shadow->type == FDC_DMABUF) {
-		shadow->dmabuf_size = 0;
+		sfd->pipe_onlyhere = true;
+	} else if (sfd->type == FDC_DMABUF) {
+		sfd->dmabuf_size = 0;
 
 		init_render_data(render);
-		shadow->dmabuf_bo = import_dmabuf(render, shadow->fd_local,
-				&shadow->dmabuf_size, info);
-		if (!shadow->dmabuf_bo) {
-			return shadow;
+		sfd->dmabuf_bo = import_dmabuf(
+				render, sfd->fd_local, &sfd->dmabuf_size, info);
+		if (!sfd->dmabuf_bo) {
+			return sfd;
 		}
 		if (info) {
-			memcpy(&shadow->dmabuf_info, info,
+			memcpy(&sfd->dmabuf_info, info,
 					sizeof(struct dmabuf_slice_data));
 		} else {
 			// already zero initialized (no information).
 		}
 		// to be created on first transfer
-		shadow->mem_mirror = NULL;
-		shadow->diff_buffer = NULL;
-		shadow->type = FDC_DMABUF;
+		sfd->mem_mirror = NULL;
+		sfd->diff_buffer = NULL;
+		sfd->type = FDC_DMABUF;
 
 		if (info && info->using_video) {
 			// Try to set up a video encoding and a video decoding
@@ -606,15 +602,15 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 						"Could not create software color conversion context");
 			}
 
-			shadow->video_codec = codec;
-			shadow->video_yuv_frame = yuv_frame;
-			shadow->video_reg_frame = frame;
-			shadow->video_packet = pkt;
-			shadow->video_context = ctx;
-			shadow->video_color_context = sws;
+			sfd->video_codec = codec;
+			sfd->video_yuv_frame = yuv_frame;
+			sfd->video_reg_frame = frame;
+			sfd->video_packet = pkt;
+			sfd->video_context = ctx;
+			sfd->video_color_context = sws;
 		}
 	}
-	return shadow;
+	return sfd;
 }
 
 #define DIFF_WINDOW_SIZE 4
@@ -781,151 +777,151 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 	}
 }
 
-void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
+void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		int *ntransfers, struct transfer transfers[])
 {
-	if (cur->type == FDC_FILE) {
-		if (!cur->is_dirty) {
+	if (sfd->type == FDC_FILE) {
+		if (!sfd->is_dirty) {
 			// File is clean, we have no reason to believe
 			// that its contents could have changed
 			return;
 		}
 		// Clear dirty state
-		cur->is_dirty = false;
-		if (!cur->mem_mirror) {
-			reset_damage(&cur->damage);
+		sfd->is_dirty = false;
+		if (!sfd->mem_mirror) {
+			reset_damage(&sfd->damage);
 
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
-			cur->mem_mirror = calloc(align(cur->file_size, 8), 1);
+			sfd->mem_mirror = calloc(align(sfd->file_size, 8), 1);
 			// 8 extra bytes for worst case diff expansion
-			cur->diff_buffer =
-					calloc(align(cur->file_size + 8, 8), 1);
-			memcpy(cur->mem_mirror, cur->file_mem_local,
-					cur->file_size);
-			cur->compress_space = compress_bufsize(
-					map, align(cur->file_size + 8, 8));
-			cur->compress_buffer = calloc(cur->compress_space, 1);
+			sfd->diff_buffer =
+					calloc(align(sfd->file_size + 8, 8), 1);
+			memcpy(sfd->mem_mirror, sfd->file_mem_local,
+					sfd->file_size);
+			sfd->compress_space = compress_bufsize(
+					map, align(sfd->file_size + 8, 8));
+			sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
 			// new transfer, we send file contents verbatim
 			int nt = (*ntransfers)++;
-			compress_buffer(map, cur->file_size, cur->mem_mirror,
-					cur->compress_space,
-					cur->compress_buffer,
+			compress_buffer(map, sfd->file_size, sfd->mem_mirror,
+					sfd->compress_space,
+					sfd->compress_buffer,
 					&transfers[nt].size,
 					&transfers[nt].data);
-			transfers[nt].type = cur->type;
-			transfers[nt].obj_id = cur->remote_id;
-			transfers[nt].special.file_actual_size = cur->file_size;
+			transfers[nt].type = sfd->type;
+			transfers[nt].obj_id = sfd->remote_id;
+			transfers[nt].special.file_actual_size = sfd->file_size;
 		}
 
 		int intv_min, intv_max;
-		get_damage_interval(&cur->damage, &intv_min, &intv_max);
-		intv_min = clamp(intv_min, 0, (int)cur->file_size);
-		intv_max = clamp(intv_max, 0, (int)cur->file_size);
+		get_damage_interval(&sfd->damage, &intv_min, &intv_max);
+		intv_min = clamp(intv_min, 0, (int)sfd->file_size);
+		intv_max = clamp(intv_max, 0, (int)sfd->file_size);
 		if (intv_min >= intv_max) {
-			reset_damage(&cur->damage);
+			reset_damage(&sfd->damage);
 			return;
 		}
 		// todo: make the 'memcmp' fine grained, depending on damage
 		// complexity
-		bool delta = memcmp(cur->file_mem_local + intv_min,
-					     (cur->mem_mirror + intv_min),
+		bool delta = memcmp(sfd->file_mem_local + intv_min,
+					     (sfd->mem_mirror + intv_min),
 					     (size_t)(intv_max - intv_min)) !=
 			     0;
 		if (!delta) {
-			reset_damage(&cur->damage);
+			reset_damage(&sfd->damage);
 			return;
 		}
-		if (!cur->diff_buffer) {
+		if (!sfd->diff_buffer) {
 			/* Create diff buffer by need for remote files
 			 */
-			cur->diff_buffer = calloc(cur->file_size + 8, 1);
+			sfd->diff_buffer = calloc(sfd->file_size + 8, 1);
 		}
 
 		size_t diffsize;
 		wp_log(WP_DEBUG, "Diff construction start");
-		construct_diff(cur->file_size, &cur->damage, cur->mem_mirror,
-				cur->file_mem_local, &diffsize,
-				cur->diff_buffer);
-		reset_damage(&cur->damage);
+		construct_diff(sfd->file_size, &sfd->damage, sfd->mem_mirror,
+				sfd->file_mem_local, &diffsize,
+				sfd->diff_buffer);
+		reset_damage(&sfd->damage);
 		wp_log(WP_DEBUG, "Diff construction end: %ld/%ld", diffsize,
-				cur->file_size);
+				sfd->file_size);
 		if (diffsize > 0) {
 			int nt = (*ntransfers)++;
-			transfers[nt].obj_id = cur->remote_id;
-			compress_buffer(map, diffsize, cur->diff_buffer,
-					cur->compress_space,
-					cur->compress_buffer,
+			transfers[nt].obj_id = sfd->remote_id;
+			compress_buffer(map, diffsize, sfd->diff_buffer,
+					sfd->compress_space,
+					sfd->compress_buffer,
 					&transfers[nt].size,
 					&transfers[nt].data);
-			transfers[nt].type = cur->type;
+			transfers[nt].type = sfd->type;
 			transfers[nt].special.file_actual_size = (int)diffsize;
 		}
-	} else if (cur->type == FDC_DMABUF) {
+	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
-		if (!cur->is_dirty) {
+		if (!sfd->is_dirty) {
 			return;
 		}
-		cur->is_dirty = false;
+		sfd->is_dirty = false;
 
 		bool first = false;
-		if (!cur->mem_mirror && !cur->dmabuf_info.using_video) {
-			cur->mem_mirror = calloc(1, cur->dmabuf_size);
+		if (!sfd->mem_mirror && !sfd->dmabuf_info.using_video) {
+			sfd->mem_mirror = calloc(1, sfd->dmabuf_size);
 			// 8 extra bytes for diff messages, or
 			// alternatively for type header info
 			size_t diffb_size =
 					(size_t)max(sizeof(struct dmabuf_slice_data),
 							8) +
-					(size_t)align((int)cur->dmabuf_size, 8);
-			cur->diff_buffer = calloc(diffb_size, 1);
-			cur->compress_space = compress_bufsize(map, diffb_size);
-			cur->compress_buffer =
-					cur->compress_space
-							? calloc(cur->compress_space,
+					(size_t)align((int)sfd->dmabuf_size, 8);
+			sfd->diff_buffer = calloc(diffb_size, 1);
+			sfd->compress_space = compress_bufsize(map, diffb_size);
+			sfd->compress_buffer =
+					sfd->compress_space
+							? calloc(sfd->compress_space,
 									  1)
 							: NULL;
 			first = true;
-		} else if (!cur->mem_mirror && cur->dmabuf_info.using_video) {
+		} else if (!sfd->mem_mirror && sfd->dmabuf_info.using_video) {
 			// required extra tail space, 16 bytes (?)
-			cur->mem_mirror = calloc(1, cur->dmabuf_size + 16);
+			sfd->mem_mirror = calloc(1, sfd->dmabuf_size + 16);
 			first = true;
 		}
 		void *handle = NULL;
-		if (!cur->dmabuf_bo) {
+		if (!sfd->dmabuf_bo) {
 			// ^ was not previously able to create buffer
 			return;
 		}
-		void *data = map_dmabuf(cur->dmabuf_bo, false, &handle);
+		void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle);
 		if (!data) {
 			return;
 		}
-		if (cur->dmabuf_info.using_video && cur->video_context &&
-				cur->video_reg_frame && cur->video_packet) {
-			memcpy(cur->mem_mirror, data, cur->dmabuf_size);
-			cur->video_reg_frame->data[0] =
-					(uint8_t *)cur->mem_mirror;
+		if (sfd->dmabuf_info.using_video && sfd->video_context &&
+				sfd->video_reg_frame && sfd->video_packet) {
+			memcpy(sfd->mem_mirror, data, sfd->dmabuf_size);
+			sfd->video_reg_frame->data[0] =
+					(uint8_t *)sfd->mem_mirror;
 			for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-				cur->video_reg_frame->data[i] = NULL;
+				sfd->video_reg_frame->data[i] = NULL;
 			}
 
-			av_frame_make_writable(cur->video_yuv_frame);
-			if (sws_scale(cur->video_color_context,
-					    (const uint8_t *const *)cur
+			av_frame_make_writable(sfd->video_yuv_frame);
+			if (sws_scale(sfd->video_color_context,
+					    (const uint8_t *const *)sfd
 							    ->video_reg_frame
 							    ->data,
-					    cur->video_reg_frame->linesize, 0,
-					    cur->video_reg_frame->height,
-					    cur->video_yuv_frame->data,
-					    cur->video_yuv_frame->linesize) <
+					    sfd->video_reg_frame->linesize, 0,
+					    sfd->video_reg_frame->height,
+					    sfd->video_yuv_frame->data,
+					    sfd->video_yuv_frame->linesize) <
 					0) {
 				wp_log(WP_ERROR,
 						"Failed to perform color conversion");
 			}
 
-			cur->video_yuv_frame->pts = cur->video_frameno++;
-			int sendstat = avcodec_send_frame(cur->video_context,
-					cur->video_yuv_frame);
+			sfd->video_yuv_frame->pts = sfd->video_frameno++;
+			int sendstat = avcodec_send_frame(sfd->video_context,
+					sfd->video_yuv_frame);
 			char errbuf[256];
 			strcpy(errbuf, "Unknown error");
 			if (sendstat < 0) {
@@ -936,7 +932,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 			}
 			// assume 1-1 frames to packets, at the moment
 			int recvstat = avcodec_receive_packet(
-					cur->video_context, cur->video_packet);
+					sfd->video_context, sfd->video_packet);
 			if (recvstat == AVERROR(EINVAL)) {
 				wp_log(WP_ERROR, "Failed to receive packet");
 				return;
@@ -948,55 +944,55 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 			if (recvstat == 0) {
 				// we can unref the packet when? after sending?
 				// on the next arrival?
-				struct AVPacket *pkt = cur->video_packet;
+				struct AVPacket *pkt = sfd->video_packet;
 
 				int nt = (*ntransfers)++;
 				if (first) {
 					// For the first frame, we must prepend
 					// the video slice data
-					free(cur->video_buffer);
-					cur->video_buffer = calloc(
+					free(sfd->video_buffer);
+					sfd->video_buffer = calloc(
 							pkt->buf->size +
 									sizeof(struct dmabuf_slice_data),
 							1);
-					memcpy(cur->video_buffer,
-							&cur->dmabuf_info,
+					memcpy(sfd->video_buffer,
+							&sfd->dmabuf_info,
 							sizeof(struct dmabuf_slice_data));
-					memcpy(cur->video_buffer + sizeof(struct dmabuf_slice_data),
+					memcpy(sfd->video_buffer + sizeof(struct dmabuf_slice_data),
 							pkt->buf->data,
 							pkt->buf->size);
-					transfers[nt].data = cur->video_buffer;
+					transfers[nt].data = sfd->video_buffer;
 					transfers[nt].size =
 							pkt->size +
 							sizeof(struct dmabuf_slice_data);
 				} else {
-					free(cur->video_buffer);
+					free(sfd->video_buffer);
 					size_t sz = pkt->buf->size;
-					cur->video_buffer =
+					sfd->video_buffer =
 							malloc(align(sz, 8));
-					memcpy(cur->video_buffer,
+					memcpy(sfd->video_buffer,
 							pkt->buf->data, sz);
-					transfers[nt].data = cur->video_buffer;
+					transfers[nt].data = sfd->video_buffer;
 					transfers[nt].size = sz;
 				}
 				av_packet_unref(pkt);
 
-				transfers[nt].type = cur->type;
-				transfers[nt].obj_id = cur->remote_id;
+				transfers[nt].type = sfd->type;
+				transfers[nt].obj_id = sfd->remote_id;
 				transfers[nt].special.file_actual_size =
-						cur->dmabuf_size;
+						sfd->dmabuf_size;
 			} else if (first) {
 				int nt = (*ntransfers)++;
 				transfers[nt].data =
-						(const char *)&cur->dmabuf_info;
+						(const char *)&sfd->dmabuf_info;
 				transfers[nt].size = sizeof(
 						struct dmabuf_slice_data);
-				transfers[nt].type = cur->type;
+				transfers[nt].type = sfd->type;
 				// Q: use a type 'FDC_VIDEODMABUF ?' -- but
 				// transport could also work for shm
-				transfers[nt].obj_id = cur->remote_id;
+				transfers[nt].obj_id = sfd->remote_id;
 				transfers[nt].special.file_actual_size =
-						cur->dmabuf_size;
+						sfd->dmabuf_size;
 			}
 			return;
 		}
@@ -1004,32 +1000,32 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 		if (first) {
 			// Write diff with a header, and build mirror,
 			// only touching data once
-			memcpy(cur->mem_mirror, data, cur->dmabuf_size);
+			memcpy(sfd->mem_mirror, data, sfd->dmabuf_size);
 
 			const char *datavec = NULL;
 			size_t compdata_size = 0;
-			compress_buffer(map, cur->dmabuf_size, cur->mem_mirror,
-					cur->compress_space -
+			compress_buffer(map, sfd->dmabuf_size, sfd->mem_mirror,
+					sfd->compress_space -
 							sizeof(struct dmabuf_slice_data),
-					cur->compress_buffer +
+					sfd->compress_buffer +
 							sizeof(struct dmabuf_slice_data),
 					&compdata_size, &datavec);
 
-			memcpy(cur->diff_buffer, &cur->dmabuf_info,
+			memcpy(sfd->diff_buffer, &sfd->dmabuf_info,
 					sizeof(struct dmabuf_slice_data));
-			memcpy(cur->diff_buffer + sizeof(struct dmabuf_slice_data),
+			memcpy(sfd->diff_buffer + sizeof(struct dmabuf_slice_data),
 					datavec, compdata_size);
 			// new transfer, we send file contents verbatim
 
 			wp_log(WP_DEBUG, "Sending initial dmabuf");
 			int nt = (*ntransfers)++;
-			transfers[nt].data = cur->diff_buffer;
+			transfers[nt].data = sfd->diff_buffer;
 			transfers[nt].size = sizeof(struct dmabuf_slice_data) +
 					     compdata_size;
-			transfers[nt].type = cur->type;
-			transfers[nt].obj_id = cur->remote_id;
+			transfers[nt].type = sfd->type;
+			transfers[nt].obj_id = sfd->remote_id;
 			transfers[nt].special.file_actual_size =
-					cur->dmabuf_size;
+					sfd->dmabuf_size;
 		} else {
 			// Depending on the buffer format, doing a memcpy first
 			// can be significantly faster.
@@ -1037,13 +1033,13 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 			char *tmp = data;
 
 			bool delta = memcmp(
-					cur->mem_mirror, tmp, cur->dmabuf_size);
+					sfd->mem_mirror, tmp, sfd->dmabuf_size);
 			if (delta) {
-				if (!cur->diff_buffer) {
+				if (!sfd->diff_buffer) {
 					// This can happen in reverse-transport
 					// scenarios
-					cur->diff_buffer = calloc(
-							align(cur->dmabuf_size,
+					sfd->diff_buffer = calloc(
+							align(sfd->dmabuf_size,
 									8),
 							1);
 				}
@@ -1054,58 +1050,58 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
 				struct damage everything = {
 						.damage = DAMAGE_EVERYTHING,
 						.ndamage_rects = 0};
-				construct_diff(cur->dmabuf_size, &everything,
-						cur->mem_mirror, tmp, &diffsize,
-						cur->diff_buffer);
+				construct_diff(sfd->dmabuf_size, &everything,
+						sfd->mem_mirror, tmp, &diffsize,
+						sfd->diff_buffer);
 				wp_log(WP_DEBUG,
 						"Diff construction end: %ld/%ld",
-						diffsize, cur->dmabuf_size);
+						diffsize, sfd->dmabuf_size);
 
 				int nt = (*ntransfers)++;
-				transfers[nt].data = cur->diff_buffer;
-				compress_buffer(map, diffsize, cur->diff_buffer,
-						cur->compress_space,
-						cur->compress_buffer,
+				transfers[nt].data = sfd->diff_buffer;
+				compress_buffer(map, diffsize, sfd->diff_buffer,
+						sfd->compress_space,
+						sfd->compress_buffer,
 						&transfers[nt].size,
 						&transfers[nt].data);
-				transfers[nt].obj_id = cur->remote_id;
-				transfers[nt].type = cur->type;
+				transfers[nt].obj_id = sfd->remote_id;
+				transfers[nt].type = sfd->type;
 				transfers[nt].special.file_actual_size =
 						diffsize;
 			}
 		}
-		if (unmap_dmabuf(cur->dmabuf_bo, handle) == -1) {
+		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 			// there was an issue unmapping; unmap_dmabuf
 			// will log error
 			return;
 		}
-	} else if (fdcat_ispipe(cur->type)) {
+	} else if (fdcat_ispipe(sfd->type)) {
 		// Pipes always update, no matter what the message
-		// stream indicates. Hence no cur->is_dirty flag check
-		if (cur->pipe_recv.used > 0 || cur->pipe_onlyhere ||
-				(cur->pipe_lclosed && !cur->pipe_rclosed)) {
-			cur->pipe_onlyhere = false;
+		// stream indicates. Hence no sfd->is_dirty flag check
+		if (sfd->pipe_recv.used > 0 || sfd->pipe_onlyhere ||
+				(sfd->pipe_lclosed && !sfd->pipe_rclosed)) {
+			sfd->pipe_onlyhere = false;
 			wp_log(WP_DEBUG,
 					"Adding update to pipe RID=%d, with %ld bytes, close %c",
-					cur->remote_id, cur->pipe_recv.used,
-					(cur->pipe_lclosed &&
-							!cur->pipe_rclosed)
+					sfd->remote_id, sfd->pipe_recv.used,
+					(sfd->pipe_lclosed &&
+							!sfd->pipe_rclosed)
 							? 'Y'
 							: 'n');
 			int nt = (*ntransfers)++;
-			transfers[nt].data = cur->pipe_recv.data;
-			transfers[nt].size = cur->pipe_recv.used;
-			transfers[nt].type = cur->type;
-			transfers[nt].obj_id = cur->remote_id;
+			transfers[nt].data = sfd->pipe_recv.data;
+			transfers[nt].size = sfd->pipe_recv.used;
+			transfers[nt].type = sfd->type;
+			transfers[nt].obj_id = sfd->remote_id;
 			transfers[nt].special.pipeclose = 0;
-			if (cur->pipe_lclosed && !cur->pipe_rclosed) {
+			if (sfd->pipe_lclosed && !sfd->pipe_rclosed) {
 				transfers[nt].special.pipeclose = 1;
-				cur->pipe_rclosed = true;
-				close(cur->pipe_fd);
-				cur->pipe_fd = -2;
+				sfd->pipe_rclosed = true;
+				close(sfd->pipe_fd);
+				sfd->pipe_fd = -2;
 			}
 			// clear
-			cur->pipe_recv.used = 0;
+			sfd->pipe_recv.used = 0;
 		}
 	}
 }
@@ -1166,195 +1162,70 @@ static void apply_video_packet_to_mirror(
 	}
 }
 
-void apply_update(struct fd_translation_map *map, struct render_data *render,
-		const struct transfer *transf)
+void create_from_update(struct fd_translation_map *map,
+		struct render_data *render, const struct transfer *transf)
 {
-	struct shadow_fd *cur = get_shadow_for_rid(map, transf->obj_id);
-	if (cur) {
-		if (cur->type == FDC_FILE) {
-			if (transf->type != cur->type) {
-				wp_log(WP_ERROR, "Transfer type mismatch %d %d",
-						transf->type, cur->type);
-			}
-			const char *act_buffer = NULL;
-			size_t act_size = 0;
-			uncompress_buffer(map, transf->size, transf->data,
-					transf->special.file_actual_size,
-					cur->compress_buffer, &act_size,
-					&act_buffer);
-
-			// `memsize+8` is the worst-case diff expansion
-			if (act_size > cur->file_size + 8) {
-				wp_log(WP_ERROR,
-						"Transfer size mismatch %ld %ld",
-						act_size, cur->file_size);
-			}
-			apply_diff(cur->file_size, cur->mem_mirror, act_size,
-					act_buffer);
-			apply_diff(cur->file_size, cur->file_mem_local,
-					act_size, act_buffer);
-		} else if (fdcat_ispipe(cur->type)) {
-			bool rw_match = cur->type == FDC_PIPE_RW &&
-					transf->type == FDC_PIPE_RW;
-			bool iw_match = cur->type == FDC_PIPE_IW &&
-					transf->type == FDC_PIPE_IR;
-			bool ir_match = cur->type == FDC_PIPE_IR &&
-					transf->type == FDC_PIPE_IW;
-			if (!rw_match && !iw_match && !ir_match) {
-				wp_log(WP_ERROR,
-						"Transfer type contramismatch %d %d",
-						transf->type, cur->type);
-			}
-
-			ssize_t netsize = cur->pipe_send.used +
-					  (ssize_t)transf->size;
-			if (cur->pipe_send.size <= 1024) {
-				cur->pipe_send.size = 1024;
-			}
-			while (cur->pipe_send.size < netsize) {
-				cur->pipe_send.size *= 2;
-			}
-			if (cur->pipe_send.data) {
-				cur->pipe_send.data = realloc(
-						cur->pipe_send.data,
-						cur->pipe_send.size);
-			} else {
-				cur->pipe_send.data =
-						calloc(cur->pipe_send.size, 1);
-			}
-			memcpy(cur->pipe_send.data + cur->pipe_send.used,
-					transf->data, transf->size);
-			cur->pipe_send.used += (ssize_t)transf->size;
-
-			// The pipe itself will be flushed/or closed later by
-			// flush_writable_pipes
-			cur->pipe_writable = true;
-
-			if (transf->special.pipeclose) {
-				cur->pipe_rclosed = true;
-			}
-		} else if (cur->type == FDC_DMABUF) {
-			if (!cur->dmabuf_bo) {
-				wp_log(WP_ERROR,
-						"Applying update to nonexistent dma buffer object rid=%d",
-						cur->remote_id);
-				return;
-			}
-
-			if (cur->dmabuf_info.using_video) {
-				apply_video_packet_to_mirror(cur, transf->size,
-						transf->data);
-
-				// this frame is applied via memcpy
-
-				void *handle = NULL;
-				void *data = map_dmabuf(
-						cur->dmabuf_bo, true, &handle);
-				if (!data) {
-					return;
-				}
-				memcpy(data, cur->mem_mirror, cur->dmabuf_size);
-				if (unmap_dmabuf(cur->dmabuf_bo, handle) ==
-						-1) {
-					// there was an issue unmapping;
-					// unmap_dmabuf will log error
-					return;
-				}
-
-			} else {
-
-				const char *act_buffer = NULL;
-				size_t act_size = 0;
-				uncompress_buffer(map, transf->size,
-						transf->data,
-						transf->special.file_actual_size,
-						cur->compress_buffer, &act_size,
-						&act_buffer);
-
-				wp_log(WP_DEBUG, "Applying dmabuf damage");
-				apply_diff(cur->dmabuf_size, cur->mem_mirror,
-						act_size, act_buffer);
-				void *handle = NULL;
-				void *data = map_dmabuf(
-						cur->dmabuf_bo, true, &handle);
-				if (!data) {
-					return;
-				}
-				apply_diff(cur->dmabuf_size, data, act_size,
-						act_buffer);
-				if (unmap_dmabuf(cur->dmabuf_bo, handle) ==
-						-1) {
-					// there was an issue unmapping;
-					// unmap_dmabuf will log error
-					return;
-				}
-			}
-		}
-		return;
-	}
 
 	wp_log(WP_DEBUG, "Introducing new fd, remoteid=%d", transf->obj_id);
-	struct shadow_fd *shadow = calloc(1, sizeof(struct shadow_fd));
-	shadow->next = map->list;
-	map->list = shadow;
-	shadow->remote_id = transf->obj_id;
-	shadow->fd_local = -1;
-	shadow->type = transf->type;
-	shadow->is_dirty = false;
-	reset_damage(&shadow->damage);
+	struct shadow_fd *sfd = calloc(1, sizeof(struct shadow_fd));
+	sfd->next = map->list;
+	map->list = sfd;
+	sfd->remote_id = transf->obj_id;
+	sfd->fd_local = -1;
+	sfd->type = transf->type;
+	sfd->is_dirty = false;
+	reset_damage(&sfd->damage);
 	/* Start the object reference at one, so that, if it is owned by
 	 * some known protocol object, it can not be deleted until the fd
 	 * has at least be transferred over the Wayland connection */
-	shadow->refcount_transfer = 1;
-	shadow->refcount_protocol = 0;
-	if (shadow->type == FDC_FILE) {
-		shadow->file_mem_local = NULL;
-		shadow->file_size = transf->special.file_actual_size;
-		shadow->mem_mirror = calloc(
-				(size_t)align((int)shadow->file_size, 8), 1);
+	sfd->refcount_transfer = 1;
+	sfd->refcount_protocol = 0;
+	if (sfd->type == FDC_FILE) {
+		sfd->file_mem_local = NULL;
+		sfd->file_size = transf->special.file_actual_size;
+		sfd->mem_mirror = calloc(
+				(size_t)align((int)sfd->file_size, 8), 1);
 
-		shadow->compress_space = compress_bufsize(
-				map, align((int)shadow->file_size, 8) + 8);
-		shadow->compress_buffer =
-				shadow->compress_space
-						? calloc(shadow->compress_space,
-								  1)
+		sfd->compress_space = compress_bufsize(
+				map, align((int)sfd->file_size, 8) + 8);
+		sfd->compress_buffer =
+				sfd->compress_space
+						? calloc(sfd->compress_space, 1)
 						: NULL;
 
 		size_t act_size = 0;
 		const char *act_buffer = NULL;
 		uncompress_buffer(map, transf->size, transf->data,
-				shadow->file_size, shadow->compress_buffer,
-				&act_size, &act_buffer);
+				sfd->file_size, sfd->compress_buffer, &act_size,
+				&act_buffer);
 
 		// The first time only, the transfer data is a direct copy of
 		// the source
-		memcpy(shadow->mem_mirror, act_buffer, act_size);
+		memcpy(sfd->mem_mirror, act_buffer, act_size);
 		// The PID should be unique during the lifetime of the program
-		sprintf(shadow->file_shm_buf_name, "/waypipe%d-data_%d",
-				getpid(), shadow->remote_id);
+		sprintf(sfd->file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
+				sfd->remote_id);
 
-		shadow->fd_local = shm_open(shadow->file_shm_buf_name,
+		sfd->fd_local = shm_open(sfd->file_shm_buf_name,
 				O_RDWR | O_CREAT | O_TRUNC, 0644);
-		if (shadow->fd_local == -1) {
+		if (sfd->fd_local == -1) {
 			wp_log(WP_ERROR,
 					"Failed to create shm file for object %d: %s",
-					shadow->remote_id, strerror(errno));
+					sfd->remote_id, strerror(errno));
 			return;
 		}
-		if (ftruncate(shadow->fd_local, shadow->file_size) == -1) {
+		if (ftruncate(sfd->fd_local, sfd->file_size) == -1) {
 			wp_log(WP_ERROR,
 					"Failed to resize shm file %s to size %ld for reason: %s",
-					shadow->file_shm_buf_name,
-					shadow->file_size, strerror(errno));
+					sfd->file_shm_buf_name, sfd->file_size,
+					strerror(errno));
 			return;
 		}
-		shadow->file_mem_local = mmap(NULL, shadow->file_size,
+		sfd->file_mem_local = mmap(NULL, sfd->file_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED,
-				shadow->fd_local, 0);
-		memcpy(shadow->file_mem_local, shadow->mem_mirror,
-				shadow->file_size);
-	} else if (fdcat_ispipe(shadow->type)) {
+				sfd->fd_local, 0);
+		memcpy(sfd->file_mem_local, sfd->mem_mirror, sfd->file_size);
+	} else if (fdcat_ispipe(sfd->type)) {
 		int pipedes[2];
 		if (transf->type == FDC_PIPE_RW) {
 			if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipedes) ==
@@ -1376,22 +1247,22 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		 * write from pipe_fd if it exists. */
 		if (transf->type == FDC_PIPE_IW) {
 			// Read end is 0; the other process writes
-			shadow->fd_local = pipedes[1];
-			shadow->pipe_fd = pipedes[0];
-			shadow->type = FDC_PIPE_IR;
+			sfd->fd_local = pipedes[1];
+			sfd->pipe_fd = pipedes[0];
+			sfd->type = FDC_PIPE_IR;
 		} else if (transf->type == FDC_PIPE_IR) {
 			// Write end is 1; the other process reads
-			shadow->fd_local = pipedes[0];
-			shadow->pipe_fd = pipedes[1];
-			shadow->type = FDC_PIPE_IW;
+			sfd->fd_local = pipedes[0];
+			sfd->pipe_fd = pipedes[1];
+			sfd->type = FDC_PIPE_IW;
 		} else { // FDC_PIPE_RW
 			// Here, it doesn't matter which end is which
-			shadow->fd_local = pipedes[0];
-			shadow->pipe_fd = pipedes[1];
-			shadow->type = FDC_PIPE_RW;
+			sfd->fd_local = pipedes[0];
+			sfd->pipe_fd = pipedes[1];
+			sfd->type = FDC_PIPE_RW;
 		}
 
-		if (set_fnctl_flag(shadow->pipe_fd, O_NONBLOCK) == -1) {
+		if (set_fnctl_flag(sfd->pipe_fd, O_NONBLOCK) == -1) {
 			wp_log(WP_ERROR,
 					"Failed to make private pipe end nonblocking: %s",
 					strerror(errno));
@@ -1399,20 +1270,19 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		}
 
 		// Allocate a reasonably small read buffer
-		shadow->pipe_recv.size = 16384;
-		shadow->pipe_recv.data = calloc(shadow->pipe_recv.size, 1);
-		shadow->pipe_onlyhere = false;
-	} else if (shadow->type == FDC_DMABUF) {
-		shadow->dmabuf_size = transf->special.file_actual_size;
-		shadow->compress_space =
-				compress_bufsize(map, shadow->dmabuf_size);
-		shadow->compress_buffer = calloc(shadow->compress_space, 1);
-		shadow->mem_mirror = calloc(shadow->dmabuf_size, 1);
+		sfd->pipe_recv.size = 16384;
+		sfd->pipe_recv.data = calloc(sfd->pipe_recv.size, 1);
+		sfd->pipe_onlyhere = false;
+	} else if (sfd->type == FDC_DMABUF) {
+		sfd->dmabuf_size = transf->special.file_actual_size;
+		sfd->compress_space = compress_bufsize(map, sfd->dmabuf_size);
+		sfd->compress_buffer = calloc(sfd->compress_space, 1);
+		sfd->mem_mirror = calloc(sfd->dmabuf_size, 1);
 
 		struct dmabuf_slice_data *info =
 				(struct dmabuf_slice_data *)transf->data;
 		const char *contents = NULL;
-		size_t contents_size = shadow->dmabuf_size;
+		size_t contents_size = sfd->dmabuf_size;
 		if (info->using_video) {
 			struct AVCodec *codec =
 					avcodec_find_decoder(AV_CODEC_ID_H264);
@@ -1468,23 +1338,22 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			yuv_frame->height = ctx->height;
 			yuv_frame->format = AV_PIX_FMT_YUV420P;
 
-			shadow->video_codec = codec;
-			shadow->video_reg_frame = frame;
-			shadow->video_yuv_frame = yuv_frame;
-			shadow->video_packet = pkt;
-			shadow->video_context = ctx;
-			shadow->video_color_context = sws;
+			sfd->video_codec = codec;
+			sfd->video_reg_frame = frame;
+			sfd->video_yuv_frame = yuv_frame;
+			sfd->video_packet = pkt;
+			sfd->video_context = ctx;
+			sfd->video_color_context = sws;
 
 			// Apply first frame, if available
 			if (transf->size > sizeof(struct dmabuf_slice_data)) {
-				apply_video_packet_to_mirror(shadow,
+				apply_video_packet_to_mirror(sfd,
 						transf->size - sizeof(struct dmabuf_slice_data),
 						transf->data + sizeof(struct dmabuf_slice_data));
 			} else {
-				memset(shadow->mem_mirror, 213,
-						shadow->dmabuf_size);
+				memset(sfd->mem_mirror, 213, sfd->dmabuf_size);
 			}
-			contents = shadow->mem_mirror;
+			contents = sfd->mem_mirror;
 
 		} else {
 			const char *compressed_contents =
@@ -1494,13 +1363,11 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			size_t szcheck = 0;
 			uncompress_buffer(map,
 					transf->size - sizeof(struct dmabuf_slice_data),
-					compressed_contents,
-					shadow->dmabuf_size,
-					shadow->compress_buffer, &szcheck,
+					compressed_contents, sfd->dmabuf_size,
+					sfd->compress_buffer, &szcheck,
 					&contents);
 
-			memcpy(shadow->mem_mirror, contents,
-					shadow->dmabuf_size);
+			memcpy(sfd->mem_mirror, contents, sfd->dmabuf_size);
 		}
 
 		wp_log(WP_DEBUG, "Creating remote DMAbuf of %d bytes",
@@ -1509,21 +1376,139 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		// The file can only actually be created when we know what type
 		// it is?
 		if (init_render_data(render) == 1) {
-			shadow->fd_local = -1;
+			sfd->fd_local = -1;
 			return;
 		}
 
-		shadow->dmabuf_bo = make_dmabuf(
+		sfd->dmabuf_bo = make_dmabuf(
 				render, contents, contents_size, info);
-		if (!shadow->dmabuf_bo) {
-			shadow->fd_local = -1;
+		if (!sfd->dmabuf_bo) {
+			sfd->fd_local = -1;
 			return;
 		}
-		memcpy(&shadow->dmabuf_info, info,
+		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
-		shadow->fd_local = export_dmabuf(shadow->dmabuf_bo);
+		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 	} else {
 		wp_log(WP_ERROR, "Creating unknown file type updates");
+	}
+}
+
+void apply_update(struct fd_translation_map *map, struct render_data *render,
+		const struct transfer *transf)
+{
+	struct shadow_fd *sfd = get_shadow_for_rid(map, transf->obj_id);
+	if (!sfd) {
+		create_from_update(map, render, transf);
+		return;
+	}
+	if (sfd->type == FDC_FILE) {
+		if (transf->type != sfd->type) {
+			wp_log(WP_ERROR, "Transfer type mismatch %d %d",
+					transf->type, sfd->type);
+		}
+		const char *act_buffer = NULL;
+		size_t act_size = 0;
+		uncompress_buffer(map, transf->size, transf->data,
+				transf->special.file_actual_size,
+				sfd->compress_buffer, &act_size, &act_buffer);
+
+		// `memsize+8` is the worst-case diff expansion
+		if (act_size > sfd->file_size + 8) {
+			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld",
+					act_size, sfd->file_size);
+		}
+		apply_diff(sfd->file_size, sfd->mem_mirror, act_size,
+				act_buffer);
+		apply_diff(sfd->file_size, sfd->file_mem_local, act_size,
+				act_buffer);
+	} else if (fdcat_ispipe(sfd->type)) {
+		bool rw_match = sfd->type == FDC_PIPE_RW &&
+				transf->type == FDC_PIPE_RW;
+		bool iw_match = sfd->type == FDC_PIPE_IW &&
+				transf->type == FDC_PIPE_IR;
+		bool ir_match = sfd->type == FDC_PIPE_IR &&
+				transf->type == FDC_PIPE_IW;
+		if (!rw_match && !iw_match && !ir_match) {
+			wp_log(WP_ERROR, "Transfer type contramismatch %d %d",
+					transf->type, sfd->type);
+		}
+
+		ssize_t netsize = sfd->pipe_send.used + (ssize_t)transf->size;
+		if (sfd->pipe_send.size <= 1024) {
+			sfd->pipe_send.size = 1024;
+		}
+		while (sfd->pipe_send.size < netsize) {
+			sfd->pipe_send.size *= 2;
+		}
+		if (sfd->pipe_send.data) {
+			sfd->pipe_send.data = realloc(sfd->pipe_send.data,
+					sfd->pipe_send.size);
+		} else {
+			sfd->pipe_send.data = calloc(sfd->pipe_send.size, 1);
+		}
+		memcpy(sfd->pipe_send.data + sfd->pipe_send.used, transf->data,
+				transf->size);
+		sfd->pipe_send.used += (ssize_t)transf->size;
+
+		// The pipe itself will be flushed/or closed later by
+		// flush_writable_pipes
+		sfd->pipe_writable = true;
+
+		if (transf->special.pipeclose) {
+			sfd->pipe_rclosed = true;
+		}
+	} else if (sfd->type == FDC_DMABUF) {
+		if (!sfd->dmabuf_bo) {
+			wp_log(WP_ERROR,
+					"Applying update to nonexistent dma buffer object rid=%d",
+					sfd->remote_id);
+			return;
+		}
+
+		if (sfd->dmabuf_info.using_video) {
+			apply_video_packet_to_mirror(
+					sfd, transf->size, transf->data);
+
+			// this frame is applied via memcpy
+
+			void *handle = NULL;
+			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
+			if (!data) {
+				return;
+			}
+			memcpy(data, sfd->mem_mirror, sfd->dmabuf_size);
+			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
+				// there was an issue unmapping;
+				// unmap_dmabuf will log error
+				return;
+			}
+
+		} else {
+
+			const char *act_buffer = NULL;
+			size_t act_size = 0;
+			uncompress_buffer(map, transf->size, transf->data,
+					transf->special.file_actual_size,
+					sfd->compress_buffer, &act_size,
+					&act_buffer);
+
+			wp_log(WP_DEBUG, "Applying dmabuf damage");
+			apply_diff(sfd->dmabuf_size, sfd->mem_mirror, act_size,
+					act_buffer);
+			void *handle = NULL;
+			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
+			if (!data) {
+				return;
+			}
+			apply_diff(sfd->dmabuf_size, data, act_size,
+					act_buffer);
+			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
+				// there was an issue unmapping;
+				// unmap_dmabuf will log error
+				return;
+			}
+		}
 	}
 }
 
