@@ -78,6 +78,11 @@ void wp_log_handler(const char *file, int line, log_cat_t level,
 	wp_log_handler(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,      \
 			__LINE__, (level), fmt, ##__VA_ARGS__)
 
+/** Run waitpid in a loop until there are no more zombies to clean up.
+ * If the target_pid was one of the completed processes, set status, return
+ * true. The `options` flag will be passed to waitpid */
+bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options);
+
 struct render_data {
 	bool disabled;
 	int drm_fd;
@@ -396,13 +401,6 @@ void decref_transferred_fds(
 		struct fd_translation_map *map, int nfds, int fds[]);
 void decref_transferred_rids(
 		struct fd_translation_map *map, int nids, int ids[]);
-
-struct kstack {
-	struct kstack *nxt;
-	pid_t pid;
-};
-
-void wait_on_children(struct kstack **children, int options);
 
 // parsing.c
 

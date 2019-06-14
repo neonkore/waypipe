@@ -138,7 +138,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 
 	wp_log(WP_DEBUG, "Server main!");
 
-	int retval = EXIT_SUCCESS;
+	int retcode = EXIT_SUCCESS;
 	if (oneshot) {
 		int chanfd = connect_to_channel(socket_path);
 		if (unlink_at_end) {
@@ -147,15 +147,15 @@ int run_server(const char *socket_path, const struct main_config *config,
 
 		wp_log(WP_DEBUG, "Oneshot connected");
 		if (chanfd != -1) {
-			retval = main_interface_loop(
+			retcode = main_interface_loop(
 					chanfd, server_link, config, false);
 		} else {
-			retval = EXIT_FAILURE;
+			retcode = EXIT_FAILURE;
 		}
 		close(server_link);
-	} else {
-		struct kstack *children = NULL;
 
+		wp_log(WP_DEBUG, "Waiting for child process");
+	} else {
 		// Poll loop - 1s poll, either child dies, or we have a
 		// connection
 		struct pollfd pf;
@@ -163,20 +163,14 @@ int run_server(const char *socket_path, const struct main_config *config,
 		pf.events = POLLIN;
 		pf.revents = 0;
 		while (!shutdown_flag) {
-			int wp = waitpid(pid, NULL, WNOHANG);
-			if (wp > 0) {
+			int status = -1;
+			if (wait_for_pid_and_clean(pid, &status, WNOHANG)) {
+				pid = 0;
 				wp_log(WP_DEBUG,
 						"Child program has died, exiting");
-				retval = EXIT_SUCCESS;
-				break;
-			} else if (wp == -1) {
-				wp_log(WP_ERROR, "Failed in waitpid: %s",
-						strerror(errno));
-				retval = EXIT_FAILURE;
+				retcode = WEXITSTATUS(status);
 				break;
 			}
-			// scan stack for children, and clean them up!
-			wait_on_children(&children, WNOHANG);
 
 			int r = poll(&pf, 1, -1);
 			if (r == -1) {
@@ -187,7 +181,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 				}
 				fprintf(stderr, "Poll failed: %s",
 						strerror(errno));
-				retval = EXIT_FAILURE;
+				retcode = EXIT_FAILURE;
 				break;
 			} else if (r == 0) {
 				continue;
@@ -201,7 +195,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 				}
 				wp_log(WP_ERROR, "Connection failure: %s",
 						strerror(errno));
-				retval = EXIT_FAILURE;
+				retcode = EXIT_FAILURE;
 				break;
 			} else {
 
@@ -210,13 +204,6 @@ int run_server(const char *socket_path, const struct main_config *config,
 					// Run forked process, with the only
 					// shared state being the new channel
 					// socket
-					while (children) {
-						struct kstack *nxt =
-								children->nxt;
-						free(children);
-						children = nxt;
-					}
-
 					close(wdisplay_socket);
 					int chanfd = connect_to_channel(
 							socket_path);
@@ -225,18 +212,12 @@ int run_server(const char *socket_path, const struct main_config *config,
 							appfd, config, false);
 				} else if (npid == -1) {
 					wp_log(WP_DEBUG, "Fork failure");
-					retval = EXIT_FAILURE;
+					retcode = EXIT_FAILURE;
 					break;
 				} else {
 					// This process no longer needs the
 					// application connection
 					close(appfd);
-
-					struct kstack *kd = calloc(1,
-							sizeof(struct kstack));
-					kd->pid = npid;
-					kd->nxt = children;
-					children = kd;
 				}
 				continue;
 			}
@@ -244,24 +225,18 @@ int run_server(const char *socket_path, const struct main_config *config,
 		if (unlink_at_end) {
 			unlink(socket_path);
 		}
-		close(wdisplay_socket);
-		// Wait for child processes to exit
-		wp_log(WP_DEBUG, "Waiting for child handlers");
-		wait_on_children(&children, shutdown_flag ? WNOHANG : 0);
-		// Free stack, in case we suddenly shutdown and fail to clean up
-		// children
-		while (children) {
-			struct kstack *nxt = children->nxt;
-			free(children);
-			children = nxt;
-		}
-	}
-
-	if (!oneshot) {
 		unlink(displaypath);
+		close(wdisplay_socket);
+
+		// Wait for child processes to exit
+		wp_log(WP_DEBUG, "Waiting for child handlers and program");
 	}
-	wp_log(WP_DEBUG, "Waiting for child process");
-	waitpid(pid, NULL, shutdown_flag ? WNOHANG : 0);
+	int status = -1;
+	if (wait_for_pid_and_clean(pid, &status, shutdown_flag ? WNOHANG : 0)) {
+		pid = 0;
+		wp_log(WP_DEBUG, "Child program has died, exiting");
+		retcode = WEXITSTATUS(status);
+	}
 	wp_log(WP_DEBUG, "Program ended");
-	return retval;
+	return retcode;
 }

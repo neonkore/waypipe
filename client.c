@@ -50,11 +50,6 @@ static int verify_connection()
 	return 0;
 }
 
-struct pidstack {
-	struct pidstack *next;
-	pid_t proc;
-};
-
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, pid_t eol_pid)
 {
@@ -92,7 +87,6 @@ int run_client(const char *socket_path, const struct main_config *config,
 	}
 
 	int retcode = EXIT_SUCCESS;
-	struct kstack *children = NULL;
 
 	/* A large fraction of the logic here is needed if we run in
 	 * 'ssh' mode, but the ssh invocation itself fails while we
@@ -102,18 +96,15 @@ int run_client(const char *socket_path, const struct main_config *config,
 	cs.events = POLLIN;
 	cs.revents = 0;
 	while (!shutdown_flag) {
-		if (eol_pid) {
-			int wp = waitpid(eol_pid, NULL, WNOHANG);
-			if (wp > 0) {
-				wp_log(WP_DEBUG, "Child (ssh) died, exiting");
-				eol_pid = 0; // < recycled
-				retcode = EXIT_SUCCESS;
-				break;
-			}
-		}
+		int status = -1;
+		if (wait_for_pid_and_clean(eol_pid, &status, WNOHANG)) {
+			eol_pid = 0; // < in case eol_pid is recycled
 
-		// scan stack for children, and clean them up!
-		wait_on_children(&children, WNOHANG);
+			wp_log(WP_DEBUG, "Child (ssh) died, exiting");
+			// Copy the exit code
+			retcode = WEXITSTATUS(status);
+			break;
+		}
 
 		int r = poll(&cs, 1, -1);
 		if (r == -1) {
@@ -151,13 +142,6 @@ int run_client(const char *socket_path, const struct main_config *config,
 					// Run forked process, with the only
 					// shared state being the new channel
 					// socket
-					while (children) {
-						struct kstack *nxt =
-								children->nxt;
-						free(children);
-						children = nxt;
-					}
-
 					close(channelsock);
 
 					struct wl_display *local_display =
@@ -184,12 +168,6 @@ int run_client(const char *socket_path, const struct main_config *config,
 				} else {
 					// Remove connection from this process
 					close(chanclient);
-
-					struct kstack *kd = calloc(1,
-							sizeof(struct kstack));
-					kd->pid = npid;
-					kd->nxt = children;
-					children = kd;
 				}
 				continue;
 			}
@@ -202,17 +180,11 @@ int run_client(const char *socket_path, const struct main_config *config,
 	close(channelsock);
 	unlink(socket_path);
 	int cleanup_type = shutdown_flag ? WNOHANG : 0;
-	if (eol_pid) {
-		// Don't return until the child process completes
-		waitpid(eol_pid, NULL, cleanup_type);
-	}
-	wait_on_children(&children, cleanup_type);
-	// Free stack, in case we suddenly shutdown and fail to clean up
-	// children
-	while (children) {
-		struct kstack *nxt = children->nxt;
-		free(children);
-		children = nxt;
+
+	int status = -1;
+	// Don't return until all child processes complete
+	if (wait_for_pid_and_clean(eol_pid, &status, cleanup_type)) {
+		retcode = WEXITSTATUS(status);
 	}
 	return retcode;
 }

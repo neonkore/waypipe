@@ -148,20 +148,28 @@ void wp_log_handler(const char *file, int line, log_cat_t level,
 	write(STDERR_FILENO, msg, (size_t)nwri);
 }
 
-void wait_on_children(struct kstack **children, int options)
+bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options)
 {
-	struct kstack *cur = *children;
-	struct kstack **prv = children;
-	while (cur) {
-		if (waitpid(cur->pid, NULL, options) > 0) {
-			wp_log(WP_DEBUG, "Child handler %d has died", cur->pid);
-			struct kstack *nxt = cur->nxt;
-			free(cur);
-			cur = nxt;
-			*prv = nxt;
-		} else {
-			prv = &cur->nxt;
-			cur = cur->nxt;
+	bool found = false;
+	while (1) {
+		int stat;
+		pid_t r = waitpid((pid_t)-1, &stat, options);
+		if (r > 0) {
+			wp_log(WP_DEBUG, "Child process %d has died", r);
+			if (r == target_pid) {
+				target_pid = 0;
+				*status = stat;
+				found = true;
+			}
+			continue;
 		}
+
+		if (r == -1 && (errno == ECHILD || errno == EINTR)) {
+			// Valid exit reasons, not an error
+			errno = 0;
+		} else if (r == -1) {
+			wp_log(WP_ERROR, "waitpid failed: %s", strerror(errno));
+		}
+		return found;
 	}
 }
