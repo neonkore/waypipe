@@ -32,7 +32,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-void listset_insert(struct obj_list *lst, struct wp_object *obj)
+static const char *get_type_name(struct wp_object *obj)
+{
+	return obj->type ? obj->type->name : "<no type>";
+}
+
+void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
+		struct wp_object *obj)
 {
 	if (!lst->size) {
 		lst->size = 4;
@@ -48,6 +54,22 @@ void listset_insert(struct obj_list *lst, struct wp_object *obj)
 				lst->size * sizeof(struct wp_object *));
 	}
 	for (int i = 0; i < lst->nobj; i++) {
+		if (lst->objs[i]->obj_id == obj->obj_id) {
+			if (lst->objs[i]->is_zombie) {
+				/* Zombie objects (server allocated, client
+				 * deleted) are only acknowledged destroyed by
+				 * the server when they are replaced */
+				destroy_wp_object(map, lst->objs[i]);
+				lst->objs[i] = obj;
+				return;
+			}
+
+			wp_log(WP_ERROR,
+					"Inserting object @%u that already exists: old type %s, new type %s",
+					obj->obj_id,
+					get_type_name(lst->objs[i]),
+					get_type_name(obj));
+		}
 		if (lst->objs[i]->obj_id > obj->obj_id) {
 			memmove(lst->objs + i + 1, lst->objs + i,
 					(lst->nobj - i) *
@@ -198,7 +220,7 @@ void init_message_tracker(struct message_tracker *mt)
 {
 	memset(mt, 0, sizeof(*mt));
 
-	listset_insert(&mt->objects,
+	listset_insert(NULL, &mt->objects,
 			create_wp_object(1, the_display_interface));
 
 	/* Precompute the ffi_cif structures, as ffi_prep_cif takes about as
@@ -318,7 +340,6 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 		if (!*c) {
 			break;
 		}
-		const struct wl_interface *type = msg->types[k];
 		switch (*c) {
 		case 'a': {
 			if (i >= paylen) {
@@ -382,8 +403,15 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 			/* We create the object unconditionally, although
 			 * while server requests are handled with the object id,
 			 * the client's events are fed the object pointer. */
-			struct wp_object *new_obj = create_wp_object(v, type);
-			listset_insert(&mt->objects, new_obj);
+			struct wp_object *new_obj =
+					create_wp_object(v, msg->types[k]);
+			listset_insert(&ctx->g->map, &mt->objects, new_obj);
+
+			if (ctx->obj->is_zombie) {
+				/* todo: handle misc data ? */
+				new_obj->is_zombie = true;
+			}
+
 			if (is_event) {
 				call_args_val[nargs].obj = new_obj;
 				call_args_ptr[nargs] =
@@ -401,6 +429,7 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 			}
 			uint32_t len = payload[i++];
 			if (i + ((int)len + 3) / 4 - 1 >= paylen) {
+
 				goto len_overflow;
 			}
 			const char *str = (const char *)&payload[i];
@@ -422,8 +451,9 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 
 		default:
 			wp_log(WP_DEBUG,
-					"For %s.%s, unidentified message type %c,",
-					intf->name, msg->name, *c);
+					"For %s@%u.%s, unidentified argument type %c",
+					intf->name, ctx->obj->obj_id, msg->name,
+					*c);
 			break;
 		}
 
@@ -436,9 +466,10 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 		overflow_type = "fd";
 	overflow:
 		wp_log(WP_ERROR,
-				"Message %x %s.%s parse length overflow (for %ss), bytes=%d/%d, fds=%d/%d, c=%c",
-				payload, intf->name, msg->name, overflow_type,
-				4 * i, 4 * paylen, *fds_used, fdlen, *c);
+				"Message %x %s@%u.%s parse length overflow (for %ss), bytes=%d/%d, fds=%d/%d, c=%c",
+				payload, intf->name, ctx->obj->obj_id,
+				msg->name, overflow_type, 4 * i, 4 * paylen,
+				*fds_used, fdlen, *c);
 		return;
 	}
 	if (i != paylen) {
@@ -449,6 +480,29 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 
 	if (func) {
 		ffi_call(cif, func, NULL, call_args_ptr);
+	}
+
+	if (ctx->obj->obj_id >= 0xff000000 && !strcmp(msg->name, "destroy")) {
+		/* Unfortunately, the wayland server library does not explicitly
+		 * acknowledge the client requested deletion of objects that the
+		 * wayland server has created; the client assumes success,
+		 * except by creating a new object that overrides the existing
+		 * id.
+		 *
+		 * To correctly vanish all events in flight, we mark the element
+		 * as having been zombified; it will only be destroyed when a
+		 * new element is created to take its place, since there could
+		 * still be e.g. data transfers in the channel, and it's best
+		 * that those only vanish when needed.
+		 *
+		 * TODO: early struct shadow_fd closure for all deletion
+		 * requests, with a matching zombie flag to vanish transfers;
+		 *
+		 * TODO: avert the zombie apocalypse, where the compositor
+		 * sends creation notices for a full hierarchy of objects
+		 * before it receives the root's .destroy request.
+		 */
+		ctx->obj->is_zombie = true;
 	}
 }
 
@@ -479,6 +533,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 				from_client ? "request" : "event");
 		return PARSE_UNKNOWN;
 	}
+
 	const struct wl_interface *intf = objh->type;
 	const struct wl_message *msg = NULL;
 	if (from_client) {
@@ -540,7 +595,6 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 			.fds_changed = false,
 	};
 	const uint32_t *payload = ctx.message + 2;
-
 	invoke_msg_handler(cif, intf, msg, !from_client, payload, len / 4 - 2,
 			&fds->data[fds->zone_start],
 			fds->zone_end - fds->zone_start, &fds_used, fn, &ctx,

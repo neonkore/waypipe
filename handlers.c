@@ -322,6 +322,7 @@ struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
 	}
 	new_obj->obj_id = id;
 	new_obj->type = type;
+	new_obj->is_zombie = false;
 	return new_obj;
 }
 
@@ -419,7 +420,8 @@ static void request_wl_registry_bind(struct wl_client *client,
 				free(the_object);
 				the_object = create_wp_object(
 						id, &wp_presentation_interface);
-				listset_insert(context->obj_list, the_object);
+				listset_insert(&context->g->map,
+						context->obj_list, the_object);
 			}
 			return;
 		}
@@ -438,13 +440,6 @@ static void event_wl_buffer_release(void *data, struct wl_buffer *wl_buffer)
 	struct context *context = get_context(data, wl_buffer);
 	(void)context;
 }
-static void request_wl_buffer_destroy(
-		struct wl_client *client, struct wl_resource *resource)
-{
-	struct context *context = get_context(client, resource);
-	(void)context;
-}
-
 static int get_shm_bytes_per_pixel(uint32_t format)
 {
 	switch (format) {
@@ -729,12 +724,6 @@ static void request_wl_surface_commit(
 	free(damage_array);
 	surface->damage_stack = NULL;
 	surface->damage_stack_len = 0;
-}
-static void request_wl_surface_destroy(
-		struct wl_client *client, struct wl_resource *resource)
-{
-	struct context *context = get_context(client, resource);
-	(void)context;
 }
 static void request_wl_surface_damage(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y,
@@ -1478,14 +1467,11 @@ static const struct wl_registry_interface wl_registry_request_handler = {
 		.bind = request_wl_registry_bind};
 static const struct wl_buffer_listener wl_buffer_event_handler = {
 		.release = event_wl_buffer_release};
-static const struct wl_buffer_interface wl_buffer_request_handler = {
-		.destroy = request_wl_buffer_destroy};
 static const struct wl_surface_interface wl_surface_request_handler = {
 		.attach = request_wl_surface_attach,
 		.commit = request_wl_surface_commit,
 		.damage = request_wl_surface_damage,
 		.damage_buffer = request_wl_surface_damage_buffer,
-		.destroy = request_wl_surface_destroy,
 		.set_buffer_scale = request_wl_surface_set_buffer_scale,
 		.set_buffer_transform = request_wl_surface_set_buffer_transform,
 };
@@ -1541,8 +1527,7 @@ const struct msg_handler handlers[] = {
 				&wl_display_request_handler},
 		{&wl_registry_interface, &wl_registry_event_handler,
 				&wl_registry_request_handler},
-		{&wl_buffer_interface, &wl_buffer_event_handler,
-				&wl_buffer_request_handler},
+		{&wl_buffer_interface, &wl_buffer_event_handler, NULL},
 		{&wl_surface_interface, NULL, &wl_surface_request_handler},
 		{&wl_keyboard_interface, &wl_keyboard_event_handler, NULL},
 		{&zwlr_screencopy_frame_v1_interface,

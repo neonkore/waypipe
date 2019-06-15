@@ -313,11 +313,9 @@ static uint32_t merge_intervals(const struct ext_interval *a,
 	}
 	if (a_low <= b_low) {
 		return merge_assym(a, b, o, merge_margin);
-	}
-	if (b_low <= a_low) {
+	} else {
 		return merge_assym(b, a, o, merge_margin);
 	}
-	abort();
 }
 
 /** If the internal gaps of an extended interval are too large, replace the

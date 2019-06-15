@@ -336,6 +336,7 @@ struct wp_object {
 	 * this struct, using the following data as a header */
 	const struct wl_interface *type; // Use to lookup the message handler
 	uint32_t obj_id;
+	bool is_zombie; // object deleted but not yet acknowledged remotely
 };
 
 struct obj_list {
@@ -474,7 +475,8 @@ void decref_transferred_rids(
 
 // parsing.c
 
-void listset_insert(struct obj_list *lst, struct wp_object *obj);
+void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
+		struct wp_object *obj);
 void listset_remove(struct obj_list *lst, struct wp_object *obj);
 struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
