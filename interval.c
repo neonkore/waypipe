@@ -29,298 +29,276 @@
 #include <stdlib.h>
 #include <string.h>
 
-static inline int eint_low(const struct ext_interval *i) { return i->start; }
-static inline int eint_high(const struct ext_interval *i)
+static inline int eint_low(const struct ext_interval i) { return i.start; }
+static inline int eint_high(const struct ext_interval i)
 {
-	return i->start + (i->rep - 1) * i->stride + i->width;
+	return i.start + (i.rep - 1) * i.stride + i.width;
 }
+static inline bool eint_eq(struct ext_interval a, struct ext_interval b)
+{
+	return !memcmp(&a, &b, sizeof(struct ext_interval));
+}
+
 static struct ext_interval containing_interval(
-		const struct ext_interval *a, const struct ext_interval *b)
+		const struct ext_interval a, const struct ext_interval b)
 {
 	int minv = min(eint_low(a), eint_low(b));
 	int maxv = max(eint_high(a), eint_high(b));
 	return (struct ext_interval){.start = minv,
 			.width = maxv - minv,
 			.rep = 1,
-			.stride = 0};
+			/* todo: is this used anywhere ? */
+			.stride = max(a.stride, b.stride)};
 }
 
-/** Given two intervals A,B of matching stride, produce an interval containing
- * both, where start % stride matches A */
-static struct ext_interval merge_fc_aligned(const struct ext_interval *a,
-		const struct ext_interval *b, int common_stride,
-		int merge_margin)
+/* Given an interval `i` with rep > 1, divide it into three parts:
+ * one which has no components intersecting or above low_cut, one
+ * which has no components intersecting or below high cut, and one
+ * remaining component. All `out` fields will be written in (low,mid,high)
+ * order, but empty fields will be set to be all zero. */
+static void split_interval(struct ext_interval i, int low_cut, int high_cut,
+		struct ext_interval out[static 3])
 {
-	const int mod_a = a->start % common_stride;
-	const int mod_b = b->start % common_stride;
-	int width = mod_b + b->width - mod_a +
-		    (mod_a > mod_b ? common_stride : 0);
-	// Increase width to minimum level implied by e.g. long single intervals
-	width = max(width, max(a->width, b->width));
-	if (width >= common_stride - merge_margin) {
-		return containing_interval(a, b);
+	/* Number of subintervals below `low_cut`, excluding those overlapping
+	 * with it */
+	int il = floordiv(max(low_cut - i.start - i.width + i.stride, 0),
+			i.stride);
+	int ih = ceildiv(max(high_cut - i.start, 0), i.stride);
+	/* clipping logic, in case our interval is large */
+	ih = min(ih, i.rep);
+
+	memset(out, 0, sizeof(struct ext_interval) * 3);
+	if (il > 0 && il < i.rep) {
+		out[0] = (struct ext_interval){.start = i.start,
+				.width = i.width,
+				.rep = il,
+				.stride = i.stride
+
+		};
 	}
 
-	const int b_high = eint_high(b);
-	int pre_shift = ceildiv(max(a->start - b->start, 0), common_stride);
-	int post_shift = ceildiv(
-			max(0, b_high - a->start - a->width), common_stride);
-
-	int nreps = pre_shift + max(a->rep, post_shift);
-	return (struct ext_interval){
-			.start = a->start - common_stride * pre_shift,
-			.width = width,
-			.rep = nreps,
-			.stride = nreps > 1 ? common_stride : 0};
-}
-
-/** Given two intervals, produce a third minimal /single/ interval which
- * contains both of them and has no internal gaps less than MERGE_MARGIN */
-static struct ext_interval merge_fully_consumed(const struct ext_interval *a,
-		const struct ext_interval *b, int merge_margin)
-{
-	if ((a->rep > 1 && b->rep > 1 && a->stride != b->stride) ||
-			(a->rep == 1 && b->rep == 1)) {
-		// The logic for the first case is complicated and is unlikely
-		// to happen in practice
-		return containing_interval(a, b);
+	/* for example, can split an interval with a noop injection */
+	if (ih > il) {
+		out[1] = (struct ext_interval){.start = i.start + il * i.stride,
+				.width = i.width,
+				.rep = ih - il,
+				.stride = i.stride};
 	}
-	int stride = a->rep == 1 ? b->stride : a->stride;
 
-	struct ext_interval a_aligned =
-			merge_fc_aligned(a, b, stride, merge_margin);
-	struct ext_interval b_aligned =
-			merge_fc_aligned(b, a, stride, merge_margin);
+	if (ih > 0 && ih < i.rep) {
+		out[2] = (struct ext_interval){.start = i.start + ih * i.stride,
+				.width = i.width,
+				.rep = i.rep - ih,
+				.stride = i.stride
 
-	if (a_aligned.rep * a_aligned.width < b_aligned.rep * b_aligned.width) {
-		return a_aligned;
-	} else {
-		return b_aligned;
+		};
 	}
 }
-static struct ext_interval drop_tail(
-		const struct ext_interval *a, int nreps_left)
-{
-	return (struct ext_interval){.start = a->start,
-			.width = a->width,
-			.rep = nreps_left,
-			.stride = nreps_left > 1 ? a->stride : 0};
-}
-static struct ext_interval drop_head(
-		const struct ext_interval *a, int nreps_left)
-{
-	return (struct ext_interval){
-			.start = a->start + a->stride * (a->rep - nreps_left),
-			.width = a->width,
-			.rep = nreps_left,
-			.stride = nreps_left > 1 ? a->stride : 0};
-}
 
-static struct ext_interval drop_ends(
-		const struct ext_interval *a, int ncut_left, int ncut_right)
-{
-	int nreps_left = a->rep - ncut_left - ncut_right;
-	return (struct ext_interval){.start = a->start + a->stride * ncut_left,
-			.width = a->width,
-			.rep = nreps_left,
-			.stride = nreps_left > 1 ? a->stride : 0};
-}
-
-static uint32_t merge_contained(const struct ext_interval *outer,
-		const struct ext_interval *inner,
-		struct ext_interval o[static 3], int merge_margin)
-{
-	if (outer->stride == 0 || outer->rep == 1) {
-		// Fast exit, when one part is a solid interval
-		o[0] = *outer;
-		return 1;
-	}
-
-	/* [stride=5, start=0, width=3, rep=9]
-	 * U [stride=5, start=17, width=2, rep=5]
-	 *
-	 * ===  ===  ===  ===  ===  ===  ===  ===  ===
-	 *                  ==   ==   ==   ==   ==
-	 * ===  ===  ===  ------------------------ ===
-	 */
-	int nlower = 0;
-	int nupper = 0;
-	if (outer->rep > 1) {
-		int low_cutoff = eint_low(inner) - merge_margin;
-		nlower = ceildiv(low_cutoff - outer->start - outer->width,
-				outer->stride);
-		int high_cutoff = eint_high(inner) + merge_margin + 1;
-		nupper = outer->rep -
-			 ceildiv(high_cutoff - outer->start, outer->stride);
-	}
-
-	if (nlower + nupper == outer->rep) {
-		// No change: the new interval fits right in, between existing
-		// ones
-		return 0;
-	}
-
-	uint32_t n = 0;
-	struct ext_interval couter = drop_ends(outer, nlower, nupper);
-	o[n++] = merge_fully_consumed(inner, &couter, merge_margin);
-
-	/* Adjust lower/upper after the fact, because merging the inner interval
-	 * can expand the area covered the first/last subintervals in the
-	 * central area, so that they conflict with the last/first elements in
-	 * the first/last tails */
-	if (outer->rep > 1) {
-		int low_cutoff = eint_low(&o[0]) - merge_margin;
-		int high_cutoff = eint_high(&o[0]) + merge_margin + 1;
-
-		int nlower = ceildiv(low_cutoff - outer->start - outer->width,
-				outer->stride);
-		int nupper = outer->rep -
-			     ceildiv(high_cutoff - outer->start, outer->stride);
-
-		if (nlower > 0) {
-			o[n++] = drop_tail(outer, nlower);
-		}
-		if (nupper > 0) {
-			o[n++] = drop_head(outer, nupper);
-		}
-	}
-
-	return n;
-}
-
-/** Merge assymmetric pair of intervals, assuming that neither is
- * any lower than the other */
-static uint32_t merge_assym(const struct ext_interval *lower,
-		const struct ext_interval *upper,
-		struct ext_interval o[static 3], int merge_margin)
-{
-	if (eint_high(lower) < eint_low(upper) - merge_margin) {
-		// No change, segments do not overlap
-		return 0;
-	}
-
-	/* The prototypical example.
-	 * ===  ===  ===  ===  ===  ===
-	 *                  ==   ==   ==   ==   ==
-	 * ===  ===  ===  --------------   ==   ==
-	 */
-	// numbers of upper and lower segments which do not participate in the
-	// merge
-	int nlower = 0;
-	int nupper = 0;
-	if (lower->rep > 1) {
-		int cutoff = eint_low(upper) - merge_margin;
-		nlower = ceildiv(cutoff - lower->start - lower->width,
-				lower->stride);
-	}
-	if (upper->rep > 1) {
-		int cutoff = eint_high(lower) + merge_margin + 1;
-		nupper = upper->rep -
-			 ceildiv(cutoff - upper->start, upper->stride);
-	}
-
-	uint32_t n = 0;
-	struct ext_interval clower = drop_head(lower, lower->rep - nlower);
-	struct ext_interval cupper = drop_tail(upper, upper->rep - nupper);
-	o[n++] = merge_fully_consumed(&clower, &cupper, merge_margin);
-
-	if (lower->rep > 1) {
-		int low_cutoff = eint_low(&o[0]) - merge_margin;
-		int nlower = ceildiv(low_cutoff - lower->start - lower->width,
-				lower->stride);
-		if (nlower > 0) {
-			o[n++] = drop_tail(lower, nlower);
-		}
-	}
-	if (upper->rep > 1) {
-		int high_cutoff = eint_high(&o[0]) + merge_margin + 1;
-		int nupper = upper->rep -
-			     ceildiv(high_cutoff - upper->start, upper->stride);
-		if (nupper > 0) {
-			o[n++] = drop_head(upper, nupper);
-		}
-	}
-	return n;
-}
-
-/** Given two intervals, merge them so that all intervals which were
- * disjoint (by more than MERGE_MARGIN) from both original intervals are
- * also disjoint from the merge result.
+/** Given two intervals A,B, merge them to produce a set of <= three rectangles
+ * so that the new set covers the old, but contains no points outside the
+ * range of the original intervals, and does not add any points more than
+ * than the merge margin away from the intersection of the ranges of A and B.
  *
- * If `ia` and `ib` are disjoint, then nothing is written to `o`. Otherwise,
- * this function writes between one and three disjoint intervals into `o`.
- * It returns the number of intervals written. */
-static uint32_t merge_intervals(const struct ext_interval *a,
-		const struct ext_interval *b, struct ext_interval o[static 3],
-		int merge_margin)
+ * Furthermore, it is assumed that A, B do not have any internal gaps of
+ * size < the margin. The resulting set will have any gaps of size <
+ * merge_margin either.
+ *
+ * This function returns a number from 0 to 3; if 0, there was no change to A
+ * and B. If larger, that number of margin-disjoint intervals are written into
+ * `o`. */
+uint32_t merge_intervals(struct ext_interval a, struct ext_interval b,
+		struct ext_interval o[static 3], int merge_margin)
 {
-	/* Naive, but still very casework-intensive, solution: the overlapping
-	 * portion of a series of intervals is replaced by a single solid
-	 * interval, and the tail portions are extended. */
-	int a_low = eint_low(a);
-	int a_high = eint_high(a);
-	int b_low = eint_low(b);
-	int b_high = eint_high(b);
+	if (a.width <= 0 || b.width <= 0 || a.rep <= 0 || b.rep <= 0) {
+		wp_log(WP_ERROR,
+				"Invalid entry format, Aswrs=%d,%d,%d,%d Bswrs=%d,%d,%d,%d",
+				a.start, a.width, a.rep, a.stride, b.start,
+				b.width, b.rep, b.stride);
+		return 0;
+	}
 
-	if (a->stride == b->stride && (a->rep > 1 || b->rep > 1)) {
-		/* Special case: merge two horizontally aligned buffers */
-		int common_stride = a->rep > 1 ? a->stride : b->stride;
-		int mod_a = a->start % common_stride,
-		    mod_b = b->start % common_stride;
-		if (a->width == b->width && mod_a == mod_b) {
-			if (a->start + a->rep * a->stride == b->start) {
-				o[0] = (struct ext_interval){
-						.start = a->start,
-						.width = a->width,
-						.stride = common_stride,
-						.rep = a->rep + b->rep,
-				};
-				return 1;
-			}
-			if (b->start + b->rep * b->stride == a->start) {
-				o[0] = (struct ext_interval){
-						.start = b->start,
-						.width = b->width,
-						.stride = common_stride,
-						.rep = a->rep + b->rep,
-				};
-				return 1;
-			}
-		}
+	/* a is lower/outer, b is upper/inner */
+	if (a.start > b.start) {
+		struct ext_interval tmp = b;
+		b = a;
+		a = tmp;
+	}
 
-		/* Special case: don't merge two parallel buffers */
-		if (mod_a > mod_b) {
-			mod_b += common_stride;
+	if (a.rep == 1 && b.rep == 1) {
+		/* 1 to 1 merge: combine if strides permit. (Q: leave for
+		 * postprocessing step?) */
+		if (a.stride == b.stride && a.width == b.width &&
+				a.start + a.stride == b.start &&
+				a.width <= a.stride - merge_margin &&
+				b.width <= b.stride - merge_margin) {
+			o[0] = (struct ext_interval){
+					.start = a.start,
+					.width = a.width,
+					.stride = a.stride,
+					.rep = 2,
+			};
+			return 1;
+		} else if (eint_high(a) + merge_margin <= eint_low(b)) {
+			return 0;
+		} else {
+			o[0] = containing_interval(a, b);
+			return 1;
 		}
-		int gap_ab = mod_b - (mod_a + a->width);
-		if (mod_b > mod_a) {
-			mod_a += common_stride;
-		}
-		int gap_ba = mod_a - (mod_b + b->width);
-		if (gap_ab > merge_margin && gap_ba > merge_margin) {
+	} else if (a.rep == 1 || b.rep == 1) {
+		/* 1 to K merge; extending if possible */
+		struct ext_interval ser = a.rep == 1 ? b : a;
+		struct ext_interval intv = a.rep == 1 ? a : b;
+
+		int low_cutoff = eint_low(intv) - merge_margin;
+		int high_cutoff = eint_high(intv) + merge_margin;
+
+		if (eint_low(ser) >= high_cutoff) {
 			return 0;
 		}
-	}
+		if (eint_high(ser) <= low_cutoff) {
+			return 0;
+		}
+		/* we definitely do have some manner of intersection */
+		struct ext_interval parts[3];
+		split_interval(ser, low_cutoff, high_cutoff, parts);
 
-	// TODO: combine consecutive regions with matching width (vstack)
-
-	// Categorize by symmetry class
-	if (a_low >= b_low && a_high <= b_high) {
-		return merge_contained(b, a, o, merge_margin);
-	}
-	if (b_low >= a_low && b_high <= a_high) {
-		return merge_contained(a, b, o, merge_margin);
-	}
-	if (a_low <= b_low) {
-		return merge_assym(a, b, o, merge_margin);
+		if (parts[1].rep == 0) {
+			/* the simple interval does not intersect
+			 * within margin with any series subinterveals */
+			return 0;
+		}
+		struct ext_interval mid = containing_interval(parts[1], intv);
+		if (eint_eq(mid, parts[1])) {
+			/* the simple interval is entirely contained
+			 * by an existing subinterval of the series */
+			o[0] = ser;
+			return 1;
+		}
+		/* return all three parts, if they exist */
+		uint32_t n = 0;
+		if (parts[0].rep > 0) {
+			o[n++] = parts[0];
+		}
+		o[n++] = mid;
+		if (parts[2].rep > 0) {
+			o[n++] = parts[2];
+		}
+		return n;
 	} else {
-		return merge_assym(b, a, o, merge_margin);
+		/* there must be overlap within margin of the limits
+		 * for anything nontrivial to happen */
+		if (eint_high(a) + merge_margin <= eint_low(b)) {
+			return 0;
+		}
+		int common_low = eint_low(b) -
+				 merge_margin; // since a.start < b.start
+		int common_high =
+				min(eint_high(a), eint_high(b)) + merge_margin;
+
+		/* K to J merge; fall back to brute force,
+		 * and to a 'reconstruct' run */
+		if (a.stride != b.stride) {
+			/* stride-mismatched; this can produce a large number
+			 * of small intervals, and is somewhat complicated.
+			 * For now we just merge the common stride. */
+
+			if (common_low >= common_high) {
+				wp_log(WP_ERROR, "Unexpected");
+				return 0;
+			}
+
+			struct ext_interval aparts[3], bparts[3];
+			split_interval(a, common_low, common_high, aparts);
+			split_interval(b, common_low, common_high, bparts);
+
+			uint32_t n = 0;
+			/* since a.start < b.start, bparts[0] DNE */
+			if (aparts[0].rep > 0) {
+				o[n++] = aparts[0];
+			}
+			/* both central parts exist due to overlap */
+			o[n++] = containing_interval(aparts[1], bparts[1]);
+			/* which tail is there depends on which end is last,
+			 * and extra alignment info */
+			if (aparts[2].rep > 0) {
+				o[n++] = aparts[2];
+			} else if (bparts[2].rep > 0) {
+				o[n++] = bparts[2];
+			}
+			return n;
+		} else {
+			int stride = a.stride;
+
+			/* key tests: overlaps and gaps */
+			int mod_gap = (b.start - a.start) % stride;
+			if (mod_gap < 0) {
+				mod_gap += stride;
+			}
+
+			/* aext, bext: if the gap to the next subinterval class
+			 * mod stride is 'negative' or < margin */
+			bool aext = mod_gap < a.width + merge_margin;
+			bool bext = mod_gap + b.width + merge_margin > stride;
+			if (!aext && !bext) {
+				/* Neither the A intervals nor the B intervals
+				 * can be extended by less than margin to
+				 * contain the other class; ergo, no change */
+				return 0;
+			}
+
+			struct ext_interval aparts[3], bparts[3];
+			split_interval(a, common_low, common_high, aparts);
+			split_interval(b, common_low, common_high, bparts);
+
+			uint32_t n = 0;
+			if (aparts[0].rep > 0) {
+				o[n++] = aparts[0];
+			}
+
+			if (aext && !bext) {
+				if (aparts[1].rep != bparts[1].rep ||
+						bparts[1].start <
+								aparts[1].start) {
+					wp_log(WP_ERROR,
+							"Implicit rectangle extension assumptions violated");
+					abort();
+				}
+
+				aparts[1].width =
+						max(a.width, mod_gap + b.width);
+				o[n++] = aparts[1];
+			} else if (bext && !aext) {
+				if (aparts[1].rep != bparts[1].rep ||
+						aparts[1].start <
+								bparts[1].start) {
+					wp_log(WP_ERROR,
+							"Implicit rectangle extension assumptions violated");
+					abort();
+				}
+
+				bparts[1].width = max(b.width,
+						a.width + stride - mod_gap);
+				o[n++] = bparts[1];
+			} else {
+				/* aext && bext: Both can be extended, so cover
+				 * with a simple interval */
+				o[n++] = containing_interval(
+						aparts[1], bparts[1]);
+			}
+			if (aparts[2].rep > 0) {
+				o[n++] = aparts[2];
+			} else if (bparts[2].rep > 0) {
+				o[n++] = bparts[2];
+			}
+			return n;
+		}
 	}
 }
 
-/** If the internal gaps of an extended interval are too large, replace the
- * interval with a single contiguous block. Also, get rid of meaningless
- * strides */
+/** If the internal gaps of an extended interval are too large, replace
+ * the interval with a single contiguous block. Also, get rid of
+ * meaningless strides */
 static struct ext_interval smooth_gaps(struct ext_interval i, int merge_margin)
 {
 	if (i.width > i.stride - merge_margin) {
@@ -339,9 +317,9 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 		int merge_margin)
 {
 
-	/* Naive merging. With each pass, introduce an additional interval.
-	 * There will be at most a factor of 2 expansion, so we plan ahead by
-	 * factor-4 expanding. */
+	/* Naive merging. With each pass, introduce an additional
+	 * interval. There will be at most a factor of 2 expansion, so
+	 * we plan ahead by factor-4 expanding. */
 	int space = max(old_count, 16) * 4;
 	struct ext_interval *scratch =
 			calloc(space, sizeof(struct ext_interval));
@@ -357,12 +335,13 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 		queue[z++] = smooth_gaps(new_list[i], merge_margin);
 	}
 	while (z > 0) {
-		/* In each round, merge the incoming interval with every other
-		 * interval in the list. When an element is absorbed (for
-		 * instance, because it was entirely contained a large element),
-		 * remove it from the list, and update the list as it is
-		 * scanned. When an element is added, insert it into the rewrite
-		 * gap, or if not possible, append it to the end of the list. */
+		/* In each round, merge the incoming interval with every
+		 * other interval in the list. When an element is
+		 * absorbed (for instance, because it was entirely
+		 * contained a large element), remove it from the list,
+		 * and update the list as it is scanned. When an element
+		 * is added, insert it into the rewrite gap, or if not
+		 * possible, append it to the end of the list. */
 		const struct ext_interval intv = queue[--z];
 
 		int write_index = 0;
@@ -373,15 +352,17 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 
 			struct ext_interval products[3];
 			uint32_t ne = merge_intervals(
-					&intv, &test, products, merge_margin);
+					intv, test, products, merge_margin);
 			if (ne == 0) {
-				// No change, keep inspected element unchanged
+				// No change, keep inspected element
+				// unchanged
 				scratch[write_index++] = test;
 			} else {
-				/* If a portion of the introduced interval was
-				 * entirely contained by the existing interval,
-				 * the existing interval is unchanged, and we
-				 * keep it. */
+				/* If a portion of the introduced
+				 * interval was entirely contained by
+				 * the existing interval, the existing
+				 * interval is unchanged, and we keep
+				 * it. */
 				bool existing_unchanged = false;
 				for (uint32_t s = 0; s < ne; s++) {
 					if (!memcmp(&products[s], &test,
@@ -395,10 +376,10 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 					scratch[write_index++] = test;
 				}
 
-				/* If the introduced interval was unchanged,
-				 * then we can continue with this loop, since
-				 * all preceding merge operations are still
-				 * correct */
+				/* If the introduced interval was
+				 * unchanged, then we can continue with
+				 * this loop, since all preceding merge
+				 * operations are still correct */
 				bool intv_unchanged = false;
 				for (uint32_t s = 0; s < ne; s++) {
 					if (!memcmp(&products[s], &intv,
@@ -411,8 +392,8 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 
 				/* All new/modified elements must be
 				 * reintroduced to the queue,
-				 * because we cannot rule out collisions with
-				 * preceding/following elements */
+				 * because we cannot rule out collisions
+				 * with preceding/following elements */
 				if (z + (int)ne >= queue_space) {
 					queue = realloc(queue,
 							2 * queue_space *
@@ -436,14 +417,15 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 			}
 		}
 		if (intv_changed) {
-			/* Pass unsuccessful, fixing up any produced gaps */
+			/* Pass unsuccessful, fixing up any produced
+			 * gaps */
 			memmove(&scratch[write_index], &scratch[read_index],
 					(used - read_index) *
 							sizeof(struct ext_interval));
 			used = write_index + used - read_index;
 		} else {
-			/* Pass was successful and did not modify the introduced
-			 * interval */
+			/* Pass was successful and did not modify the
+			 * introduced interval */
 			scratch[write_index++] = intv;
 			used = write_index;
 		}

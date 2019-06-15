@@ -59,6 +59,7 @@ static inline uint64_t alignu(uint64_t v, uint64_t m)
 {
 	return m * ((v + m - 1) / m);
 }
+/* only valid for nonegative v and positive u */
 static inline int floordiv(int v, int u) { return v / u; }
 static inline int ceildiv(int v, int u) { return (v + u - 1) / u; }
 
