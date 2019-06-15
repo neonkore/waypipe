@@ -2,6 +2,7 @@
 
 prog=`which waypipe`
 perf buildid-cache -a $prog
+perf probe -d sdt_waypipe:*
 perf probe sdt_waypipe:*
 perf record -e sdt_waypipe:* -aR sleep 10
 perf script > scriptfile

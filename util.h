@@ -45,14 +45,20 @@ extern bool shutdown_flag;
 
 void handle_sigint(int sig);
 
-/** Basic mathematical operations */
+/** Basic mathematical operations. */ // use macros?
 static inline int max(int a, int b) { return a > b ? a : b; }
 static inline int min(int a, int b) { return a < b ? a : b; }
+static inline uint64_t maxu(uint64_t a, uint64_t b) { return a > b ? a : b; }
+static inline uint64_t minu(uint64_t a, uint64_t b) { return a < b ? a : b; }
 static inline int clamp(int v, int lower, int upper)
 {
 	return max(min(v, upper), lower);
 }
 static inline int align(int v, int m) { return m * ((v + m - 1) / m); }
+static inline uint64_t alignu(uint64_t v, uint64_t m)
+{
+	return m * ((v + m - 1) / m);
+}
 static inline int floordiv(int v, int u) { return v / u; }
 static inline int ceildiv(int v, int u) { return (v + u - 1) / u; }
 
@@ -102,6 +108,16 @@ enum thread_task {
 	THREADTASK_STOP,
 	THREADTASK_MAKE_COMPRESSEDDIFF,
 };
+
+typedef struct LZ4F_dctx_s LZ4F_dctx;
+typedef struct ZSTD_CCtx_s ZSTD_CCtx;
+typedef struct ZSTD_DCtx_s ZSTD_DCtx;
+struct comp_ctx {
+	LZ4F_dctx *lz4f_dcontext;
+	ZSTD_CCtx *zstd_ccontext;
+	ZSTD_DCtx *zstd_dcontext;
+};
+
 struct thread_data {
 	pthread_t thread;
 	struct fd_translation_map *map;
@@ -110,10 +126,13 @@ struct thread_data {
 	 * data should be read and written */
 	int index;
 	int last_task_id;
+	/* Where to record the location and size of the compressed diff
+	 * produced by this thread. The buffer data will point into an
+	 * existing buffer */
+	struct bytebuf cd_dst;
+	size_t cd_actual_size;
+	struct comp_ctx comp_ctx;
 };
-
-typedef struct ZSTD_CCtx_s ZSTD_CCtx;
-typedef struct ZSTD_DCtx_s ZSTD_DCtx;
 enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
 struct fd_translation_map {
 	struct shadow_fd *list;
@@ -123,9 +142,7 @@ struct fd_translation_map {
 	 * because most rapidly changing application buffers have similar
 	 * content and use the same settings */
 	enum compression_mode compression;
-	void *lz4_state_buffer;
-	ZSTD_CCtx *zstd_ccontext;
-	ZSTD_DCtx *zstd_dcontext;
+	struct comp_ctx comp_ctx; // threadlocal
 	/* The latency of a multithreaded operation can be approximated with two
 	 * main components: the context switching time to get all threads
 	 * working (and then notify the original thread), and the time to
@@ -140,17 +157,17 @@ struct fd_translation_map {
 	 * not */
 	int nthreads;
 	struct thread_data *threads;
-	struct shadow_fd *thread_target;
 	/* `work_state` guards `nthreads_completed`, `next_thread_task`,
-	 * and `task_id`. `work_needed_notify` signals when to check for an
-	 * increased task counter; `work_done_notify` lets the main thread
-	 * know that a task has been done.
+	 * `task_id`, and `thread_target`. `work_needed_notify` signals when to
+	 * check for an increased task counter; `work_done_notify` lets the main
+	 * thread know that a task has been done.
 	 */
 	pthread_cond_t work_done_notify;
 	pthread_cond_t work_needed_notify;
 	pthread_mutex_t work_state_mutex;
 	int task_id;
 	int nthreads_completed;
+	struct shadow_fd *thread_target;
 	enum thread_task next_thread_task;
 };
 
@@ -227,7 +244,8 @@ struct damage {
 void merge_damage_records(struct damage *base, int nintervals,
 		const struct ext_interval *const new_list);
 /** Return a single interval containing the entire damaged region */
-void get_damage_interval(const struct damage *base, int *min, int *max);
+void get_damage_interval(const struct damage *base, int *min, int *max,
+		int *total_covered_area);
 /** Set damage to empty  */
 void reset_damage(struct damage *base);
 /** Expand damage to cover everything */
@@ -521,6 +539,7 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
 void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		const char *__restrict__ diff);
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
+		size_t copy_domain_start, size_t copy_domain_end,
 		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff);
 

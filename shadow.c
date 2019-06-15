@@ -45,7 +45,7 @@
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
-#include <lz4.h>
+#include <lz4frame.h>
 #include <zstd.h>
 
 bool fdcat_ispipe(fdcat_t t)
@@ -113,6 +113,12 @@ static void destroy_unlinked_sfd(
 	free(sfd);
 	(void)map;
 }
+static void cleanup_comp_ctx(struct comp_ctx *ctx)
+{
+	ZSTD_freeCCtx(ctx->zstd_ccontext);
+	ZSTD_freeDCtx(ctx->zstd_dcontext);
+	LZ4F_freeDecompressionContext(ctx->lz4f_dcontext);
+}
 static void cleanup_threads(struct fd_translation_map *map)
 {
 	pthread_mutex_lock(&map->work_state_mutex);
@@ -124,11 +130,34 @@ static void cleanup_threads(struct fd_translation_map *map)
 	pthread_cond_broadcast(&map->work_needed_notify);
 	for (int i = 0; i < map->nthreads - 1; i++) {
 		pthread_join(map->threads[i].thread, NULL);
+		cleanup_comp_ctx(&map->threads[i].comp_ctx);
 	}
 	pthread_mutex_destroy(&map->work_state_mutex);
 	pthread_cond_destroy(&map->work_done_notify);
 	pthread_cond_destroy(&map->work_needed_notify);
 	free(map->threads);
+}
+
+static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
+{
+	ctx->zstd_ccontext = NULL;
+	ctx->zstd_dcontext = NULL;
+	ctx->lz4f_dcontext = NULL;
+	if (mode == COMP_LZ4) {
+		LZ4F_errorCode_t err = LZ4F_createDecompressionContext(
+				&ctx->lz4f_dcontext, LZ4F_VERSION);
+		if (LZ4F_isError(err)) {
+			wp_log(WP_ERROR,
+					"Failed to created LZ4F decompression context: %s",
+					LZ4F_getErrorName(err));
+		}
+
+	} else if (mode == COMP_ZSTD) {
+		ctx->zstd_ccontext = ZSTD_createCCtx();
+		ctx->zstd_dcontext = ZSTD_createDCtx();
+		ZSTD_CCtx_setParameter(
+				ctx->zstd_ccontext, ZSTD_c_compressionLevel, 5);
+	}
 }
 void cleanup_translation_map(struct fd_translation_map *map)
 {
@@ -140,58 +169,13 @@ void cleanup_translation_map(struct fd_translation_map *map)
 		tmp->next = NULL;
 		destroy_unlinked_sfd(map, tmp);
 	}
-	ZSTD_freeCCtx(map->zstd_ccontext);
-	ZSTD_freeDCtx(map->zstd_dcontext);
-	free(map->lz4_state_buffer);
-
+	cleanup_comp_ctx(&map->comp_ctx);
 	if (map->nthreads > 1) {
 		cleanup_threads(map);
 	}
 }
-static void worker_run_compresseddiff(struct fd_translation_map *map, int index)
-{
-	(void)map;
-	(void)index;
-}
-static void *worker_thread_main(void *arg)
-{
-	struct thread_data *data = arg;
-	struct fd_translation_map *map = data->map;
 
-	wp_log(WP_DEBUG, "Opening worker thread %d", data->index);
-
-	/* The loop is globally locked by default, and only unlocked in
-	 * pthread_cond_wait. Yes, there are fancier and faster schemes. */
-	pthread_mutex_lock(&map->work_state_mutex);
-	while (1) {
-		if (map->task_id != data->last_task_id) {
-			data->last_task_id = map->task_id;
-			if (map->next_thread_task == THREADTASK_STOP) {
-				break;
-			}
-			// Do work!
-			if (map->next_thread_task ==
-					THREADTASK_MAKE_COMPRESSEDDIFF) {
-				pthread_mutex_unlock(&map->work_state_mutex);
-				// The main thread should not have modified
-				// any worker-related state since updating
-				// its task id
-				worker_run_compresseddiff(map, data->index);
-				pthread_mutex_lock(&map->work_state_mutex);
-			}
-			map->nthreads_completed++;
-			pthread_cond_signal(&map->work_done_notify);
-		}
-
-		pthread_cond_wait(&map->work_needed_notify,
-				&map->work_state_mutex);
-	}
-	pthread_mutex_unlock(&map->work_state_mutex);
-
-	wp_log(WP_DEBUG, "Closing worker thread %d", data->index);
-	return NULL;
-}
-
+static void *worker_thread_main(void *arg);
 void setup_translation_map(struct fd_translation_map *map, bool display_side,
 		enum compression_mode comp)
 {
@@ -199,22 +183,12 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 	map->list = NULL;
 	map->max_local_id = 1;
 	map->compression = comp;
-	map->zstd_ccontext = NULL;
-	map->zstd_dcontext = NULL;
-	map->lz4_state_buffer = NULL;
-	if (comp == COMP_LZ4) {
-		map->lz4_state_buffer = calloc((size_t)LZ4_sizeofState(), 1);
-	} else if (comp == COMP_ZSTD) {
-		map->zstd_ccontext = ZSTD_createCCtx();
-		map->zstd_dcontext = ZSTD_createDCtx();
-		ZSTD_CCtx_setParameter(
-				map->zstd_ccontext, ZSTD_c_compressionLevel, 5);
-	}
+	setup_comp_ctx(&map->comp_ctx, comp);
 
 	// platform dependent
 	long nt = sysconf(_SC_NPROCESSORS_ONLN);
 
-	map->nthreads = ceildiv((int)nt, 2);
+	map->nthreads = max((int)nt / 2, 1);
 
 	// 1 ms wakeup for other threads, assuming mild CPU load.
 	float thread_switch_delay = 0.001f; // seconds
@@ -257,6 +231,12 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 			map->threads[i].index = i + 1;
 			map->threads[i].thread = 0;
 			map->threads[i].last_task_id = 0;
+
+			map->threads[i].cd_actual_size = 0;
+			map->threads[i].cd_dst.data = NULL;
+			map->threads[i].cd_dst.size = 0;
+			setup_comp_ctx(&map->threads[i].comp_ctx, comp);
+
 			int ret = pthread_create(&map->threads[i].thread, NULL,
 					worker_thread_main, &map->threads[i]);
 			if (ret == -1) {
@@ -327,7 +307,7 @@ static size_t compress_bufsize(struct fd_translation_map *map, size_t max_input)
 	case COMP_NONE:
 		return 0;
 	case COMP_LZ4:
-		return (size_t)LZ4_compressBound((int)max_input);
+		return (size_t)LZ4F_compressBound((int)max_input, NULL);
 	case COMP_ZSTD:
 		return ZSTD_compressBound(max_input);
 	}
@@ -336,9 +316,9 @@ static size_t compress_bufsize(struct fd_translation_map *map, size_t max_input)
 /* With the selected compression method, compress the buffer {isize,ibuf},
  * possibly modifying {msize,mbuf}, and setting {wsize,wbuf} to indicate
  * the result */
-static void compress_buffer(struct fd_translation_map *map, size_t isize,
-		const char *ibuf, size_t msize, char *mbuf, size_t *wsize,
-		const char **wbuf)
+static void compress_buffer(struct fd_translation_map *map,
+		struct comp_ctx *ctx, size_t isize, const char *ibuf,
+		size_t msize, char *mbuf, size_t *wsize, const char **wbuf)
 {
 	// Ensure inputs always nontrivial
 	if (isize == 0) {
@@ -347,26 +327,27 @@ static void compress_buffer(struct fd_translation_map *map, size_t isize,
 		return;
 	}
 
+	DTRACE_PROBE1(waypipe, compress_buffer_enter, isize);
 	switch (map->compression) {
 	case COMP_NONE:
 		*wsize = isize;
 		*wbuf = ibuf;
-		return;
+		break;
 	case COMP_LZ4: {
-		int ws = LZ4_compress_fast_extState(map->lz4_state_buffer, ibuf,
-				mbuf, (int)isize, (int)msize, 1);
-		if (ws == 0) {
+		size_t ws = LZ4F_compressFrame(mbuf, msize, ibuf, isize, NULL);
+		if (LZ4F_isError(ws)) {
 			wp_log(WP_ERROR,
-					"Lz4 compression failed for %d bytes in %d of space",
-					(int)isize, (int)msize);
+					"Lz4 compression failed for %d bytes in %d of space: %s",
+					(int)isize, (int)msize,
+					ZSTD_getErrorName(ws));
 		}
 		*wsize = (size_t)ws;
 		*wbuf = mbuf;
-		return;
+		break;
 	}
 	case COMP_ZSTD: {
 		size_t ws = ZSTD_compress2(
-				map->zstd_ccontext, mbuf, msize, ibuf, isize);
+				ctx->zstd_ccontext, mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws)) {
 			wp_log(WP_ERROR,
 					"Zstd compression failed for %d bytes in %d of space: %s",
@@ -375,9 +356,10 @@ static void compress_buffer(struct fd_translation_map *map, size_t isize,
 		}
 		*wsize = (size_t)ws;
 		*wbuf = mbuf;
-		return;
+		break;
 	}
 	}
+	DTRACE_PROBE1(waypipe, compress_buffer_exit, *wsize);
 }
 /* With the selected compression method, uncompress the buffer {isize,ibuf},
  * possibly modifying {msize,mbuf}, and setting {wsize,wbuf} to indicate
@@ -394,37 +376,52 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		return;
 	}
 
+	DTRACE_PROBE1(waypipe, uncompress_buffer_enter, isize);
 	switch (map->compression) {
 	case COMP_NONE:
 		*wsize = isize;
 		*wbuf = ibuf;
-		return;
+		break;
 	case COMP_LZ4: {
-		int ws = LZ4_decompress_safe(
-				ibuf, mbuf, (int)isize, (int)msize);
-		if (ws < 0 || (size_t)ws != msize) {
-			wp_log(WP_ERROR,
-					"Lz4 decompression failed for %d bytes to %d of space, used %d",
-					(int)isize, (int)msize, ws);
+		size_t total = 0;
+		size_t read = 0;
+		while (read < isize) {
+			size_t dst_remaining = msize - total;
+			size_t src_remaining = isize - read;
+			size_t hint = LZ4F_decompress(
+					map->comp_ctx.lz4f_dcontext,
+					&mbuf[total], &dst_remaining,
+					&ibuf[read], &src_remaining, NULL);
+			read += src_remaining;
+			total += dst_remaining;
+			if (LZ4F_isError(hint)) {
+				wp_log(WP_ERROR,
+						"Lz4 decomp. failed with %d bytes and %d space remaining: %s",
+						isize - read, msize - total,
+						LZ4F_getErrorName(hint));
+				break;
+			}
 		}
-		*wsize = (size_t)ws;
+		*wsize = total;
 		*wbuf = mbuf;
-		return;
+		break;
 	}
 	case COMP_ZSTD: {
-		size_t ws = ZSTD_decompressDCtx(
-				map->zstd_dcontext, mbuf, msize, ibuf, isize);
+		size_t ws = ZSTD_decompressDCtx(map->comp_ctx.zstd_dcontext,
+				mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws) || (size_t)ws != msize) {
 			wp_log(WP_ERROR,
 					"Zstd decompression failed for %d bytes to %d of space: %s",
 					(int)isize, (int)msize,
 					ZSTD_getErrorName(ws));
+			ws = 0;
 		}
 		*wsize = (size_t)ws;
 		*wbuf = mbuf;
-		return;
+		break;
 	}
 	}
+	DTRACE_PROBE1(waypipe, uncompress_buffer_exit, *wsize);
 }
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
@@ -678,9 +675,13 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
  * mmap'd. Simultaneously updates the `base` buffer to match the `changed`
  * buffer.
  *
+ * `copy_domain_start` and `copy_domain_end` should be divisible by 8,
+ * or SIZE_MAX
+ *
  * Requires that `diff` point to a memory buffer of size `size + 8`.
  */
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
+		size_t copy_domain_start, size_t copy_domain_end,
 		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff)
 {
@@ -694,22 +695,41 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 	uint64_t ntrailing = size - 8 * nblocks;
 	uint64_t cursor = 0;
 
+	if (copy_domain_start % 8 != 0 ||
+			(copy_domain_end % 8 != 0 &&
+					copy_domain_end != SIZE_MAX)) {
+		wp_log(WP_ERROR,
+				"Diff construction domain restrictions are misaligned");
+		copy_domain_start = alignu(copy_domain_start, 8);
+		copy_domain_end = copy_domain_end != SIZE_MAX
+						  ? alignu(copy_domain_end, 8)
+						  : SIZE_MAX;
+	}
+	uint64_t cd_minb = copy_domain_start / 8;
+	uint64_t cd_maxb = copy_domain_end / 8;
+
+	bool check_tail = false;
+
 	if (damage->damage == DAMAGE_EVERYTHING) {
-		cursor = run_interval_diff(0, nblocks, changed_blocks,
+		check_tail = copy_domain_end > 8 * nblocks;
+
+		cursor = run_interval_diff(maxu(0, cd_minb),
+				minu(nblocks, cd_maxb), changed_blocks,
 				base_blocks, diff_blocks, cursor);
 	} else {
 		for (int b = 0; b < damage->ndamage_rects; b++) {
 			struct ext_interval ei = damage->damage[b];
-			for (int r = 0; r < ei.rep; r++) {
-				uint64_t minb = (uint64_t)min(
-						floordiv(ei.start + r * ei.stride,
-								8),
-						(int)nblocks);
-				uint64_t maxb = (uint64_t)min(
-						ceildiv(ei.start + r * ei.stride +
-										ei.width,
-								8),
-						(int)nblocks);
+			for (uint64_t r = 0; r < (uint64_t)ei.rep; r++) {
+				uint64_t minc = maxu(ei.start + r * ei.stride,
+						copy_domain_start);
+				uint64_t maxc = minu(ei.start + r * ei.stride +
+								     ei.width,
+						copy_domain_end);
+				check_tail |= maxc > 8 * nblocks;
+
+				uint64_t minb = minu(
+						floordiv(minc, 8), nblocks);
+				uint64_t maxb = minu(ceildiv(maxc, 8), nblocks);
 				if (minb >= maxb) {
 					continue;
 				}
@@ -721,7 +741,7 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 	}
 
 	bool tail_change = false;
-	if (ntrailing > 0) {
+	if (check_tail && ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
 			tail_change |= base[nblocks * 8 + i] !=
 				       changed[nblocks * 8 + i];
@@ -791,6 +811,45 @@ static struct transfer *setup_single_block_transfer(int *ntransfers,
 	return &transfers[nt];
 }
 
+static void worker_run_compresseddiff(struct fd_translation_map *map,
+		struct comp_ctx *ctx, int index, struct bytebuf *dst,
+		size_t *actual_size)
+{
+	DTRACE_PROBE1(waypipe, worker_comp_enter, index);
+	int nthreads = map->nthreads;
+	struct shadow_fd *sfd = map->thread_target;
+
+	/* Allocate a disjoint target interval to each worker */
+	size_t source_start =
+			align(((size_t)index * sfd->file_size) / nthreads, 8);
+	size_t source_end = align(
+			(((size_t)index + 1) * sfd->file_size) / nthreads, 8);
+
+	size_t diff_start = source_start + 8 * index;
+	size_t diff_end = source_end + 8 * (index + 1);
+
+	size_t comp_step = compress_bufsize(
+			map, align(ceildiv(sfd->file_size, nthreads) + 8, 8));
+
+	size_t diffsize;
+	construct_diff(sfd->file_size, &sfd->damage, source_start, source_end,
+			sfd->mem_mirror, sfd->file_mem_local, &diffsize,
+			&sfd->diff_buffer[diff_start]);
+	*actual_size = diffsize;
+
+	if (diffsize + diff_start > diff_end) {
+		wp_log(WP_ERROR, "Compression section %d overflow (%d>%d)",
+				index, (int)diffsize,
+				(int)(diff_end - diff_start));
+	}
+
+	dst->size = 0;
+	dst->data = NULL;
+	compress_buffer(map, ctx, diffsize, &sfd->diff_buffer[diff_start],
+			comp_step, &sfd->compress_buffer[comp_step * index],
+			&dst->size, (const char **)&dst->data);
+	DTRACE_PROBE1(waypipe, worker_comp_exit, index);
+}
 void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		int *ntransfers, struct transfer transfers[], int *nblocks,
 		struct bytebuf blocks[])
@@ -810,19 +869,32 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// writing this buffer along with padding
 			sfd->mem_mirror = calloc(align(sfd->file_size, 8), 1);
 			// 8 extra bytes for worst case diff expansion
-			sfd->diff_buffer =
-					calloc(align(sfd->file_size + 8, 8), 1);
+			sfd->diff_buffer = calloc(
+					align(sfd->file_size + 8 * map->nthreads,
+							8),
+					1);
 			memcpy(sfd->mem_mirror, sfd->file_mem_local,
 					sfd->file_size);
 			sfd->compress_space = compress_bufsize(
 					map, align(sfd->file_size + 8, 8));
+			size_t split_cs =
+					map->nthreads *
+					compress_bufsize(map,
+							align(ceildiv(sfd->file_size,
+									      map->nthreads) +
+											8,
+									8));
+			// Using a number of distinct compressions often
+			// (but not necessarily) will increase space needed
+			sfd->compress_space =
+					max(sfd->compress_space, split_cs);
 			sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
 			// new transfer, we send file contents verbatim
 			const char *comp_data = NULL;
 			size_t comp_size = 0;
-			compress_buffer(map, sfd->file_size, sfd->mem_mirror,
-					sfd->compress_space,
+			compress_buffer(map, &map->comp_ctx, sfd->file_size,
+					sfd->mem_mirror, sfd->compress_space,
 					sfd->compress_buffer, &comp_size,
 					&comp_data);
 			struct transfer *tf = setup_single_block_transfer(
@@ -833,10 +905,12 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			tf->special.file_actual_size = sfd->file_size;
 		}
 
-		int intv_min, intv_max;
-		get_damage_interval(&sfd->damage, &intv_min, &intv_max);
+		int intv_min, intv_max, total_area;
+		get_damage_interval(&sfd->damage, &intv_min, &intv_max,
+				&total_area);
 		intv_min = clamp(intv_min, 0, (int)sfd->file_size);
 		intv_max = clamp(intv_max, 0, (int)sfd->file_size);
+		total_area = min(total_area, (int)sfd->file_size);
 		if (intv_min >= intv_max) {
 			reset_damage(&sfd->damage);
 			return;
@@ -854,31 +928,87 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (!sfd->diff_buffer) {
 			/* Create diff buffer by need for remote files
 			 */
-			sfd->diff_buffer = calloc(sfd->file_size + 8, 1);
+			sfd->diff_buffer = calloc(
+					sfd->file_size + 8 * map->nthreads, 1);
 		}
 
-		size_t diffsize;
-		wp_log(WP_DEBUG, "Diff construction start");
-		construct_diff(sfd->file_size, &sfd->damage, sfd->mem_mirror,
-				sfd->file_mem_local, &diffsize,
-				sfd->diff_buffer);
-		reset_damage(&sfd->damage);
-		wp_log(WP_DEBUG, "Diff construction end: %ld/%ld", diffsize,
+		size_t diffsize = 0;
+		DTRACE_PROBE2(waypipe, diffcomp_start, total_area,
 				sfd->file_size);
-		if (diffsize > 0) {
+		if (total_area > map->scancomp_thread_threshold) {
+			pthread_mutex_lock(&map->work_state_mutex);
+			map->task_id++;
+			map->nthreads_completed = 0;
+			map->next_thread_task = THREADTASK_MAKE_COMPRESSEDDIFF;
+			map->thread_target = sfd;
+			pthread_mutex_unlock(&map->work_state_mutex);
+			pthread_cond_broadcast(&map->work_needed_notify);
+
+			size_t cd_actual_size0;
+			struct bytebuf cd_dst0;
+			worker_run_compresseddiff(map, &map->comp_ctx, 0,
+					&cd_dst0, &cd_actual_size0);
+
+			pthread_mutex_lock(&map->work_state_mutex);
+			map->nthreads_completed++;
+			while (true) {
+				if (map->nthreads_completed == map->nthreads) {
+					break;
+				}
+				pthread_cond_wait(&map->work_done_notify,
+						&map->work_state_mutex);
+			}
+			pthread_mutex_unlock(&map->work_state_mutex);
+
+			struct transfer *tf = &transfers[(*ntransfers)++];
+			tf->type = sfd->type;
+			tf->obj_id = sfd->remote_id;
+			tf->nblocks = 0;
+			tf->subtransfers = &blocks[*nblocks];
+			tf->special.file_actual_size = 0;
+
+			if (cd_actual_size0) {
+				tf->special.file_actual_size += cd_actual_size0;
+				blocks[(*nblocks)++] = cd_dst0;
+				tf->nblocks++;
+			}
+			for (int i = 0; i < map->nthreads - 1; i++) {
+				if (map->threads[i].cd_actual_size) {
+					tf->special.file_actual_size +=
+							map->threads[i].cd_actual_size;
+					blocks[(*nblocks)++] =
+							map->threads[i].cd_dst;
+					tf->nblocks++;
+				}
+			}
+		} else {
+			construct_diff(sfd->file_size, &sfd->damage, 0,
+					SIZE_MAX, sfd->mem_mirror,
+					sfd->file_mem_local, &diffsize,
+					sfd->diff_buffer);
 			const char *comp_data = NULL;
 			size_t comp_size = 0;
-			compress_buffer(map, diffsize, sfd->diff_buffer,
-					sfd->compress_space,
+			compress_buffer(map, &map->comp_ctx, diffsize,
+					sfd->diff_buffer, sfd->compress_space,
 					sfd->compress_buffer, &comp_size,
 					&comp_data);
-			struct transfer *tf = setup_single_block_transfer(
-					ntransfers, transfers, nblocks, blocks,
-					comp_size, comp_data);
-			tf->obj_id = sfd->remote_id;
-			tf->type = sfd->type;
-			tf->special.file_actual_size = (int)diffsize;
+			if (comp_size > 0) {
+				struct transfer *tf =
+						setup_single_block_transfer(
+								ntransfers,
+								transfers,
+								nblocks, blocks,
+								comp_size,
+								comp_data);
+				tf->obj_id = sfd->remote_id;
+				tf->type = sfd->type;
+				tf->special.file_actual_size = (int)diffsize;
+			}
 		}
+		reset_damage(&sfd->damage);
+		DTRACE_PROBE1(waypipe, diffcomp_end, diffsize);
+		wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld",
+				diffsize, sfd->file_size);
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
@@ -1025,7 +1155,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 
 			const char *datavec = NULL;
 			size_t compdata_size = 0;
-			compress_buffer(map, sfd->dmabuf_size, sfd->mem_mirror,
+			compress_buffer(map, &map->comp_ctx, sfd->dmabuf_size,
+					sfd->mem_mirror,
 					sfd->compress_space -
 							sizeof(struct dmabuf_slice_data),
 					sfd->compress_buffer +
@@ -1071,16 +1202,17 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 				struct damage everything = {
 						.damage = DAMAGE_EVERYTHING,
 						.ndamage_rects = 0};
-				construct_diff(sfd->dmabuf_size, &everything,
-						sfd->mem_mirror, tmp, &diffsize,
-						sfd->diff_buffer);
+				construct_diff(sfd->dmabuf_size, &everything, 0,
+						SIZE_MAX, sfd->mem_mirror, tmp,
+						&diffsize, sfd->diff_buffer);
 				wp_log(WP_DEBUG,
 						"Diff construction end: %ld/%ld",
 						diffsize, sfd->dmabuf_size);
 
 				size_t comp_size = 0;
 				const char *comp_data = NULL;
-				compress_buffer(map, diffsize, sfd->diff_buffer,
+				compress_buffer(map, &map->comp_ctx, diffsize,
+						sfd->diff_buffer,
 						sfd->compress_space,
 						sfd->compress_buffer,
 						&comp_size, &comp_data);
@@ -1444,8 +1576,8 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 				transf->special.file_actual_size,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
-		// `memsize+8` is the worst-case diff expansion
-		if (act_size > sfd->file_size + 8) {
+		// `memsize+8*remote_nthreads` is the worst-case diff expansion
+		if (act_size > sfd->file_size + 8 * 128) {
 			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld",
 					act_size, sfd->file_size);
 		}
@@ -1768,4 +1900,45 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 			cur->pipe_lclosed = true;
 		}
 	}
+}
+
+static void *worker_thread_main(void *arg)
+{
+	struct thread_data *data = arg;
+	struct fd_translation_map *map = data->map;
+
+	wp_log(WP_DEBUG, "Opening worker thread %d", data->index);
+
+	/* The loop is globally locked by default, and only unlocked in
+	 * pthread_cond_wait. Yes, there are fancier and faster schemes. */
+	pthread_mutex_lock(&map->work_state_mutex);
+	while (1) {
+		if (map->task_id != data->last_task_id) {
+			data->last_task_id = map->task_id;
+			if (map->next_thread_task == THREADTASK_STOP) {
+				break;
+			}
+			// Do work!
+			if (map->next_thread_task ==
+					THREADTASK_MAKE_COMPRESSEDDIFF) {
+				pthread_mutex_unlock(&map->work_state_mutex);
+				// The main thread should not have modified
+				// any worker-related state since updating
+				// its task id
+				worker_run_compresseddiff(map, &data->comp_ctx,
+						data->index, &data->cd_dst,
+						&data->cd_actual_size);
+				pthread_mutex_lock(&map->work_state_mutex);
+			}
+			map->nthreads_completed++;
+			pthread_cond_signal(&map->work_done_notify);
+		}
+
+		pthread_cond_wait(&map->work_needed_notify,
+				&map->work_state_mutex);
+	}
+	pthread_mutex_unlock(&map->work_state_mutex);
+
+	wp_log(WP_DEBUG, "Closing worker thread %d", data->index);
+	return NULL;
 }

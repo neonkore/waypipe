@@ -490,35 +490,38 @@ void merge_damage_records(struct damage *base, int nintervals,
 			&base->ndamage_rects, &base->damage, MERGE_MARGIN);
 }
 
-void get_damage_interval(const struct damage *base, int *minincl, int *maxexcl)
+void get_damage_interval(const struct damage *base, int *minincl, int *maxexcl,
+		int *total_covered_area)
 {
 	if (base->damage == DAMAGE_EVERYTHING) {
 		*minincl = INT32_MIN;
 		*maxexcl = INT32_MAX;
+		*total_covered_area = INT32_MAX;
 	} else if (base->damage == NULL || base->ndamage_rects == 0) {
 		*minincl = INT32_MAX;
 		*maxexcl = INT32_MIN;
+		*total_covered_area = 0;
 	} else {
 		int low = INT32_MAX;
 		int high = INT32_MIN;
-		int final_set_cover = 0;
+		int tca = 0;
 		for (int i = 0; i < base->ndamage_rects; i++) {
 			struct ext_interval *v = &base->damage[i];
 			low = min(low, v->start);
 			high = max(high, v->start + (v->rep - 1) * v->stride +
 							 v->width);
 
-			final_set_cover += v->rep * v->width;
+			tca += v->rep * v->width;
 		}
-		double cover_fraction =
-				base->acc_damage_stat / (double)final_set_cover;
+		double cover_fraction = base->acc_damage_stat / (double)tca;
 		wp_log(WP_DEBUG,
 				"Damage interval: {%d(%d)} -> [%d, %d) [%d], %f",
 				base->ndamage_rects, base->acc_count, low, high,
-				final_set_cover, cover_fraction);
+				tca, cover_fraction);
 
 		*minincl = low;
 		*maxexcl = high;
+		*total_covered_area = tca;
 	}
 }
 void reset_damage(struct damage *base)

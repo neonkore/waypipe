@@ -62,7 +62,8 @@ static int ideal_round(
 {
 	char *diff = calloc(bufsize + 8, 1);
 	size_t diffsize = 0;
-	construct_diff(bufsize, &damage_all, base, changed, &diffsize, diff);
+	construct_diff(bufsize, &damage_all, 0, SIZE_MAX, base, changed,
+			&diffsize, diff);
 	apply_diff(bufsize, other, diffsize, diff);
 	free(diff);
 	int nch = 0;
@@ -139,8 +140,9 @@ int main(int argc, char **argv)
 			}
 			/* A data transfer for shm requires 1x construct_diff,
 			 * and 2x apply_diff */
-			construct_diff(imgsize, &damage_all, img_base,
-					img_changed, &diffsize, img_diff);
+			construct_diff(imgsize, &damage_all, 0, SIZE_MAX,
+					img_base, img_changed, &diffsize,
+					img_diff);
 			apply_diff(imgsize, img_cloneA, diffsize, img_diff);
 			apply_diff(imgsize, img_cloneB, diffsize, img_diff);
 		}
