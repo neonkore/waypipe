@@ -26,15 +26,84 @@
 #define _XOPEN_SOURCE 700
 #include "util.h"
 
+#ifndef HAS_DMABUF
+
+int init_render_data(struct render_data *data)
+{
+	data->disabled = true;
+	(void)data;
+	return -1;
+}
+void cleanup_render_data(struct render_data *data) { (void)data; }
+struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
+		struct dmabuf_slice_data *info)
+{
+	(void)rd;
+	(void)fd;
+	(void)size;
+	(void)info;
+	return NULL;
+}
+bool is_dmabuf(int fd)
+{
+	(void)fd;
+	return false;
+}
+int get_unique_dmabuf_handle(
+		struct render_data *rd, int fd, struct gbm_bo **temporary_bo)
+{
+	(void)rd;
+	(void)fd;
+	(void)temporary_bo;
+	return -1;
+}
+struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
+		size_t size, struct dmabuf_slice_data *info)
+{
+	(void)rd;
+	(void)data;
+	(void)size;
+	(void)info;
+	return NULL;
+}
+int export_dmabuf(struct gbm_bo *bo)
+{
+	(void)bo;
+	return -1;
+}
+void destroy_dmabuf(struct gbm_bo *bo) { (void)bo; }
+void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle)
+{
+	(void)bo;
+	(void)write;
+	(void)map_handle;
+	return NULL;
+}
+int unmap_dmabuf(struct gbm_bo *bo, void *map_handle)
+{
+	(void)bo;
+	(void)map_handle;
+	return 0;
+}
+
+uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
+{
+	(void)format;
+	(void)plane;
+	return 0;
+}
+
+#else /* HAS_DMABUF */
+
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/dma-buf.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
 #include <gbm.h>
+#include <linux/dma-buf.h>
 
 int init_render_data(struct render_data *data)
 {
@@ -355,3 +424,5 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 	}
 	return format;
 }
+
+#endif /* HAS_DMABUF */
