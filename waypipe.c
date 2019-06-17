@@ -29,6 +29,7 @@
 
 #include <getopt.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,6 +44,12 @@ int run_server(const char *socket_path, const struct main_config *config,
 		char *const app_argv[]);
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, pid_t eol_pid);
+
+enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
+
+static bool log_colored = false;
+static enum waypipe_mode log_mode = MODE_FAIL;
+log_handler_func_t log_funcs[2] = {NULL, NULL};
 
 /* Usage: Wrapped to 79 characters */
 static const char usage_string[] =
@@ -82,6 +89,67 @@ static int usage(int retcode)
 	FILE *ostream = retcode == EXIT_SUCCESS ? stderr : stdout;
 	fprintf(ostream, usage_string);
 	return retcode;
+}
+
+static void log_handler(const char *file, int line, enum log_level level,
+		const char *fmt, ...)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	double time = (ts.tv_sec % 100) * 1. + ts.tv_nsec * 1e-9;
+	int pid = getpid();
+
+	char mode;
+	if (log_mode == MODE_SERVER) {
+		mode = level == WP_DEBUG ? 's' : 'S';
+	} else {
+		mode = level == WP_DEBUG ? 'c' : 'C';
+	}
+
+	char msg[1024];
+	int nwri = 0;
+	if (log_colored) {
+		msg[nwri++] = '\x1b';
+		msg[nwri++] = '[';
+		msg[nwri++] = '3';
+		/* blue for waypipe client, green for waypipe server */
+		msg[nwri++] = log_mode == MODE_SERVER ? '2' : '4';
+		msg[nwri++] = 'm';
+		if (level == WP_ERROR) {
+			/* bold errors */
+			msg[nwri++] = '\x1b';
+			msg[nwri++] = '[';
+			msg[nwri++] = '1';
+			msg[nwri++] = 'm';
+		}
+	}
+
+	nwri += sprintf(msg + nwri, "%c%d:%9.6f [%s:%3d] ", mode, pid, time,
+			file, line);
+
+	va_list args;
+	va_start(args, fmt);
+	nwri += vsnprintf(msg + nwri, (size_t)(1000 - nwri), fmt, args);
+	va_end(args);
+
+	if (log_colored) {
+		msg[nwri++] = '\x1b';
+		msg[nwri++] = '[';
+		msg[nwri++] = '0';
+		msg[nwri++] = 'm';
+	}
+	if (log_mode == MODE_SSH) {
+		/* to avoid 'staircase' rendering when using the ssh helper
+		 * mode, and -t argument */
+		msg[nwri++] = '\r';
+		msg[nwri++] = '\n';
+		msg[nwri++] = 0;
+	} else {
+		msg[nwri++] = '\n';
+		msg[nwri++] = 0;
+	}
+	// single short writes are atomic for pipes, at least
+	write(STDERR_FILENO, msg, (size_t)nwri);
 }
 
 /* produces a random token with a low accidental collision probability */
@@ -194,8 +262,6 @@ static const struct option options[] = {
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
 		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
 		{"video", no_argument, NULL, ARG_VIDEO}, {0, 0, NULL, 0}};
-
-enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
 
 int main(int argc, char **argv)
 {
@@ -334,10 +400,13 @@ int main(int argc, char **argv)
 		argv++;
 		argc--;
 	}
-	waypipe_loglevel = debug ? WP_DEBUG : WP_ERROR;
-	waypipe_log_mode = (mode == MODE_SSH)
-					   ? 'c'
-					   : (mode == MODE_CLIENT ? 'C' : 'S');
+
+	if (debug) {
+		log_funcs[0] = log_handler;
+	}
+	log_funcs[1] = log_handler;
+	log_mode = mode;
+	log_colored = isatty(STDERR_FILENO);
 
 	// Setup signals
 	struct sigaction ia; // SIGINT: abort operations, and set a flag

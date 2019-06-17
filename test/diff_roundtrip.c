@@ -80,6 +80,7 @@ static int ideal_round(
 	return EXIT_SUCCESS;
 }
 
+log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
 int main(int argc, char **argv)
 {
 	(void)argc;

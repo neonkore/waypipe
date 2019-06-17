@@ -273,7 +273,7 @@ static void merge_simple(const int old_count, struct ext_interval *old_list,
 	struct interval *vec =
 			malloc((size_t)nintervals * sizeof(struct interval));
 	int base = convert_to_simple(vec, old_count, old_list);
-	base += convert_to_simple(&vec[base], new_count, new_list);
+	convert_to_simple(&vec[base], new_count, new_list);
 
 	// divide and conquer would be faster here
 	qsort(vec, nintervals, sizeof(struct interval), simple_lexsort);
@@ -451,6 +451,7 @@ static const struct intv_test_set merge_tests[] = {
 		{{0, 0, 0, 0}, 0},
 };
 
+log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
 int main(int argc, char **argv)
 {
 	(void)argc;

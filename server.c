@@ -233,7 +233,6 @@ int run_server(const char *socket_path, const struct main_config *config,
 	}
 	int status = -1;
 	if (wait_for_pid_and_clean(pid, &status, shutdown_flag ? WNOHANG : 0)) {
-		pid = 0;
 		wp_log(WP_DEBUG, "Child program has died, exiting");
 		retcode = WEXITSTATUS(status);
 	}

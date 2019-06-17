@@ -42,9 +42,6 @@
 #include <unistd.h>
 
 bool shutdown_flag = false;
-char waypipe_log_mode = '?';
-log_cat_t waypipe_loglevel = WP_ERROR;
-
 void handle_sigint(int sig)
 {
 	(void)sig;
@@ -111,41 +108,16 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	return sock;
 }
 
-void wp_log_handler(const char *file, int line, log_cat_t level,
+void test_log_handler(const char *file, int line, enum log_level level,
 		const char *fmt, ...)
 {
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	double time = (ts.tv_sec % 100) * 1. + ts.tv_nsec * 1e-9;
-	int pid = getpid();
-
-	char mode;
-	if (waypipe_log_mode == 'S') {
-		mode = level == WP_DEBUG ? 's' : 'S';
-	} else {
-		mode = level == WP_DEBUG ? 'c' : 'C';
-	}
-
-	char msg[1024];
-	int nwri = sprintf(msg, "%c%d:%9.6f [%s:%3d] ", mode, pid, time, file,
-			line);
+	(void)level;
+	printf("[%s:%d] ", file, line);
 	va_list args;
 	va_start(args, fmt);
-	nwri += vsnprintf(msg + nwri, (size_t)(1020 - nwri), fmt, args);
+	vprintf(fmt, args);
 	va_end(args);
-
-	if (waypipe_log_mode == 'c') {
-		/* to avoid 'staircase' rendering when using the ssh helper
-		 * mode, and -t argument */
-		msg[nwri++] = '\r';
-		msg[nwri++] = '\n';
-		msg[nwri++] = 0;
-	} else {
-		msg[nwri++] = '\n';
-		msg[nwri++] = 0;
-	}
-	// single short writes are atomic for pipes, at least
-	write(STDERR_FILENO, msg, (size_t)nwri);
+	printf("\n");
 }
 
 bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options)

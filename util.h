@@ -69,26 +69,30 @@ int set_fnctl_flag(int fd, int the_flag);
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);
 
-typedef enum { WP_DEBUG = 1, WP_ERROR = 2 } log_cat_t;
-
-extern char waypipe_log_mode;
-extern log_cat_t waypipe_loglevel;
-
-void wp_log_handler(const char *file, int line, log_cat_t level,
+enum log_level { WP_DEBUG = 0, WP_ERROR = 1 };
+typedef void (*log_handler_func_t)(const char *file, int line,
+		enum log_level level, const char *fmt, ...);
+/* a simple log handler to STDOUT for use by test programs */
+void test_log_handler(const char *file, int line, enum log_level level,
 		const char *fmt, ...);
+/* These log functions should be set by whichever translation units have a
+ * 'main'. The first one is the debug handler, second error handler. Set them to
+ * NULL to disable log messages. */
+extern log_handler_func_t log_funcs[2];
 
 #ifndef WAYPIPE_SRC_DIR_LENGTH
 #define WAYPIPE_SRC_DIR_LENGTH 0
 #endif
 // no trailing ;, user must supply
 #define wp_log(level, fmt, ...)                                                \
-	if ((level) >= waypipe_loglevel)                                       \
-	wp_log_handler(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH,      \
+	if (log_funcs[level])                                                  \
+	(*log_funcs[level])(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH, \
 			__LINE__, (level), fmt, ##__VA_ARGS__)
 
-/** Run waitpid in a loop until there are no more zombies to clean up.
- * If the target_pid was one of the completed processes, set status, return
- * true. The `options` flag will be passed to waitpid */
+/** Run waitpid in a loop until there are no more
+ * zombies to clean up. If the target_pid was one of the
+ * completed processes, set status, return true. The
+ * `options` flag will be passed to waitpid */
 bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options);
 
 /** A helper type, since very often buffers and their sizes are passed together
