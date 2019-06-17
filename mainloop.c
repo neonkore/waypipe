@@ -925,6 +925,7 @@ int main_interface_loop(int chanfd, int progfd,
 			.disabled = config->no_gpu};
 	setup_translation_map(&g.map, display_side, config->compression);
 	init_message_tracker(&g.tracker);
+	setup_video_logging();
 
 	while (!shutdown_flag) {
 		struct pollfd *pfds = NULL;

@@ -477,6 +477,9 @@ void decref_transferred_fds(
 		struct fd_translation_map *map, int nfds, int fds[]);
 void decref_transferred_rids(
 		struct fd_translation_map *map, int nids, int ids[]);
+struct transfer *setup_single_block_transfer(int *ntransfers,
+		struct transfer transfers[], int *nblocks,
+		struct bytebuf blocks[], size_t size, const char *data);
 
 // parsing.c
 
@@ -541,6 +544,25 @@ int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo);
 uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
+
+// video.c
+/** set redirect for ffmpeg logging through wp_log */
+
+bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
+bool video_supports_shm_format(uint32_t format);
+void setup_video_logging(void);
+void destroy_video_data(struct shadow_fd *sfd);
+void setup_video_encode(struct shadow_fd *sfd, int width, int height,
+		int stride, uint32_t drm_format);
+void setup_video_decode(struct shadow_fd *sfd, int width, int height,
+		int stride, uint32_t drm_format);
+/** the video frame to be transferred should already have been transferred into
+ * `sfd->mem_mirror`. */
+void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
+		struct transfer transfers[], int *nblocks,
+		struct bytebuf blocks[], bool first);
+void apply_video_packet_to_mirror(
+		struct shadow_fd *sfd, size_t size, const char *data);
 
 // exported for testing
 void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,

@@ -41,14 +41,14 @@ Build with meson[0]. A typical incantation is
 
 Requirements:
 
-* meson (>= 0.46 or possibly earlier. a backend for it (i.e, ninja) is
-  also needed)
+* meson (>= 0.47. and its dependencies `ninja` and `pkg-config`)
 * wayland (>= 1.15, to support absolute paths in WAYLAND_DISPLAY)
 * wayland-protocols (>= 1.12, for the xdg-shell protocol, and others)
 * libffi
 * libgbm (from a recent version of mesa)
 * libzstd
 * liblz4
+* ffmpeg (optional, >=3.1, for lossy video encoding)
 * scdoc (optional, to generate a man page)
 * sys/sdt.h (optional, to provide static tracepoints for profiling)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)

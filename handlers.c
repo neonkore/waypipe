@@ -1294,7 +1294,9 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		/* replace the format with something the driver can probably
 		 * handle */
 		info.format = dmabuf_get_simple_format_for_plane(format, i);
-		if (params->nplanes == 1 && format == 0x34325258 &&
+		if (params->nplanes == 1 &&
+				video_supports_dmabuf_format(
+						format, info.modifier) &&
 				context->g->config->video_if_possible) {
 			// attempt video codec
 			info.using_video = true;

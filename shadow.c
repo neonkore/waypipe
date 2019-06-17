@@ -38,13 +38,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <libavformat/avformat.h>
-#include <libavutil/display.h>
-#include <libavutil/hwcontext_drm.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/opt.h>
-#include <libavutil/pixdesc.h>
-#include <libswscale/swscale.h>
 #include <lz4frame.h>
 #include <zstd.h>
 
@@ -75,6 +68,9 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
 static void destroy_unlinked_sfd(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
+	/* video must be cleaned up before any buffers that it may rely on */
+	destroy_video_data(sfd);
+
 	if (sfd->type == FDC_FILE) {
 		munmap(sfd->file_mem_local, sfd->file_size);
 		free(sfd->mem_mirror);
@@ -88,12 +84,6 @@ static void destroy_unlinked_sfd(
 		free(sfd->mem_mirror);
 		free(sfd->diff_buffer);
 		free(sfd->compress_buffer);
-
-		sws_freeContext(sfd->video_color_context);
-		av_frame_free(&sfd->video_reg_frame);
-		av_frame_free(&sfd->video_yuv_frame);
-		avcodec_free_context(&sfd->video_context);
-		av_packet_free(&sfd->video_packet);
 		free(sfd->video_buffer);
 
 	} else if (fdcat_ispipe(sfd->type)) {
@@ -501,108 +491,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->type = FDC_DMABUF;
 
 		if (info && info->using_video) {
-			// Try to set up a video encoding and a video decoding
-			// stream with AVCodec, although transmissions in each
-			// direction are relatively independent. TODO: use
-			// hardware support only if available.
-			struct AVCodec *codec =
-					avcodec_find_encoder(AV_CODEC_ID_H264);
-			if (!codec) {
-				wp_log(WP_ERROR,
-						"Failed to find encoder for h264");
-			}
-
-			struct AVCodecContext *ctx =
-					avcodec_alloc_context3(codec);
-
-			struct AVPacket *pkt = av_packet_alloc();
-
-			ctx->bit_rate = 3000000;
-			// non-odd resolution ?
-			ctx->width = align((int)info->width, 8);
-			ctx->height = align((int)info->height, 8);
-			// "time" is only meaningful in terms of the frames
-			// provided
-			ctx->time_base = (AVRational){1, 25};
-			ctx->framerate = (AVRational){25, 1};
-
-			/* B-frames are directly tied to latency, since each one
-			 * is predicted using its preceding and following
-			 * frames. The gop size is chosen by the driver. */
-			ctx->gop_size = -1;
-			ctx->max_b_frames = 0; // Q: how to get this to zero?
-			ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-			// low latency
-			ctx->delay = 0;
-			if (av_opt_set(ctx->priv_data, "preset", "ultrafast",
-					    0) != 0) {
-				wp_log(WP_ERROR,
-						"Failed to set x264 encode ultrafast preset");
-			}
-			if (av_opt_set(ctx->priv_data, "tune", "zerolatency",
-					    0) != 0) {
-				wp_log(WP_ERROR,
-						"Failed to set x264 encode zerolatency");
-			}
-
-			bool near_perfect = false;
-			if (near_perfect && av_opt_set(ctx->priv_data, "crf",
-							    "0", 0) != 0) {
-				wp_log(WP_ERROR, "Failed to set x264 crf");
-			}
-
-			// option: crf = 0
-
-			if (avcodec_open2(ctx, codec, NULL) < 0) {
-				wp_log(WP_ERROR, "Failed to open codec");
-			}
-
-			struct AVFrame *frame = av_frame_alloc();
-			if (!frame) {
-				wp_log(WP_ERROR,
-						"Could not allocate video frame");
-			}
-			frame->format = AV_PIX_FMT_BGR0;
-			frame->width = ctx->width;
-			frame->height = ctx->height;
-			frame->linesize[0] = (int)info->strides[0];
-
-			struct AVFrame *yuv_frame = av_frame_alloc();
-			yuv_frame->width = ctx->width;
-			yuv_frame->height = ctx->height;
-			yuv_frame->format = AV_PIX_FMT_YUV420P;
-			if (av_image_alloc(yuv_frame->data, yuv_frame->linesize,
-					    yuv_frame->width, yuv_frame->height,
-					    AV_PIX_FMT_YUV420P, 64) < 0) {
-				wp_log(WP_ERROR,
-						"Failed to allocate temp image");
-			}
-
-			if (sws_isSupportedInput(AV_PIX_FMT_BGR0) == 0) {
-				wp_log(WP_ERROR,
-						"AV_PIX_FMT_BGR0 not supported");
-			}
-			if (sws_isSupportedInput(AV_PIX_FMT_YUV420P) == 0) {
-				wp_log(WP_ERROR,
-						"AV_PIX_FMT_YUV420P not supported");
-			}
-
-			struct SwsContext *sws = sws_getContext(ctx->width,
-					ctx->height, AV_PIX_FMT_BGR0,
-					ctx->width, ctx->height,
-					AV_PIX_FMT_YUV420P, SWS_BILINEAR, NULL,
-					NULL, NULL);
-			if (!sws) {
-				wp_log(WP_ERROR,
-						"Could not create software color conversion context");
-			}
-
-			sfd->video_codec = codec;
-			sfd->video_yuv_frame = yuv_frame;
-			sfd->video_reg_frame = frame;
-			sfd->video_packet = pkt;
-			sfd->video_context = ctx;
-			sfd->video_color_context = sws;
+			setup_video_encode(sfd, (int)info->width,
+					(int)info->height,
+					(int)info->strides[0],
+					(int)info->format);
 		}
 	}
 	return sfd;
@@ -795,7 +687,7 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 	}
 }
 
-static struct transfer *setup_single_block_transfer(int *ntransfers,
+struct transfer *setup_single_block_transfer(int *ntransfers,
 		struct transfer transfers[], int *nblocks,
 		struct bytebuf blocks[], size_t size, const char *data)
 {
@@ -1050,101 +942,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (sfd->dmabuf_info.using_video && sfd->video_context &&
 				sfd->video_reg_frame && sfd->video_packet) {
 			memcpy(sfd->mem_mirror, data, sfd->dmabuf_size);
-			sfd->video_reg_frame->data[0] =
-					(uint8_t *)sfd->mem_mirror;
-			for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-				sfd->video_reg_frame->data[i] = NULL;
-			}
-
-			av_frame_make_writable(sfd->video_yuv_frame);
-			if (sws_scale(sfd->video_color_context,
-					    (const uint8_t *const *)sfd
-							    ->video_reg_frame
-							    ->data,
-					    sfd->video_reg_frame->linesize, 0,
-					    sfd->video_reg_frame->height,
-					    sfd->video_yuv_frame->data,
-					    sfd->video_yuv_frame->linesize) <
-					0) {
-				wp_log(WP_ERROR,
-						"Failed to perform color conversion");
-			}
-
-			sfd->video_yuv_frame->pts = sfd->video_frameno++;
-			int sendstat = avcodec_send_frame(sfd->video_context,
-					sfd->video_yuv_frame);
-			char errbuf[256];
-			strcpy(errbuf, "Unknown error");
-			if (sendstat < 0) {
-				av_strerror(sendstat, errbuf, sizeof(errbuf));
-				wp_log(WP_ERROR, "Failed to create frame: %s",
-						errbuf);
-				return;
-			}
-			// assume 1-1 frames to packets, at the moment
-			int recvstat = avcodec_receive_packet(
-					sfd->video_context, sfd->video_packet);
-			if (recvstat == AVERROR(EINVAL)) {
-				wp_log(WP_ERROR, "Failed to receive packet");
-				return;
-			} else if (recvstat == AVERROR(EAGAIN)) {
-				wp_log(WP_ERROR, "Packet needs more input");
-				// Clearly, the solution is to resend the
-				// original frame ? but _lag_
-			}
-			if (recvstat == 0) {
-				// we can unref the packet when? after sending?
-				// on the next arrival?
-				struct AVPacket *pkt = sfd->video_packet;
-				size_t tsize;
-				if (first) {
-					// For the first frame, we must prepend
-					// the video slice data
-					free(sfd->video_buffer);
-					sfd->video_buffer = calloc(
-							align(pkt->buf->size + sizeof(struct dmabuf_slice_data),
-									8),
-							1);
-					memcpy(sfd->video_buffer,
-							&sfd->dmabuf_info,
-							sizeof(struct dmabuf_slice_data));
-					memcpy(sfd->video_buffer + sizeof(struct dmabuf_slice_data),
-							pkt->buf->data,
-							pkt->buf->size);
-					tsize = pkt->buf->size +
-						sizeof(struct dmabuf_slice_data);
-				} else {
-					free(sfd->video_buffer);
-					size_t sz = pkt->buf->size;
-					sfd->video_buffer =
-							malloc(align(sz, 8));
-					memcpy(sfd->video_buffer,
-							pkt->buf->data, sz);
-					tsize = sz;
-				}
-				av_packet_unref(pkt);
-
-				struct transfer *tf = setup_single_block_transfer(
-						ntransfers, transfers, nblocks,
-						blocks, tsize,
-						sfd->video_buffer);
-				tf->type = sfd->type;
-				tf->obj_id = sfd->remote_id;
-				tf->special.file_actual_size =
-						(int)sfd->dmabuf_size;
-			} else if (first) {
-				struct transfer *tf = setup_single_block_transfer(
-						ntransfers, transfers, nblocks,
-						blocks,
-						sizeof(struct dmabuf_slice_data),
-						(const char *)&sfd
-								->dmabuf_info);
-				// Q: use a subtype 'FDC_VIDEODMABUF ?'
-				tf->type = sfd->type;
-				tf->obj_id = sfd->remote_id;
-				tf->special.file_actual_size =
-						(int)sfd->dmabuf_size;
-			}
+			collect_video_from_mirror(sfd, ntransfers, transfers,
+					nblocks, blocks, first);
 			return;
 		}
 
@@ -1263,62 +1062,6 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// clear
 			sfd->pipe_recv.used = 0;
 		}
-	}
-}
-
-static void apply_video_packet_to_mirror(
-		struct shadow_fd *sfd, size_t size, const char *data)
-{
-	// We unpack directly one mem_mirror
-	sfd->video_reg_frame->data[0] = (uint8_t *)sfd->mem_mirror;
-	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-		sfd->video_reg_frame->data[i] = NULL;
-	}
-
-	// padding, requires zerod overflow for read
-	sfd->video_packet->data = (uint8_t *)data;
-	sfd->video_packet->size = size;
-
-	int sendstat = avcodec_send_packet(
-			sfd->video_context, sfd->video_packet);
-	char errbuf[256];
-	strcpy(errbuf, "Unknown error");
-	if (sendstat < 0) {
-		av_strerror(sendstat, errbuf, sizeof(errbuf));
-		wp_log(WP_ERROR, "Failed to send packet: %s", errbuf);
-	}
-
-	while (true) {
-		// Apply all produced frames
-		int recvstat = avcodec_receive_frame(
-				sfd->video_context, sfd->video_yuv_frame);
-		if (recvstat == 0) {
-			if (sws_scale(sfd->video_color_context,
-					    (const uint8_t *const *)sfd
-							    ->video_yuv_frame
-							    ->data,
-					    sfd->video_yuv_frame->linesize, 0,
-					    sfd->video_yuv_frame->height,
-					    sfd->video_reg_frame->data,
-					    sfd->video_reg_frame->linesize) <
-					0) {
-				wp_log(WP_ERROR,
-						"Failed to perform color conversion");
-			}
-
-		} else {
-			if (recvstat != AVERROR(EAGAIN)) {
-				char errbuf[256];
-				strcpy(errbuf, "Unknown error");
-				av_strerror(sendstat, errbuf, sizeof(errbuf));
-				wp_log(WP_ERROR,
-						"Failed to receive frame due to error: %s",
-						errbuf);
-			}
-			break;
-		}
-		// the scale/copy operation output is
-		// already onto mem_mirror
 	}
 }
 
@@ -1445,66 +1188,10 @@ void create_from_update(struct fd_translation_map *map,
 		const char *contents = NULL;
 		size_t contents_size = sfd->dmabuf_size;
 		if (info->using_video) {
-			struct AVCodec *codec =
-					avcodec_find_decoder(AV_CODEC_ID_H264);
-			if (!codec) {
-				wp_log(WP_ERROR,
-						"Failed to find decoder for h264");
-			}
-
-			struct AVCodecContext *ctx =
-					avcodec_alloc_context3(codec);
-
-			struct AVPacket *pkt = av_packet_alloc();
-			// non-odd resolution ?
-			ctx->width = align(info->width, 8);
-			ctx->height = align(info->height, 8);
-			ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-			ctx->delay = 0;
-			if (avcodec_open2(ctx, codec, NULL) < 0) {
-				wp_log(WP_ERROR, "Failed to open codec");
-			}
-
-			struct AVFrame *frame = av_frame_alloc();
-			if (!frame) {
-				wp_log(WP_ERROR,
-						"Could not allocate video frame");
-			}
-			frame->format = AV_PIX_FMT_BGR0;
-			frame->width = ctx->width;
-			frame->height = ctx->height;
-			frame->linesize[0] = info->strides[0];
-
-			if (sws_isSupportedInput(AV_PIX_FMT_BGR0) == 0) {
-				wp_log(WP_ERROR,
-						"AV_PIX_FMT_BGR0 not supported");
-			}
-			if (sws_isSupportedInput(AV_PIX_FMT_YUV420P) == 0) {
-				wp_log(WP_ERROR,
-						"AV_PIX_FMT_YUV420P not supported");
-			}
-
-			struct SwsContext *sws = sws_getContext(ctx->width,
-					ctx->height, AV_PIX_FMT_YUV420P,
-					ctx->width, ctx->height,
-					AV_PIX_FMT_BGR0, SWS_BILINEAR, NULL,
-					NULL, NULL);
-			if (!sws) {
-				wp_log(WP_ERROR,
-						"Could not create software color conversion context");
-			}
-
-			struct AVFrame *yuv_frame = av_frame_alloc();
-			yuv_frame->width = ctx->width;
-			yuv_frame->height = ctx->height;
-			yuv_frame->format = AV_PIX_FMT_YUV420P;
-
-			sfd->video_codec = codec;
-			sfd->video_reg_frame = frame;
-			sfd->video_yuv_frame = yuv_frame;
-			sfd->video_packet = pkt;
-			sfd->video_context = ctx;
-			sfd->video_color_context = sws;
+			setup_video_decode(sfd, (int)info->width,
+					(int)info->height,
+					(int)info->strides[0],
+					(int)info->format);
 
 			// Apply first frame, if available
 			if (block.size > sizeof(struct dmabuf_slice_data)) {

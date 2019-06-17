@@ -2,7 +2,7 @@ project(
 	'waypipe',
 	'c',
 	license: 'MIT/Expat',
-	meson_version: '>=0.46.0',
+	meson_version: '>=0.47.0',
 	default_options: [
 		'c_std=c11',
 		'warning_level=2',
@@ -41,22 +41,29 @@ wayland_client = dependency('wayland-client', version: '>=1.15') # WAYLAND_DISPL
 wayland_server = dependency('wayland-server', version: '>=1.15') # WAYLAND_DISPLAY=path
 wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
 wayland_scanner = dependency('wayland-scanner', native: true, version: '>=1.15') # public-code
-libgbm = dependency('gbm')
+libgbm = dependency('gbm', required : get_option('with_dmabuf'))
+libdrm = dependency('libdrm', required : get_option('with_dmabuf'))
+if libgbm.found() and libdrm.found()
+	add_project_arguments('-DHAS_DMABUF=1', language : 'c')
+endif
 libffi = dependency('libffi')
+pthreads = dependency('threads')
 rt = cc.find_library('rt')
 if cc.has_header('sys/sdt.h')
 	add_project_arguments('-DHAS_USDT=1', language : 'c')
 endif
 liblz4 = dependency('liblz4')
 libzstd = dependency('libzstd')
-libavcodec = dependency('libavcodec')
-libavutil = dependency('libavutil')
-libswscale = dependency('libswscale')
-pthreads = dependency('threads')
+libavcodec = dependency('libavcodec', required : get_option('with_video'))
+libavutil = dependency('libavutil', required : get_option('with_video'))
+libswscale = dependency('libswscale', required : get_option('with_video'))
+if libavcodec.found() and libavutil.found() and libswscale.found()
+	add_project_arguments('-DHAS_VIDEO=1', language : 'c')
+endif
 
 subdir('protocols')
 
-waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c']
+waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
 waypipe_dependencies = [
 	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 	libffi,          # To call wayland protocol functions
@@ -69,12 +76,20 @@ waypipe_dependencies = [
 	wayland_client   # For wl_display_connnect
 ]
 
+waypipe_includes = []
+if libdrm.found()
+	waypipe_includes += libdrm.get_pkgconfig_variable('includedir')
+endif
+
 executable(
 	'waypipe',
 	['waypipe.c'] + waypipe_source_files,
 	dependencies : waypipe_dependencies,
+	include_directories : waypipe_includes,
 	install: true
 )
+
+message(waypipe_includes)
 
 scdoc = dependency('scdoc', version: '>=1.9.4', native: true, required: false)
 if scdoc.found()
@@ -94,7 +109,12 @@ if scdoc.found()
 endif
 
 # Testing
-test_diff = executable('diff_roundtrip', ['test/diff_roundtrip.c'] + ['shadow.c', 'util.c', 'dmabuf.c', 'interval.c'], dependencies: waypipe_dependencies)
+test_diff = executable(
+	'diff_roundtrip',
+	['test/diff_roundtrip.c'] + ['shadow.c', 'util.c', 'dmabuf.c', 'interval.c', 'video.c'],
+	include_directories : waypipe_includes,
+	dependencies: waypipe_dependencies
+)
 test('Whether diff operations successfully roundtrip', test_diff)
 test_damage = executable('damage_merge', ['test/damage_merge.c'] + ['interval.c', 'util.c'])
 test('If damage rectangles merge efficiently', test_damage)
