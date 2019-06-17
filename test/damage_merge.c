@@ -270,7 +270,8 @@ static void merge_simple(const int old_count, struct ext_interval *old_list,
 	for (int i = 0; i < new_count; i++) {
 		nintervals += new_list[i].rep;
 	}
-	struct interval *vec = malloc((size_t)nintervals * sizeof(vec));
+	struct interval *vec =
+			malloc((size_t)nintervals * sizeof(struct interval));
 	int base = convert_to_simple(vec, old_count, old_list);
 	base += convert_to_simple(&vec[base], new_count, new_list);
 
@@ -464,10 +465,10 @@ int main(int argc, char **argv)
 
 	srand(0);
 	// no larger, because e.g. test sizes are (margins*N)^2
-	int margins[] = {2, 11, 32};
-	int nvec[] = {1000, 50, 10};
+	int margins[] = {2, 11, 32, 1};
+	int nvec[] = {1000, 50, 10, 30};
 
-	for (int z = 0; z < 3; z++) {
+	for (int z = 0; z < (int)(sizeof(nvec) / sizeof(nvec[0])); z++) {
 		for (int ip = 0; patterns[ip].name; ip++) {
 			/* Pattern tests: we generate a given pattern of damage
 			 * rectangles, apply the merge function, and verify that
@@ -520,7 +521,7 @@ int main(int argc, char **argv)
 			double elapsed12 = 1.0 * (t2.tv_sec - t1.tv_sec) +
 					   1e-9 * (t2.tv_nsec - t1.tv_nsec);
 
-			printf("merge operation took %f ms\n", elapsed01 * 1e3);
+			printf("scan operation took %f ms\n", elapsed01 * 1e3);
 			printf("simple operation took %f ms\n",
 					elapsed12 * 1e3);
 

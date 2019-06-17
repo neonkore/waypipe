@@ -305,10 +305,109 @@ static struct ext_interval smooth_gaps(struct ext_interval i, int merge_margin)
 		i.width = i.stride * (i.rep - 1) + i.width;
 		i.rep = 1;
 	}
-	if (i.rep == 1) {
-		i.stride = 0;
-	}
 	return i;
+}
+
+/* Yet another binary heap implementation. Supports heapify/pop_min/insert.
+ * indexes start at 1. */
+struct eint_heap {
+	struct ext_interval *data;
+	int data_size;
+	int count;
+};
+static void eint_fix_down(struct eint_heap *heap, int s)
+{
+	struct ext_interval carry = heap->data[s];
+	int n = s;
+	while (2 * n <= heap->count) {
+		bool right_swap = 2 * n < heap->count &&
+				  heap->data[2 * n + 1].start <
+						  heap->data[2 * n].start;
+		int c = right_swap ? 2 * n + 1 : 2 * n;
+		if (carry.start > heap->data[c].start) {
+			heap->data[n] = heap->data[c];
+		} else {
+			break;
+		}
+		n = c;
+	}
+	heap->data[n] = carry;
+}
+static void eint_heap_create(struct eint_heap *heap, int nintervals,
+		const struct ext_interval *intervals)
+{
+	int sz = 1;
+	while (sz < nintervals) {
+		sz *= 2;
+	}
+	heap->data_size = sz;
+	struct ext_interval *data = calloc(sz, sizeof(struct ext_interval));
+	heap->data = &data[-1];
+	heap->count = nintervals;
+	memcpy(heap->data + 1, intervals,
+			sizeof(struct ext_interval) * nintervals);
+
+	/* standard heapify */
+	for (int s = heap->count / 2; s > 0; s--) {
+		eint_fix_down(heap, s);
+	}
+}
+static void eint_heap_destroy(struct eint_heap *heap) { free(&heap->data[1]); }
+static struct ext_interval eint_heap_pop_min(struct eint_heap *heap)
+{
+	struct ext_interval v = heap->data[1];
+	heap->data[1] = heap->data[heap->count];
+	heap->count--;
+	eint_fix_down(heap, 1);
+	return v;
+}
+static void eint_heap_insert(struct eint_heap *heap, struct ext_interval v)
+{
+	if (heap->count >= heap->data_size) {
+		heap->data_size *= 2;
+		struct ext_interval *e = realloc(&heap->data[1],
+				sizeof(struct ext_interval) * heap->data_size);
+		heap->data = &e[-1];
+	}
+	heap->count++;
+	int i = heap->count;
+	while (i > 1) {
+		int p = i / 2;
+		if (heap->data[p].start <= v.start) {
+			break;
+		}
+		heap->data[i] = heap->data[p];
+		i = p;
+	}
+	heap->data[i] = v;
+}
+struct eint_list {
+	struct ext_interval *data;
+	int data_size;
+	int count;
+};
+
+static void eint_list_create(struct eint_list *list, int sz)
+{
+	int ds = 1;
+	while (ds < sz) {
+		ds *= 2;
+	}
+	list->count = 0;
+	list->data_size = ds;
+	list->data = calloc(list->data_size, sizeof(struct ext_interval));
+}
+
+static void eint_list_insert(struct eint_list *list, struct ext_interval e)
+{
+	if (list->count == list->data_size) {
+		list->data_size *= 2;
+		struct ext_interval *ret = realloc(list->data,
+				list->data_size * sizeof(struct ext_interval));
+		/* failure handling, todo */
+		list->data = ret;
+	}
+	list->data[list->count++] = e;
 }
 
 void merge_core(const int old_count, struct ext_interval *old_list,
@@ -316,39 +415,47 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 		int *dst_count, struct ext_interval **dst_list,
 		int merge_margin)
 {
-
-	/* Naive merging. With each pass, introduce an additional
-	 * interval. There will be at most a factor of 2 expansion, so
-	 * we plan ahead by factor-4 expanding. */
-	int space = max(old_count, 16) * 4;
-	struct ext_interval *scratch =
-			calloc(space, sizeof(struct ext_interval));
-	memcpy(scratch, old_list, old_count * sizeof(struct ext_interval));
-	int used = old_count;
-
-	// Standard dynamic resizing
-	int queue_space = new_count * 2;
-	struct ext_interval *queue =
-			calloc(new_count * 2, sizeof(struct ext_interval));
-	int z = 0;
+	/* todo, limit number of copies */
+	struct ext_interval *src = malloc(
+			(old_count + new_count) * sizeof(struct ext_interval));
+	memcpy(src, old_list, old_count * sizeof(struct ext_interval));
+	int count = old_count;
 	for (int i = 0; i < new_count; i++) {
-		queue[z++] = smooth_gaps(new_list[i], merge_margin);
+		struct ext_interval e = smooth_gaps(new_list[i], merge_margin);
+		if (e.rep && e.width) {
+			src[count++] = e;
+		}
 	}
-	while (z > 0) {
-		/* In each round, merge the incoming interval with every
-		 * other interval in the list. When an element is
-		 * absorbed (for instance, because it was entirely
-		 * contained a large element), remove it from the list,
-		 * and update the list as it is scanned. When an element
-		 * is added, insert it into the rewrite gap, or if not
-		 * possible, append it to the end of the list. */
-		const struct ext_interval intv = queue[--z];
 
-		int write_index = 0;
+	struct eint_heap queue;
+	eint_heap_create(&queue, count, src);
+	free(src);
+
+	struct eint_list pool, log;
+	eint_list_create(&pool, 4);
+	eint_list_create(&log, 4);
+
+	/* the scan-based algorithm maintains three collections, and
+	 * a cursor scanning from the minimum to the maximum start value:
+	 * -> a `log` of intervals which will no longer be modified
+	 * -> a `pool` of margin-disjoint intervals
+	 * -> a `queue` of intervals to be merged into the pool */
+	while (queue.count) {
+		const struct ext_interval intv = eint_heap_pop_min(&queue);
+		int cursor = intv.start - merge_margin;
+
+		/* Extend pool with new element, recycle */
+		int w = 0;
 		bool intv_changed = false;
-		int read_index = 0;
-		for (; read_index < used;) {
-			const struct ext_interval test = scratch[read_index++];
+		int r = 0;
+		for (; r < pool.count;) {
+			const struct ext_interval test = pool.data[r++];
+			if (eint_high(test) <= cursor) {
+				/* no interaction possible with this or any
+				 * future elements */
+				eint_list_insert(&log, test);
+				continue;
+			}
 
 			struct ext_interval products[3];
 			uint32_t ne = merge_intervals(
@@ -356,7 +463,7 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 			if (ne == 0) {
 				// No change, keep inspected element
 				// unchanged
-				scratch[write_index++] = test;
+				pool.data[w++] = test;
 			} else {
 				/* If a portion of the introduced
 				 * interval was entirely contained by
@@ -373,7 +480,7 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 					}
 				}
 				if (existing_unchanged) {
-					scratch[write_index++] = test;
+					pool.data[w++] = test;
 				}
 
 				/* If the introduced interval was
@@ -394,19 +501,10 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 				 * reintroduced to the queue,
 				 * because we cannot rule out collisions
 				 * with preceding/following elements */
-				if (z + (int)ne >= queue_space) {
-					queue = realloc(queue,
-							2 * queue_space *
-									sizeof(struct ext_interval));
-					memset(queue + z, 0,
-							sizeof(struct ext_interval) *
-									(queue_space * 2 -
-											z));
-					queue_space *= 2;
-				}
 				for (uint32_t x = 0; x < ne; x++) {
 					if (products[x].width) {
-						queue[z++] = products[x];
+						eint_heap_insert(&queue,
+								products[x]);
 					}
 				}
 
@@ -419,36 +517,26 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 		if (intv_changed) {
 			/* Pass unsuccessful, fixing up any produced
 			 * gaps */
-			memmove(&scratch[write_index], &scratch[read_index],
-					(used - read_index) *
+			memmove(&pool.data[w], &pool.data[r],
+					(pool.count - r) *
 							sizeof(struct ext_interval));
-			used = write_index + used - read_index;
+			pool.count = w + pool.count - r;
 		} else {
-			/* Pass was successful and did not modify the
-			 * introduced interval */
-			scratch[write_index++] = intv;
-			used = write_index;
-		}
-
-		if (used + 1 >= space / 2) {
-			space *= 2;
-			struct ext_interval *nscratch = calloc(
-					space, sizeof(struct ext_interval));
-			memcpy(nscratch, scratch,
-					sizeof(struct ext_interval) * used);
-			free(scratch);
-			scratch = nscratch;
+			pool.count = w;
+			eint_list_insert(&pool, intv);
 		}
 	}
 
-	struct ext_interval *dst =
-			realloc(old_list, sizeof(struct ext_interval) * used);
-	memcpy(dst, scratch, sizeof(struct ext_interval) * used);
-	free(scratch);
-	free(queue);
+	/* flush pool remainders to log */
+	struct ext_interval *retdata = realloc(log.data,
+			(log.count + pool.count) * sizeof(struct ext_interval));
+	memcpy(retdata + log.count, pool.data,
+			pool.count * sizeof(struct ext_interval));
+	*dst_count = log.count + pool.count;
+	*dst_list = retdata;
 
-	*dst_list = dst;
-	*dst_count = used;
+	free(pool.data);
+	eint_heap_destroy(&queue);
 }
 
 /* This value must be larger than 8, or diffs will explode */
