@@ -47,8 +47,9 @@ int run_client(const char *socket_path, const struct main_config *config,
 
 enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
 
-static bool log_colored = false;
+static bool log_to_tty = false;
 static enum waypipe_mode log_mode = MODE_FAIL;
+static bool log_anti_staircase = false;
 log_handler_func_t log_funcs[2] = {NULL, NULL};
 
 /* Usage: Wrapped to 79 characters */
@@ -108,11 +109,12 @@ static void log_handler(const char *file, int line, enum log_level level,
 
 	char msg[1024];
 	int nwri = 0;
-	if (log_colored) {
+	if (log_to_tty) {
 		msg[nwri++] = '\x1b';
 		msg[nwri++] = '[';
 		msg[nwri++] = '3';
-		/* blue for waypipe client, green for waypipe server */
+		/* blue for waypipe client, green for waypipe server,
+		 * (or unformatted for waypipe server if no pty is made */
 		msg[nwri++] = log_mode == MODE_SERVER ? '2' : '4';
 		msg[nwri++] = 'm';
 		if (level == WP_ERROR) {
@@ -132,22 +134,21 @@ static void log_handler(const char *file, int line, enum log_level level,
 	nwri += vsnprintf(msg + nwri, (size_t)(1000 - nwri), fmt, args);
 	va_end(args);
 
-	if (log_colored) {
+	if (log_to_tty) {
 		msg[nwri++] = '\x1b';
 		msg[nwri++] = '[';
 		msg[nwri++] = '0';
 		msg[nwri++] = 'm';
+
+		/* to avoid 'staircase' rendering when ssh has the '-t' flag
+		 * and sets raw mode for the shared terminal output */
+		if (log_anti_staircase) {
+			msg[nwri++] = '\r';
+		}
 	}
-	if (log_mode == MODE_SSH) {
-		/* to avoid 'staircase' rendering when using the ssh helper
-		 * mode, and -t argument */
-		msg[nwri++] = '\r';
-		msg[nwri++] = '\n';
-		msg[nwri++] = 0;
-	} else {
-		msg[nwri++] = '\n';
-		msg[nwri++] = 0;
-	}
+	msg[nwri++] = '\n';
+	msg[nwri] = 0;
+
 	// single short writes are atomic for pipes, at least
 	write(STDERR_FILENO, msg, (size_t)nwri);
 }
@@ -171,7 +172,10 @@ static void fill_rand_token(char tok[static 8])
 	}
 }
 
-static int locate_openssh_cmd_hostname(int argc, char *const *argv)
+/* Identifies the index at which the `destination` occurs in an openssh command,
+ * and also sets a boolean if pty allocation was requested by an ssh flag */
+static int locate_openssh_cmd_hostname(
+		int argc, char *const *argv, bool *allocates_pty)
 {
 	/* Based on command line help for openssh 8.0 */
 	char fixletters[] = "46AaCfGgKkMNnqsTtVvXxYy";
@@ -186,6 +190,10 @@ static int locate_openssh_cmd_hostname(int argc, char *const *argv)
 		}
 		if (argv[dstidx][0] == '-' &&
 				strchr(fixletters, argv[dstidx][1]) != NULL) {
+			for (const char *c = &argv[dstidx][1]; *c; c++) {
+				*allocates_pty |= (*c == 't');
+				*allocates_pty &= (*c != 'T');
+			}
 			dstidx++;
 			continue;
 		}
@@ -406,7 +414,8 @@ int main(int argc, char **argv)
 	}
 	log_funcs[1] = log_handler;
 	log_mode = mode;
-	log_colored = isatty(STDERR_FILENO);
+	log_anti_staircase = false;
+	log_to_tty = isatty(STDERR_FILENO);
 
 	// Setup signals
 	struct sigaction ia; // SIGINT: abort operations, and set a flag
@@ -449,7 +458,6 @@ int main(int argc, char **argv)
 		return run_server(socketpath, &config, oneshot, unlink_at_end,
 				application, app_argv);
 	} else {
-
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe";
 		}
@@ -474,34 +482,43 @@ int main(int argc, char **argv)
 		sprintf(clientsock, "%s-client-%s.sock", socketpath, rbytes);
 		sprintf(linkage, "%s:%s", serversock, clientsock);
 
+		bool allocates_pty = false;
+		int dstidx = locate_openssh_cmd_hostname(
+				argc, argv, &allocates_pty);
+		if (dstidx < 0) {
+			fprintf(stderr, "waypipe: Failed to locate destination in ssh command string\n");
+			return EXIT_FAILURE;
+		}
+		/* If there are no arguments following the destination */
+		bool needs_login_shell = dstidx + 1 == argc;
+		if (needs_login_shell || allocates_pty) {
+			log_anti_staircase = true;
+		}
+
 		pid_t conn_pid = fork();
 		if (conn_pid == -1) {
 			wp_log(WP_ERROR, "Fork failure");
 			return EXIT_FAILURE;
 		} else if (conn_pid == 0) {
-			int dstidx = locate_openssh_cmd_hostname(argc, argv);
-			if (dstidx < 0) {
-				fprintf(stderr, "waypipe: Failed to locate destination in ssh command string\n");
-				return EXIT_FAILURE;
-			}
-
-			/* If there are no arguments following the destination
-			 */
-			bool needs_login_shell = dstidx + 1 == argc;
-
 			int nextra = 10 + debug + oneshot +
 				     2 * (remote_drm_node != NULL) +
 				     2 * (config.compression != COMP_NONE) +
 				     config.video_if_possible +
-				     needs_login_shell;
+				     2 * needs_login_shell;
 			char **arglist = calloc(argc + nextra, sizeof(char *));
 
 			int offset = 0;
 			arglist[offset++] = "/usr/bin/ssh";
-			/* Force tty allocation. The user-override is a -T flag.
-			 * Unfortunately, -t disables newline translation on the
-			 * local side; see `wp_log_handler`. */
-			arglist[offset++] = "-t";
+			if (needs_login_shell) {
+				/* Force tty allocation, if we are attempting
+				 * a login shell. The user-override is a -T
+				 * flag, and a second -t will ensure a login
+				 * shell even if waypipe ssh was not run from a
+				 * pty. Unfortunately, -t disables newline
+				 * translation on the local side; see
+				 * `log_handler`. */
+				arglist[offset++] = "-t";
+			}
 			arglist[offset++] = "-R";
 			arglist[offset++] = linkage;
 			for (int i = 0; i <= dstidx; i++) {
