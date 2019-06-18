@@ -139,7 +139,15 @@ struct thread_data {
 	size_t cd_actual_size;
 	struct comp_ctx comp_ctx;
 };
-enum compression_mode { COMP_NONE, COMP_LZ4, COMP_ZSTD };
+enum compression_mode {
+	COMP_NONE,
+#ifdef HAS_LZ4
+	COMP_LZ4,
+#endif
+#ifdef HAS_ZSTD
+	COMP_ZSTD,
+#endif
+};
 struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;

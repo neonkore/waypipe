@@ -38,8 +38,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef HAS_LZ4
 #include <lz4frame.h>
+#endif
+#ifdef HAS_ZSTD
 #include <zstd.h>
+#endif
 
 bool fdcat_ispipe(fdcat_t t)
 {
@@ -105,9 +109,14 @@ static void destroy_unlinked_sfd(
 }
 static void cleanup_comp_ctx(struct comp_ctx *ctx)
 {
+#ifdef HAS_ZSTD
 	ZSTD_freeCCtx(ctx->zstd_ccontext);
 	ZSTD_freeDCtx(ctx->zstd_dcontext);
+#endif
+#ifdef HAS_LZ4
 	LZ4F_freeDecompressionContext(ctx->lz4f_dcontext);
+#endif
+	(void)ctx;
 }
 static void cleanup_threads(struct fd_translation_map *map)
 {
@@ -133,6 +142,7 @@ static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
 	ctx->zstd_ccontext = NULL;
 	ctx->zstd_dcontext = NULL;
 	ctx->lz4f_dcontext = NULL;
+#ifdef HAS_LZ4
 	if (mode == COMP_LZ4) {
 		LZ4F_errorCode_t err = LZ4F_createDecompressionContext(
 				&ctx->lz4f_dcontext, LZ4F_VERSION);
@@ -141,13 +151,17 @@ static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
 					"Failed to created LZ4F decompression context: %s",
 					LZ4F_getErrorName(err));
 		}
-
-	} else if (mode == COMP_ZSTD) {
+	}
+#endif
+#ifdef HAS_ZSTD
+	if (mode == COMP_ZSTD) {
 		ctx->zstd_ccontext = ZSTD_createCCtx();
 		ctx->zstd_dcontext = ZSTD_createDCtx();
 		ZSTD_CCtx_setParameter(
 				ctx->zstd_ccontext, ZSTD_c_compressionLevel, 5);
 	}
+#endif
+	(void)mode;
 }
 void cleanup_translation_map(struct fd_translation_map *map)
 {
@@ -184,13 +198,18 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 	float thread_switch_delay = 0.001f; // seconds
 	float scan_proc_irate = 0.5e-9f;    // seconds/byte
 	float comp_proc_irate = 0.f;        // seconds/bytes
+#ifdef HAS_LZ4
 	if (comp == COMP_LZ4) {
 		// 0.15 seconds on uncompressable 1e8 bytes
 		comp_proc_irate = 1.5e-9f;
-	} else if (comp == COMP_ZSTD) {
+	}
+#endif
+#ifdef HAS_ZSTD
+	if (comp == COMP_ZSTD) {
 		// 0.5 seconds on uncompressable 1e8 bytes
 		comp_proc_irate = 5e-9f;
 	}
+#endif
 	float proc_irate = scan_proc_irate + comp_proc_irate;
 	if (map->nthreads > 1) {
 		map->diffcomp_thread_threshold =
@@ -210,7 +229,8 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 		map->diffcomp_thread_threshold = INT32_MAX;
 		map->comp_thread_threshold = INT32_MAX;
 	}
-	// stop task won't be called unless the main task id is incremented
+	// stop task won't be called unless the main task id is
+	// incremented
 	map->next_thread_task = THREADTASK_STOP;
 	map->nthreads_completed = 0;
 	map->task_id = 0;
@@ -219,8 +239,9 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 		pthread_cond_init(&map->work_done_notify, NULL);
 		pthread_cond_init(&map->work_needed_notify, NULL);
 
-		// The main thread has index zero, and will, since computations
-		// block it anyway, share part of the workload
+		// The main thread has index zero, and will, since
+		// computations block it anyway, share part of the
+		// workload
 		map->threads = calloc((size_t)(map->nthreads - 1),
 				sizeof(struct thread_data));
 		bool had_failures = false;
@@ -304,21 +325,27 @@ static size_t compress_bufsize(struct fd_translation_map *map, size_t max_input)
 {
 	switch (map->compression) {
 	case COMP_NONE:
+		(void)max_input;
 		return 0;
+#ifdef HAS_LZ4
 	case COMP_LZ4:
-		return (size_t)LZ4F_compressBound((int)max_input, NULL);
+		return (size_t)LZ4F_compressFrameBound((int)max_input, NULL);
+#endif
+#ifdef HAS_ZSTD
 	case COMP_ZSTD:
 		return ZSTD_compressBound(max_input);
+#endif
 	}
 	return 0;
 }
-/* With the selected compression method, compress the buffer {isize,ibuf},
- * possibly modifying {msize,mbuf}, and setting {wsize,wbuf} to indicate
- * the result */
+/* With the selected compression method, compress the buffer
+ * {isize,ibuf}, possibly modifying {msize,mbuf}, and setting
+ * {wsize,wbuf} to indicate the result */
 static void compress_buffer(struct fd_translation_map *map,
 		struct comp_ctx *ctx, size_t isize, const char *ibuf,
 		size_t msize, char *mbuf, size_t *wsize, const char **wbuf)
 {
+	(void)ctx;
 	// Ensure inputs always nontrivial
 	if (isize == 0) {
 		*wsize = 0;
@@ -329,21 +356,26 @@ static void compress_buffer(struct fd_translation_map *map,
 	DTRACE_PROBE1(waypipe, compress_buffer_enter, isize);
 	switch (map->compression) {
 	case COMP_NONE:
+		(void)msize;
+		(void)mbuf;
 		*wsize = isize;
 		*wbuf = ibuf;
 		break;
+#ifdef HAS_LZ4
 	case COMP_LZ4: {
 		size_t ws = LZ4F_compressFrame(mbuf, msize, ibuf, isize, NULL);
 		if (LZ4F_isError(ws)) {
 			wp_log(WP_ERROR,
 					"Lz4 compression failed for %d bytes in %d of space: %s",
 					(int)isize, (int)msize,
-					ZSTD_getErrorName(ws));
+					LZ4F_getErrorName(ws));
 		}
 		*wsize = (size_t)ws;
 		*wbuf = mbuf;
 		break;
 	}
+#endif
+#ifdef HAS_ZSTD
 	case COMP_ZSTD: {
 		size_t ws = ZSTD_compress2(
 				ctx->zstd_ccontext, mbuf, msize, ibuf, isize);
@@ -357,13 +389,14 @@ static void compress_buffer(struct fd_translation_map *map,
 		*wbuf = mbuf;
 		break;
 	}
+#endif
 	}
 	DTRACE_PROBE1(waypipe, compress_buffer_exit, *wsize);
 }
-/* With the selected compression method, uncompress the buffer {isize,ibuf},
- * possibly modifying {msize,mbuf}, and setting {wsize,wbuf} to indicate
- * the result. msize should be set = the uncompressed buffer size, which
- * should have been provided. */
+/* With the selected compression method, uncompress the buffer
+ * {isize,ibuf}, possibly modifying {msize,mbuf}, and setting
+ * {wsize,wbuf} to indicate the result. msize should be set = the
+ * uncompressed buffer size, which should have been provided. */
 static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		const char *ibuf, size_t msize, char *mbuf, size_t *wsize,
 		const char **wbuf)
@@ -378,9 +411,12 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 	DTRACE_PROBE1(waypipe, uncompress_buffer_enter, isize);
 	switch (map->compression) {
 	case COMP_NONE:
+		(void)msize;
+		(void)mbuf;
 		*wsize = isize;
 		*wbuf = ibuf;
 		break;
+#ifdef HAS_LZ4
 	case COMP_LZ4: {
 		size_t total = 0;
 		size_t read = 0;
@@ -405,6 +441,8 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		*wbuf = mbuf;
 		break;
 	}
+#endif
+#ifdef HAS_ZSTD
 	case COMP_ZSTD: {
 		size_t ws = ZSTD_decompressDCtx(map->comp_ctx.zstd_dcontext,
 				mbuf, msize, ibuf, isize);
@@ -419,6 +457,7 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		*wbuf = mbuf;
 		break;
 	}
+#endif
 	}
 	DTRACE_PROBE1(waypipe, uncompress_buffer_exit, *wsize);
 }
@@ -446,8 +485,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->is_dirty = true;
 	damage_everything(&sfd->damage);
 	sfd->has_owner = false;
-	/* Start the number of expected transfers to channel remaining at one,
-	 * and number of protocol objects referencing this shadow_fd at zero.*/
+	/* Start the number of expected transfers to channel remaining
+	 * at one, and number of protocol objects referencing this
+	 * shadow_fd at zero.*/
 	sfd->refcount_transfer = 1;
 	sfd->refcount_protocol = 0;
 
@@ -458,8 +498,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	if (sfd->type == FDC_FILE) {
 		// We have a file-like object
 		sfd->buffer_size = fsize;
-		// both r/w permissions, because the size the allocates the
-		// memory does not always have to be the size that modifies it
+		// both r/w permissions, because the size the allocates
+		// the memory does not always have to be the size that
+		// modifies it
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (!sfd->mem_local) {
@@ -469,8 +510,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		// This will be created at the first transfer
 		sfd->mem_mirror = NULL;
 	} else if (fdcat_ispipe(sfd->type)) {
-		// Make this end of the pipe nonblocking, so that we can include
-		// it in our main loop.
+		// Make this end of the pipe nonblocking, so that we can
+		// include it in our main loop.
 		set_fnctl_flag(sfd->fd_local, O_NONBLOCK);
 		sfd->pipe_fd = sfd->fd_local;
 
@@ -517,8 +558,8 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
 		uint64_t *__restrict__ base_blocks,
 		uint64_t *__restrict__ diff_blocks, uint64_t cursor)
 {
-	/* we paper over gaps of a given window size, to avoid fine grained
-	 * context switches */
+	/* we paper over gaps of a given window size, to avoid fine
+	 * grained context switches */
 	uint64_t i = blockrange_min;
 	uint64_t changed_val = i < blockrange_max ? changed_blocks[i] : 0;
 	uint64_t base_val = i < blockrange_max ? base_blocks[i] : 0;
@@ -532,8 +573,8 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
 			i++;
 		}
 		if (i == blockrange_max) {
-			/* it's possible that the last value actually; see exit
-			 * block */
+			/* it's possible that the last value actually;
+			 * see exit block */
 			clear_exit = true;
 			break;
 		}
@@ -541,9 +582,11 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
 		diff_blocks[last_header] = (i - 1) << 32;
 		diff_blocks[cursor++] = changed_val;
 		base_blocks[i - 1] = changed_val;
-		// changed_val != base_val, difference occurs at early index
+		// changed_val != base_val, difference occurs at early
+		// index
 		uint64_t nskip = 0;
-		// we could only sentinel this assuming a tiny window size
+		// we could only sentinel this assuming a tiny window
+		// size
 		while (i < blockrange_max && nskip <= DIFF_WINDOW_SIZE) {
 			base_val = base_blocks[i];
 			changed_val = changed_blocks[i];
@@ -555,7 +598,8 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
 		}
 		cursor -= nskip;
 		diff_blocks[last_header] |= i - nskip;
-		/* our sentinel, at worst, causes overcopy by one. this is fine
+		/* our sentinel, at worst, causes overcopy by one. this
+		 * is fine
 		 */
 	}
 
@@ -570,11 +614,11 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
 	return cursor;
 }
 
-/** Construct a very simple binary diff format, designed to be fast for small
- * changes in big files, and entire-file changes in essentially random files.
- * Tries not to read beyond the end of the input buffers, because they are often
- * mmap'd. Simultaneously updates the `base` buffer to match the `changed`
- * buffer.
+/** Construct a very simple binary diff format, designed to be fast for
+ * small changes in big files, and entire-file changes in essentially
+ * random files. Tries not to read beyond the end of the input buffers,
+ * because they are often mmap'd. Simultaneously updates the `base`
+ * buffer to match the `changed` buffer.
  *
  * `copy_domain_start` and `copy_domain_end` should be divisible by 8,
  * or SIZE_MAX
@@ -809,8 +853,8 @@ static void wait_thread_task(struct fd_translation_map *map)
 	}
 	pthread_mutex_unlock(&map->work_state_mutex);
 }
-/* Optionally compress the data in mem_mirror, and set up the initial transfer
- * blocks */
+/* Optionally compress the data in mem_mirror, and set up the initial
+ * transfer blocks */
 static void add_initial_compressed_block(struct fd_translation_map *map,
 		struct shadow_fd *sfd, int *ntransfers,
 		struct transfer transfers[], int *nblocks,
@@ -841,7 +885,8 @@ static void add_initial_compressed_block(struct fd_translation_map *map,
 	tf->subtransfers = &blocks[*nblocks];
 	tf->special.block_meta = 0;
 	if (sfd->type == FDC_DMABUF) {
-		/* Add metadata section to ensure proper remote initialization
+		/* Add metadata section to ensure proper remote
+		 * initialization
 		 */
 		struct bytebuf meta = {.data = (char *)&sfd->dmabuf_info,
 				.size = sizeof(struct dmabuf_slice_data)};
@@ -950,7 +995,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 											8,
 									8));
 			// Using a number of distinct compressions often
-			// (but not necessarily) will increase space needed
+			// (but not necessarily) will increase space
+			// needed
 			sfd->compress_space =
 					max(sfd->compress_space, split_cs);
 			sfd->compress_buffer = calloc(sfd->compress_space, 1);
@@ -969,8 +1015,9 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			reset_damage(&sfd->damage);
 			return;
 		}
-		// todo: make the 'memcmp' fine grained, depending on damage
-		// complexity ? but we still don't want to over-allocate
+		// todo: make the 'memcmp' fine grained, depending on
+		// damage complexity ? but we still don't want to
+		// over-allocate
 		bool delta = memcmp(sfd->mem_local + intv_min,
 					     (sfd->mem_mirror + intv_min),
 					     (size_t)(intv_max - intv_min)) !=
@@ -1043,19 +1090,19 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			add_initial_compressed_block(map, sfd, ntransfers,
 					transfers, nblocks, blocks);
 		} else {
-			// Depending on the buffer format, doing a memcpy first
-			// can be significantly faster.
+			// Depending on the buffer format, doing a
+			// memcpy first can be significantly faster.
 			// TODO: autodetect when this happens
 			char *tmp = data;
 
-			/* todo: speed up the raw diff routine to be as fast
-			 * as memcmp; then remove this */
+			/* todo: speed up the raw diff routine to be as
+			 * fast as memcmp; then remove this */
 			bool delta = memcmp(
 					sfd->mem_mirror, tmp, sfd->buffer_size);
 			if (delta) {
 				if (!sfd->diff_buffer) {
-					// This can happen in reverse-transport
-					// scenarios
+					// This can happen in
+					// reverse-transport scenarios
 					sfd->diff_buffer = calloc(
 							align(sfd->buffer_size,
 									8),
@@ -1122,8 +1169,8 @@ void create_from_update(struct fd_translation_map *map,
 	sfd->is_dirty = false;
 	reset_damage(&sfd->damage);
 	/* Start the object reference at one, so that, if it is owned by
-	 * some known protocol object, it can not be deleted until the fd
-	 * has at least be transferred over the Wayland connection */
+	 * some known protocol object, it can not be deleted until the
+	 * fd has at least be transferred over the Wayland connection */
 	sfd->refcount_transfer = 1;
 	sfd->refcount_protocol = 0;
 	if (sfd->type == FDC_FILE) {
@@ -1150,11 +1197,12 @@ void create_from_update(struct fd_translation_map *map,
 					sfd->buffer_size, sfd->compress_buffer,
 					&act_size, &act_buffer);
 
-			// The first time only, the transfer data is a direct
-			// copy of the source
+			// The first time only, the transfer data is a
+			// direct copy of the source
 			memcpy(sfd->mem_mirror, act_buffer, act_size);
 		}
-		// The PID should be unique during the lifetime of the program
+		// The PID should be unique during the lifetime of the
+		// program
 		sprintf(sfd->file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
 				sfd->remote_id);
 
@@ -1195,8 +1243,8 @@ void create_from_update(struct fd_translation_map *map,
 			}
 		}
 
-		/* We pass 'fd_local' to the client, although we only read and
-		 * write from pipe_fd if it exists. */
+		/* We pass 'fd_local' to the client, although we only
+		 * read and write from pipe_fd if it exists. */
 		if (transf->type == FDC_PIPE_IW) {
 			// Read end is 0; the other process writes
 			sfd->fd_local = pipedes[1];
@@ -1272,8 +1320,8 @@ void create_from_update(struct fd_translation_map *map,
 		wp_log(WP_DEBUG, "Creating remote DMAbuf of %d bytes",
 				(int)contents_size);
 		// Create mirror from first transfer
-		// The file can only actually be created when we know what type
-		// it is?
+		// The file can only actually be created when we know
+		// what type it is?
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
 			return;
@@ -1314,7 +1362,8 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 				transf->special.block_meta,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
-		// `memsize+8*remote_nthreads` is the worst-case diff expansion
+		// `memsize+8*remote_nthreads` is the worst-case diff
+		// expansion
 		if (act_size > sfd->buffer_size + 8 * 128) {
 			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld",
 					act_size, sfd->buffer_size);
@@ -1648,7 +1697,8 @@ static void *worker_thread_main(void *arg)
 	wp_log(WP_DEBUG, "Opening worker thread %d", data->index);
 
 	/* The loop is globally locked by default, and only unlocked in
-	 * pthread_cond_wait. Yes, there are fancier and faster schemes. */
+	 * pthread_cond_wait. Yes, there are fancier and faster schemes.
+	 */
 	pthread_mutex_lock(&map->work_state_mutex);
 	while (1) {
 		if (map->task_id != data->last_task_id) {
@@ -1659,7 +1709,8 @@ static void *worker_thread_main(void *arg)
 			enum thread_task task = map->next_thread_task;
 			pthread_mutex_unlock(&map->work_state_mutex);
 			/* The main thread should not have modified any
-			 * worker-related state since releasing its mutex */
+			 * worker-related state since releasing its
+			 * mutex */
 			if (task == THREADTASK_MAKE_COMPRESSEDDIFF) {
 				worker_run_compresseddiff(map, &data->comp_ctx,
 						data->index, map->nthreads,

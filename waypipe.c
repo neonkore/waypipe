@@ -281,6 +281,7 @@ int main(int argc, char **argv)
 	bool unlink_at_end = false;
 	bool login_shell = false;
 	char *remote_drm_node = NULL;
+	char *comp_string = NULL;
 	const char *socketpath = NULL;
 
 	struct main_config config = {
@@ -325,12 +326,23 @@ int main(int argc, char **argv)
 			if (!strcmp(optarg, "none")) {
 				config.compression = COMP_NONE;
 			} else if (!strcmp(optarg, "lz4")) {
+#ifdef HAS_LZ4
 				config.compression = COMP_LZ4;
+#else
+				fprintf(stderr, "LZ4 compression not available: is the library installed?\n");
+				return EXIT_FAILURE;
+#endif
 			} else if (!strcmp(optarg, "zstd")) {
+#ifdef HAS_ZSTD
 				config.compression = COMP_ZSTD;
+#else
+				fprintf(stderr, "ZSTD compression not available: is the library installed?\n");
+				return EXIT_FAILURE;
+#endif
 			} else {
 				fail = true;
 			}
+			comp_string = optarg;
 			break;
 		case 'd':
 			debug = true;
@@ -535,10 +547,7 @@ int main(int argc, char **argv)
 			}
 			if (config.compression != COMP_NONE) {
 				arglist[dstidx + 1 + offset++] = "-c";
-				arglist[dstidx + 1 + offset++] =
-						config.compression == COMP_LZ4
-								? "lz4"
-								: "zstd";
+				arglist[dstidx + 1 + offset++] = comp_string;
 			}
 			if (needs_login_shell) {
 				arglist[dstidx + 1 + offset++] =

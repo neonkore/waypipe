@@ -53,7 +53,13 @@ if cc.has_header('sys/sdt.h')
 	add_project_arguments('-DHAS_USDT=1', language : 'c')
 endif
 liblz4 = dependency('liblz4')
-libzstd = dependency('libzstd')
+if liblz4.found()
+	add_project_arguments('-DHAS_LZ4=1', language : 'c')
+endif
+libzstd = dependency('libzstd', version: '>=1.4.0')
+if libzstd.found()
+	add_project_arguments('-DHAS_ZSTD=1', language : 'c')
+endif
 libavcodec = dependency('libavcodec', required : get_option('with_video'))
 libavutil = dependency('libavutil', required : get_option('with_video'))
 libswscale = dependency('libswscale', required : get_option('with_video'))
@@ -78,7 +84,7 @@ waypipe_dependencies = [
 
 waypipe_includes = []
 if libdrm.found()
-	waypipe_includes += libdrm.get_pkgconfig_variable('includedir')
+	waypipe_includes += include_directories(libdrm.get_pkgconfig_variable('includedir'))
 endif
 
 executable(
@@ -88,8 +94,6 @@ executable(
 	include_directories : waypipe_includes,
 	install: true
 )
-
-message(waypipe_includes)
 
 scdoc = dependency('scdoc', version: '>=1.9.4', native: true, required: false)
 if scdoc.found()
