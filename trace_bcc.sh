@@ -12,4 +12,6 @@ sudo /usr/share/bcc/tools/trace -t \
     'u:/usr/bin/waypipe:channel_write_end' \
     'u:/usr/bin/waypipe:channel_write_start "size %d", arg1' \
     'u:/usr/bin/waypipe:worker_comp_enter "index %d", arg1' \
-    'u:/usr/bin/waypipe:worker_comp_exit "index %d", arg1'
+    'u:/usr/bin/waypipe:worker_comp_exit "index %d", arg1' \
+    'u:/usr/bin/waypipe:worker_compdiff_enter "index %d", arg1' \
+    'u:/usr/bin/waypipe:worker_compdiff_exit "index %d", arg1'

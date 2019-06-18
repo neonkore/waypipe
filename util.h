@@ -111,6 +111,7 @@ struct render_data {
 
 enum thread_task {
 	THREADTASK_STOP,
+	THREADTASK_COMPRESSBLOCK,
 	THREADTASK_MAKE_COMPRESSEDDIFF,
 };
 
@@ -155,7 +156,8 @@ struct fd_translation_map {
 	 * the same for all threads, then there is a threshold beyond which it
 	 * is helpful to run multithreaded (with as many threads as possible),
 	 * below which a single-threaded approach is faster. */
-	int scancomp_thread_threshold;
+	int diffcomp_thread_threshold;
+	int comp_thread_threshold;
 	/* Threads. These should only be used for computational work;
 	 * communication should be limited to task descriptions, with pointers
 	 * to e.g. the condition variables used to notify when work is done or
@@ -276,14 +278,17 @@ struct shadow_fd {
 	int refcount_transfer; // Number of references from fd transfer logic
 
 	// common buffers for file-like types
-	char *mem_mirror;      // exact mirror of the contents
+	/* total memory size of either the dmabuf or the file */
+	size_t buffer_size;
+	/* mmap'd long term for files, short term for dmabufs */
+	char *mem_local;
+	/* exact mirror of the contents, albeit allocated with overrun space */
+	char *mem_mirror;
 	char *diff_buffer;     // target buffer for uncompressed diff
 	char *compress_buffer; // target buffer for compressed diff
 	size_t compress_space;
 
 	// File data
-	size_t file_size;
-	char *file_mem_local; // mmap'd
 	char file_shm_buf_name[256];
 
 	// Pipe data
@@ -297,7 +302,6 @@ struct shadow_fd {
 	bool pipe_lclosed, pipe_rclosed;
 
 	// DMAbuf data
-	size_t dmabuf_size;
 	struct gbm_bo *dmabuf_bo;
 	struct dmabuf_slice_data dmabuf_info;
 

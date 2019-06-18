@@ -72,7 +72,7 @@ static void destroy_unlinked_sfd(
 	destroy_video_data(sfd);
 
 	if (sfd->type == FDC_FILE) {
-		munmap(sfd->file_mem_local, sfd->file_size);
+		munmap(sfd->mem_local, sfd->buffer_size);
 		free(sfd->mem_mirror);
 		free(sfd->diff_buffer);
 		free(sfd->compress_buffer);
@@ -193,13 +193,22 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 	}
 	float proc_irate = scan_proc_irate + comp_proc_irate;
 	if (map->nthreads > 1) {
-		map->scancomp_thread_threshold =
+		map->diffcomp_thread_threshold =
 				(int)((thread_switch_delay * map->nthreads) /
 						(proc_irate * (map->nthreads -
 									      1)));
-
+		if (comp_proc_irate > 0) {
+			map->comp_thread_threshold =
+					(int)((thread_switch_delay *
+							      map->nthreads) /
+							(proc_irate * (map->nthreads -
+										      1)));
+		} else {
+			map->comp_thread_threshold = INT32_MAX;
+		}
 	} else {
-		map->scancomp_thread_threshold = INT32_MAX;
+		map->diffcomp_thread_threshold = INT32_MAX;
+		map->comp_thread_threshold = INT32_MAX;
 	}
 	// stop task won't be called unless the main task id is incremented
 	map->next_thread_task = THREADTASK_STOP;
@@ -428,9 +437,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->next = map->list;
 	map->list = sfd;
 	sfd->fd_local = fd;
-	sfd->file_mem_local = NULL;
+	sfd->mem_local = NULL;
 	sfd->mem_mirror = NULL;
-	sfd->file_size = (size_t)-1;
+	sfd->buffer_size = (size_t)-1;
 	sfd->remote_id = (map->max_local_id++) * map->local_sign;
 	sfd->type = FDC_UNKNOWN;
 	// File changes must be propagated
@@ -448,12 +457,12 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->type = get_fd_type(fd, &fsize);
 	if (sfd->type == FDC_FILE) {
 		// We have a file-like object
-		sfd->file_size = fsize;
+		sfd->buffer_size = fsize;
 		// both r/w permissions, because the size the allocates the
 		// memory does not always have to be the size that modifies it
-		sfd->file_mem_local = mmap(NULL, sfd->file_size,
+		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (!sfd->file_mem_local) {
+		if (!sfd->mem_local) {
 			wp_log(WP_ERROR, "Mmap failed!");
 			return sfd;
 		}
@@ -471,11 +480,11 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 
 		sfd->pipe_onlyhere = true;
 	} else if (sfd->type == FDC_DMABUF) {
-		sfd->dmabuf_size = 0;
+		sfd->buffer_size = 0;
 
 		init_render_data(render);
 		sfd->dmabuf_bo = import_dmabuf(
-				render, sfd->fd_local, &sfd->dmabuf_size, info);
+				render, sfd->fd_local, &sfd->buffer_size, info);
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
@@ -703,29 +712,30 @@ struct transfer *setup_single_block_transfer(int *ntransfers,
 	return &transfers[nt];
 }
 
+/* Construct and optionally compress a diff between sfd->mem_mirror and
+ * the actual memmap'd data */
 static void worker_run_compresseddiff(struct fd_translation_map *map,
-		struct comp_ctx *ctx, int index, struct bytebuf *dst,
-		size_t *actual_size)
+		struct comp_ctx *ctx, int index, int nthreads,
+		struct bytebuf *dst, size_t *actual_size)
 {
-	DTRACE_PROBE1(waypipe, worker_comp_enter, index);
-	int nthreads = map->nthreads;
+	DTRACE_PROBE1(waypipe, worker_compdiff_enter, index);
 	struct shadow_fd *sfd = map->thread_target;
 
 	/* Allocate a disjoint target interval to each worker */
 	size_t source_start =
-			align(((size_t)index * sfd->file_size) / nthreads, 8);
+			align(((size_t)index * sfd->buffer_size) / nthreads, 8);
 	size_t source_end = align(
-			(((size_t)index + 1) * sfd->file_size) / nthreads, 8);
+			(((size_t)index + 1) * sfd->buffer_size) / nthreads, 8);
 
 	size_t diff_start = source_start + 8 * index;
 	size_t diff_end = source_end + 8 * (index + 1);
 
 	size_t comp_step = compress_bufsize(
-			map, align(ceildiv(sfd->file_size, nthreads) + 8, 8));
+			map, align(ceildiv(sfd->buffer_size, nthreads) + 8, 8));
 
 	size_t diffsize;
-	construct_diff(sfd->file_size, &sfd->damage, source_start, source_end,
-			sfd->mem_mirror, sfd->file_mem_local, &diffsize,
+	construct_diff(sfd->buffer_size, &sfd->damage, source_start, source_end,
+			sfd->mem_mirror, sfd->mem_local, &diffsize,
 			&sfd->diff_buffer[diff_start]);
 	*actual_size = diffsize;
 
@@ -740,7 +750,170 @@ static void worker_run_compresseddiff(struct fd_translation_map *map,
 	compress_buffer(map, ctx, diffsize, &sfd->diff_buffer[diff_start],
 			comp_step, &sfd->compress_buffer[comp_step * index],
 			&dst->size, (const char **)&dst->data);
+
+	DTRACE_PROBE1(waypipe, worker_compdiff_exit, index);
+}
+
+/* Compress data for sfd->mem_mirror */
+static void worker_run_compressblock(struct fd_translation_map *map,
+		struct comp_ctx *ctx, int index, int nthreads,
+		struct bytebuf *dst, size_t *actual_size)
+{
+	DTRACE_PROBE1(waypipe, worker_comp_enter, index);
+
+	struct shadow_fd *sfd = map->thread_target;
+
+	/* Allocate a disjoint target interval to each worker */
+	size_t source_start =
+			align(((size_t)index * sfd->buffer_size) / nthreads, 8);
+	size_t source_end = align(
+			(((size_t)index + 1) * sfd->buffer_size) / nthreads, 8);
+	source_end = min(sfd->buffer_size, source_end);
+
+	size_t comp_step = compress_bufsize(
+			map, align(ceildiv(sfd->buffer_size, nthreads) + 8, 8));
+
+	*actual_size = source_end - source_start;
+
+	dst->size = 0;
+	dst->data = NULL;
+	compress_buffer(map, ctx, source_end - source_start,
+			&sfd->mem_mirror[source_start], comp_step,
+			&sfd->compress_buffer[comp_step * index], &dst->size,
+			(const char **)&dst->data);
+
 	DTRACE_PROBE1(waypipe, worker_comp_exit, index);
+}
+
+static void queue_thread_task(struct fd_translation_map *map,
+		struct shadow_fd *shadow, enum thread_task task)
+{
+	pthread_mutex_lock(&map->work_state_mutex);
+	map->task_id++;
+	map->nthreads_completed = 0;
+	map->next_thread_task = task;
+	map->thread_target = shadow;
+	pthread_mutex_unlock(&map->work_state_mutex);
+	pthread_cond_broadcast(&map->work_needed_notify);
+}
+static void wait_thread_task(struct fd_translation_map *map)
+{
+	pthread_mutex_lock(&map->work_state_mutex);
+	map->nthreads_completed++;
+	while (true) {
+		if (map->nthreads_completed == map->nthreads) {
+			break;
+		}
+		pthread_cond_wait(
+				&map->work_done_notify, &map->work_state_mutex);
+	}
+	pthread_mutex_unlock(&map->work_state_mutex);
+}
+/* Optionally compress the data in mem_mirror, and set up the initial transfer
+ * blocks */
+static void add_initial_compressed_block(struct fd_translation_map *map,
+		struct shadow_fd *sfd, int *ntransfers,
+		struct transfer transfers[], int *nblocks,
+		struct bytebuf blocks[])
+{
+	// new transfer, we send file contents verbatim
+	bool use_threads =
+			(int32_t)sfd->buffer_size > map->comp_thread_threshold;
+
+	size_t cd_actual_size0;
+	struct bytebuf cd_dst0;
+	if (use_threads) {
+		queue_thread_task(map, sfd, THREADTASK_COMPRESSBLOCK);
+	} else {
+		map->thread_target = sfd;
+	}
+	worker_run_compressblock(map, &map->comp_ctx, 0,
+			use_threads ? map->nthreads : 1, &cd_dst0,
+			&cd_actual_size0);
+	if (use_threads) {
+		wait_thread_task(map);
+	}
+
+	struct transfer *tf = &transfers[(*ntransfers)++];
+	tf->type = sfd->type;
+	tf->obj_id = sfd->remote_id;
+	tf->nblocks = 0;
+	tf->subtransfers = &blocks[*nblocks];
+	tf->special.block_meta = 0;
+	if (sfd->type == FDC_DMABUF) {
+		/* Add metadata section to ensure proper remote initialization
+		 */
+		struct bytebuf meta = {.data = (char *)&sfd->dmabuf_info,
+				.size = sizeof(struct dmabuf_slice_data)};
+		blocks[(*nblocks)++] = meta;
+		tf->nblocks++;
+	}
+	if (cd_actual_size0) {
+		tf->special.block_meta += cd_actual_size0;
+		blocks[(*nblocks)++] = cd_dst0;
+		tf->nblocks++;
+	}
+	if (use_threads) {
+		for (int i = 0; i < map->nthreads - 1; i++) {
+			if (map->threads[i].cd_actual_size) {
+				tf->special.block_meta +=
+						map->threads[i].cd_actual_size;
+				blocks[(*nblocks)++] = map->threads[i].cd_dst;
+				tf->nblocks++;
+			}
+		}
+	}
+}
+static void add_updated_diff_block(struct fd_translation_map *map,
+		struct shadow_fd *sfd, int *ntransfers,
+		struct transfer transfers[], int *nblocks,
+		struct bytebuf blocks[], int total_damaged_area)
+{
+	size_t diffsize = 0;
+	DTRACE_PROBE2(waypipe, diffcomp_start, total_damaged_area,
+			sfd->buffer_size);
+	bool use_threads = total_damaged_area > map->diffcomp_thread_threshold;
+
+	size_t cd_actual_size0;
+	struct bytebuf cd_dst0;
+	if (use_threads) {
+		queue_thread_task(map, sfd, THREADTASK_MAKE_COMPRESSEDDIFF);
+	} else {
+		map->thread_target = sfd;
+	}
+	worker_run_compresseddiff(map, &map->comp_ctx, 0,
+			use_threads ? map->nthreads : 1, &cd_dst0,
+			&cd_actual_size0);
+	if (use_threads) {
+		wait_thread_task(map);
+	}
+
+	struct transfer *tf = &transfers[(*ntransfers)++];
+	tf->type = sfd->type;
+	tf->obj_id = sfd->remote_id;
+	tf->nblocks = 0;
+	tf->subtransfers = &blocks[*nblocks];
+	tf->special.block_meta = 0;
+
+	if (cd_actual_size0) {
+		tf->special.block_meta += cd_actual_size0;
+		blocks[(*nblocks)++] = cd_dst0;
+		tf->nblocks++;
+	}
+	if (use_threads) {
+		for (int i = 0; i < map->nthreads - 1; i++) {
+			if (map->threads[i].cd_actual_size) {
+				tf->special.block_meta +=
+						map->threads[i].cd_actual_size;
+				blocks[(*nblocks)++] = map->threads[i].cd_dst;
+				tf->nblocks++;
+			}
+		}
+	}
+	reset_damage(&sfd->damage);
+	DTRACE_PROBE1(waypipe, diffcomp_end, diffsize);
+	wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld", diffsize,
+			sfd->buffer_size);
 }
 void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		int *ntransfers, struct transfer transfers[], int *nblocks,
@@ -759,20 +932,20 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
-			sfd->mem_mirror = calloc(align(sfd->file_size, 8), 1);
+			sfd->mem_mirror = calloc(align(sfd->buffer_size, 8), 1);
 			// 8 extra bytes for worst case diff expansion
 			sfd->diff_buffer = calloc(
-					align(sfd->file_size + 8 * map->nthreads,
+					align(sfd->buffer_size + 8 * map->nthreads,
 							8),
 					1);
-			memcpy(sfd->mem_mirror, sfd->file_mem_local,
-					sfd->file_size);
+			memcpy(sfd->mem_mirror, sfd->mem_local,
+					sfd->buffer_size);
 			sfd->compress_space = compress_bufsize(
-					map, align(sfd->file_size + 8, 8));
+					map, align(sfd->buffer_size + 8, 8));
 			size_t split_cs =
 					map->nthreads *
 					compress_bufsize(map,
-							align(ceildiv(sfd->file_size,
+							align(ceildiv(sfd->buffer_size,
 									      map->nthreads) +
 											8,
 									8));
@@ -782,34 +955,23 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 					max(sfd->compress_space, split_cs);
 			sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
-			// new transfer, we send file contents verbatim
-			const char *comp_data = NULL;
-			size_t comp_size = 0;
-			compress_buffer(map, &map->comp_ctx, sfd->file_size,
-					sfd->mem_mirror, sfd->compress_space,
-					sfd->compress_buffer, &comp_size,
-					&comp_data);
-			struct transfer *tf = setup_single_block_transfer(
-					ntransfers, transfers, nblocks, blocks,
-					comp_size, comp_data);
-			tf->type = sfd->type;
-			tf->obj_id = sfd->remote_id;
-			tf->special.block_meta = (uint32_t)sfd->file_size;
+			add_initial_compressed_block(map, sfd, ntransfers,
+					transfers, nblocks, blocks);
 		}
 
 		int intv_min, intv_max, total_area;
 		get_damage_interval(&sfd->damage, &intv_min, &intv_max,
 				&total_area);
-		intv_min = clamp(intv_min, 0, (int)sfd->file_size);
-		intv_max = clamp(intv_max, 0, (int)sfd->file_size);
-		total_area = min(total_area, (int)sfd->file_size);
+		intv_min = clamp(intv_min, 0, (int)sfd->buffer_size);
+		intv_max = clamp(intv_max, 0, (int)sfd->buffer_size);
+		total_area = min(total_area, (int)sfd->buffer_size);
 		if (intv_min >= intv_max) {
 			reset_damage(&sfd->damage);
 			return;
 		}
 		// todo: make the 'memcmp' fine grained, depending on damage
-		// complexity
-		bool delta = memcmp(sfd->file_mem_local + intv_min,
+		// complexity ? but we still don't want to over-allocate
+		bool delta = memcmp(sfd->mem_local + intv_min,
 					     (sfd->mem_mirror + intv_min),
 					     (size_t)(intv_max - intv_min)) !=
 			     0;
@@ -821,86 +983,12 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			/* Create diff buffer by need for remote files
 			 */
 			sfd->diff_buffer = calloc(
-					sfd->file_size + 8 * map->nthreads, 1);
+					sfd->buffer_size + 8 * map->nthreads,
+					1);
 		}
+		add_updated_diff_block(map, sfd, ntransfers, transfers, nblocks,
+				blocks, total_area);
 
-		size_t diffsize = 0;
-		DTRACE_PROBE2(waypipe, diffcomp_start, total_area,
-				sfd->file_size);
-		if (total_area > map->scancomp_thread_threshold) {
-			pthread_mutex_lock(&map->work_state_mutex);
-			map->task_id++;
-			map->nthreads_completed = 0;
-			map->next_thread_task = THREADTASK_MAKE_COMPRESSEDDIFF;
-			map->thread_target = sfd;
-			pthread_mutex_unlock(&map->work_state_mutex);
-			pthread_cond_broadcast(&map->work_needed_notify);
-
-			size_t cd_actual_size0;
-			struct bytebuf cd_dst0;
-			worker_run_compresseddiff(map, &map->comp_ctx, 0,
-					&cd_dst0, &cd_actual_size0);
-
-			pthread_mutex_lock(&map->work_state_mutex);
-			map->nthreads_completed++;
-			while (true) {
-				if (map->nthreads_completed == map->nthreads) {
-					break;
-				}
-				pthread_cond_wait(&map->work_done_notify,
-						&map->work_state_mutex);
-			}
-			pthread_mutex_unlock(&map->work_state_mutex);
-
-			struct transfer *tf = &transfers[(*ntransfers)++];
-			tf->type = sfd->type;
-			tf->obj_id = sfd->remote_id;
-			tf->nblocks = 0;
-			tf->subtransfers = &blocks[*nblocks];
-			tf->special.block_meta = 0;
-
-			if (cd_actual_size0) {
-				tf->special.block_meta += cd_actual_size0;
-				blocks[(*nblocks)++] = cd_dst0;
-				tf->nblocks++;
-			}
-			for (int i = 0; i < map->nthreads - 1; i++) {
-				if (map->threads[i].cd_actual_size) {
-					tf->special.block_meta +=
-							map->threads[i].cd_actual_size;
-					blocks[(*nblocks)++] =
-							map->threads[i].cd_dst;
-					tf->nblocks++;
-				}
-			}
-		} else {
-			construct_diff(sfd->file_size, &sfd->damage, 0,
-					SIZE_MAX, sfd->mem_mirror,
-					sfd->file_mem_local, &diffsize,
-					sfd->diff_buffer);
-			const char *comp_data = NULL;
-			size_t comp_size = 0;
-			compress_buffer(map, &map->comp_ctx, diffsize,
-					sfd->diff_buffer, sfd->compress_space,
-					sfd->compress_buffer, &comp_size,
-					&comp_data);
-			if (comp_size > 0) {
-				struct transfer *tf =
-						setup_single_block_transfer(
-								ntransfers,
-								transfers,
-								nblocks, blocks,
-								comp_size,
-								comp_data);
-				tf->obj_id = sfd->remote_id;
-				tf->type = sfd->type;
-				tf->special.block_meta = (uint32_t)diffsize;
-			}
-		}
-		reset_damage(&sfd->damage);
-		DTRACE_PROBE1(waypipe, diffcomp_end, diffsize);
-		wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld",
-				diffsize, sfd->file_size);
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
@@ -910,13 +998,13 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 
 		bool first = false;
 		if (!sfd->mem_mirror && !sfd->video_codec) {
-			sfd->mem_mirror = calloc(1, sfd->dmabuf_size);
+			sfd->mem_mirror = calloc(1, sfd->buffer_size);
 			// 8 extra bytes for diff messages, or
 			// alternatively for type header info
 			size_t diffb_size =
 					(size_t)max(sizeof(struct dmabuf_slice_data),
 							8) +
-					(size_t)align((int)sfd->dmabuf_size, 8);
+					(size_t)align((int)sfd->buffer_size, 8);
 			sfd->diff_buffer = calloc(diffb_size, 1);
 			sfd->compress_space = compress_bufsize(map, diffb_size);
 			sfd->compress_buffer =
@@ -927,7 +1015,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			first = true;
 		} else if (!sfd->mem_mirror && sfd->video_codec) {
 			// required extra tail space, 16 bytes (?)
-			sfd->mem_mirror = calloc(1, sfd->dmabuf_size + 16);
+			sfd->mem_mirror = calloc(1, sfd->buffer_size + 16);
 			first = true;
 		}
 		void *handle = NULL;
@@ -941,7 +1029,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		}
 		if (sfd->video_codec && sfd->video_context &&
 				sfd->video_reg_frame && sfd->video_packet) {
-			memcpy(sfd->mem_mirror, data, sfd->dmabuf_size);
+			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
 			collect_video_from_mirror(sfd, ntransfers, transfers,
 					nblocks, blocks, first);
 			return;
@@ -950,81 +1038,36 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (first) {
 			// Write diff with a header, and build mirror,
 			// only touching data once
-			memcpy(sfd->mem_mirror, data, sfd->dmabuf_size);
+			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
 
-			const char *datavec = NULL;
-			size_t compdata_size = 0;
-			compress_buffer(map, &map->comp_ctx, sfd->dmabuf_size,
-					sfd->mem_mirror,
-					sfd->compress_space -
-							sizeof(struct dmabuf_slice_data),
-					sfd->compress_buffer +
-							sizeof(struct dmabuf_slice_data),
-					&compdata_size, &datavec);
-
-			memcpy(sfd->diff_buffer, &sfd->dmabuf_info,
-					sizeof(struct dmabuf_slice_data));
-			memcpy(sfd->diff_buffer + sizeof(struct dmabuf_slice_data),
-					datavec, compdata_size);
-			// new transfer, we send file contents verbatim
-
-			wp_log(WP_DEBUG, "Sending initial dmabuf");
-			struct transfer *tf = setup_single_block_transfer(
-					ntransfers, transfers, nblocks, blocks,
-					sizeof(struct dmabuf_slice_data) +
-							compdata_size,
-					sfd->diff_buffer);
-			tf->type = sfd->type;
-			tf->obj_id = sfd->remote_id;
-			tf->special.block_meta = (uint32_t)sfd->dmabuf_size;
+			add_initial_compressed_block(map, sfd, ntransfers,
+					transfers, nblocks, blocks);
 		} else {
 			// Depending on the buffer format, doing a memcpy first
 			// can be significantly faster.
 			// TODO: autodetect when this happens
 			char *tmp = data;
 
+			/* todo: speed up the raw diff routine to be as fast
+			 * as memcmp; then remove this */
 			bool delta = memcmp(
-					sfd->mem_mirror, tmp, sfd->dmabuf_size);
+					sfd->mem_mirror, tmp, sfd->buffer_size);
 			if (delta) {
 				if (!sfd->diff_buffer) {
 					// This can happen in reverse-transport
 					// scenarios
 					sfd->diff_buffer = calloc(
-							align(sfd->dmabuf_size,
+							align(sfd->buffer_size,
 									8),
 							1);
 				}
 
-				// TODO: damage region support!
-				size_t diffsize;
-				wp_log(WP_DEBUG, "Diff construction start");
-				struct damage everything = {
-						.damage = DAMAGE_EVERYTHING,
-						.ndamage_rects = 0};
-				construct_diff(sfd->dmabuf_size, &everything, 0,
-						SIZE_MAX, sfd->mem_mirror, tmp,
-						&diffsize, sfd->diff_buffer);
-				wp_log(WP_DEBUG,
-						"Diff construction end: %ld/%ld",
-						diffsize, sfd->dmabuf_size);
-
-				size_t comp_size = 0;
-				const char *comp_data = NULL;
-				compress_buffer(map, &map->comp_ctx, diffsize,
-						sfd->diff_buffer,
-						sfd->compress_space,
-						sfd->compress_buffer,
-						&comp_size, &comp_data);
-				struct transfer *tf =
-						setup_single_block_transfer(
-								ntransfers,
-								transfers,
-								nblocks, blocks,
-								comp_size,
-								comp_data);
-				tf->obj_id = sfd->remote_id;
-				tf->type = sfd->type;
-				tf->special.block_meta = (uint32_t)diffsize;
+				damage_everything(&sfd->damage);
+				sfd->mem_local = data;
+				add_updated_diff_block(map, sfd, ntransfers,
+						transfers, nblocks, blocks,
+						sfd->buffer_size);
+				sfd->mem_local = NULL;
 			}
 		}
 		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
@@ -1084,14 +1127,14 @@ void create_from_update(struct fd_translation_map *map,
 	sfd->refcount_transfer = 1;
 	sfd->refcount_protocol = 0;
 	if (sfd->type == FDC_FILE) {
-		sfd->file_mem_local = NULL;
-		sfd->file_size = (size_t)(transf->special.block_meta &
-					  ~FILE_SIZE_VIDEO_FLAG);
+		sfd->mem_local = NULL;
+		sfd->buffer_size = (size_t)(transf->special.block_meta &
+					    ~FILE_SIZE_VIDEO_FLAG);
 		sfd->mem_mirror = calloc(
-				(size_t)align((int)sfd->file_size, 8), 1);
+				(size_t)align((int)sfd->buffer_size, 8), 1);
 
-		sfd->compress_space = compress_bufsize(
-				map, (size_t)align((int)sfd->file_size, 8) + 8);
+		sfd->compress_space = compress_bufsize(map,
+				(size_t)align((int)sfd->buffer_size, 8) + 8);
 		sfd->compress_buffer =
 				sfd->compress_space
 						? calloc(sfd->compress_space, 1)
@@ -1104,7 +1147,7 @@ void create_from_update(struct fd_translation_map *map,
 			const char *act_buffer = NULL;
 			uncompress_buffer(map, transf->subtransfers[0].size,
 					transf->subtransfers[0].data,
-					sfd->file_size, sfd->compress_buffer,
+					sfd->buffer_size, sfd->compress_buffer,
 					&act_size, &act_buffer);
 
 			// The first time only, the transfer data is a direct
@@ -1123,17 +1166,17 @@ void create_from_update(struct fd_translation_map *map,
 					sfd->remote_id, strerror(errno));
 			return;
 		}
-		if (ftruncate(sfd->fd_local, sfd->file_size) == -1) {
+		if (ftruncate(sfd->fd_local, sfd->buffer_size) == -1) {
 			wp_log(WP_ERROR,
 					"Failed to resize shm file %s to size %ld for reason: %s",
-					sfd->file_shm_buf_name, sfd->file_size,
-					strerror(errno));
+					sfd->file_shm_buf_name,
+					sfd->buffer_size, strerror(errno));
 			return;
 		}
-		sfd->file_mem_local = mmap(NULL, sfd->file_size,
+		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED,
 				sfd->fd_local, 0);
-		memcpy(sfd->file_mem_local, sfd->mem_mirror, sfd->file_size);
+		memcpy(sfd->mem_local, sfd->mem_mirror, sfd->buffer_size);
 	} else if (fdcat_ispipe(sfd->type)) {
 		int pipedes[2];
 		if (transf->type == FDC_PIPE_RW) {
@@ -1185,17 +1228,17 @@ void create_from_update(struct fd_translation_map *map,
 	} else if (sfd->type == FDC_DMABUF) {
 		bool use_video = transf->special.block_meta &
 				 FILE_SIZE_VIDEO_FLAG;
-		sfd->dmabuf_size = (size_t)(transf->special.block_meta &
+		sfd->buffer_size = (size_t)(transf->special.block_meta &
 					    ~FILE_SIZE_VIDEO_FLAG);
-		sfd->compress_space = compress_bufsize(map, sfd->dmabuf_size);
+		sfd->compress_space = compress_bufsize(map, sfd->buffer_size);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
-		sfd->mem_mirror = calloc(sfd->dmabuf_size, 1);
+		sfd->mem_mirror = calloc(sfd->buffer_size, 1);
 
 		struct bytebuf block = transf->subtransfers[0];
 		struct dmabuf_slice_data *info =
 				(struct dmabuf_slice_data *)block.data;
 		const char *contents = NULL;
-		size_t contents_size = sfd->dmabuf_size;
+		size_t contents_size = sfd->buffer_size;
 		if (use_video) {
 			setup_video_decode(sfd, (int)info->width,
 					(int)info->height,
@@ -1208,7 +1251,7 @@ void create_from_update(struct fd_translation_map *map,
 						block.size - sizeof(struct dmabuf_slice_data),
 						block.data + sizeof(struct dmabuf_slice_data));
 			} else {
-				memset(sfd->mem_mirror, 213, sfd->dmabuf_size);
+				memset(sfd->mem_mirror, 213, sfd->buffer_size);
 			}
 			contents = sfd->mem_mirror;
 		} else {
@@ -1219,11 +1262,11 @@ void create_from_update(struct fd_translation_map *map,
 			size_t szcheck = 0;
 			uncompress_buffer(map,
 					block.size - sizeof(struct dmabuf_slice_data),
-					compressed_contents, sfd->dmabuf_size,
+					compressed_contents, sfd->buffer_size,
 					sfd->compress_buffer, &szcheck,
 					&contents);
 
-			memcpy(sfd->mem_mirror, contents, sfd->dmabuf_size);
+			memcpy(sfd->mem_mirror, contents, sfd->buffer_size);
 		}
 
 		wp_log(WP_DEBUG, "Creating remote DMAbuf of %d bytes",
@@ -1272,13 +1315,13 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff expansion
-		if (act_size > sfd->file_size + 8 * 128) {
+		if (act_size > sfd->buffer_size + 8 * 128) {
 			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld",
-					act_size, sfd->file_size);
+					act_size, sfd->buffer_size);
 		}
-		apply_diff(sfd->file_size, sfd->mem_mirror, act_size,
+		apply_diff(sfd->buffer_size, sfd->mem_mirror, act_size,
 				act_buffer);
-		apply_diff(sfd->file_size, sfd->file_mem_local, act_size,
+		apply_diff(sfd->buffer_size, sfd->mem_local, act_size,
 				act_buffer);
 	} else if (fdcat_ispipe(sfd->type)) {
 		bool rw_match = sfd->type == FDC_PIPE_RW &&
@@ -1335,7 +1378,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			if (!data) {
 				return;
 			}
-			memcpy(data, sfd->mem_mirror, sfd->dmabuf_size);
+			memcpy(data, sfd->mem_mirror, sfd->buffer_size);
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				// there was an issue unmapping;
 				// unmap_dmabuf will log error
@@ -1352,14 +1395,14 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 					&act_buffer);
 
 			wp_log(WP_DEBUG, "Applying dmabuf damage");
-			apply_diff(sfd->dmabuf_size, sfd->mem_mirror, act_size,
+			apply_diff(sfd->buffer_size, sfd->mem_mirror, act_size,
 					act_buffer);
 			void *handle = NULL;
 			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
 			if (!data) {
 				return;
 			}
-			apply_diff(sfd->dmabuf_size, data, act_size,
+			apply_diff(sfd->buffer_size, data, act_size,
 					act_buffer);
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				// there was an issue unmapping;
@@ -1613,18 +1656,23 @@ static void *worker_thread_main(void *arg)
 			if (map->next_thread_task == THREADTASK_STOP) {
 				break;
 			}
-			// Do work!
-			if (map->next_thread_task ==
-					THREADTASK_MAKE_COMPRESSEDDIFF) {
-				pthread_mutex_unlock(&map->work_state_mutex);
-				// The main thread should not have modified
-				// any worker-related state since updating
-				// its task id
+			enum thread_task task = map->next_thread_task;
+			pthread_mutex_unlock(&map->work_state_mutex);
+			/* The main thread should not have modified any
+			 * worker-related state since releasing its mutex */
+			if (task == THREADTASK_MAKE_COMPRESSEDDIFF) {
 				worker_run_compresseddiff(map, &data->comp_ctx,
-						data->index, &data->cd_dst,
+						data->index, map->nthreads,
+						&data->cd_dst,
 						&data->cd_actual_size);
-				pthread_mutex_lock(&map->work_state_mutex);
+			} else if (task == THREADTASK_COMPRESSBLOCK) {
+				worker_run_compressblock(map, &data->comp_ctx,
+						data->index, map->nthreads,
+						&data->cd_dst,
+						&data->cd_actual_size);
 			}
+			pthread_mutex_lock(&map->work_state_mutex);
+
 			map->nthreads_completed++;
 			pthread_cond_signal(&map->work_done_notify);
 		}

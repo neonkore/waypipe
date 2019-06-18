@@ -794,10 +794,10 @@ static void event_wl_keyboard_keymap(void *data,
 
 	struct shadow_fd *sfd = translate_fd(
 			&context->g->map, &context->g->render, fd, NULL, false);
-	if (sfd->type != FDC_FILE || sfd->file_size != size) {
+	if (sfd->type != FDC_FILE || sfd->buffer_size != size) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d",
-				sfd->remote_id, sfd->type, sfd->file_size,
+				sfd->remote_id, sfd->type, sfd->buffer_size,
 				size);
 		return;
 	}
@@ -819,11 +819,11 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 	 * immediately advertised size, since the call to wl_shm.create_pool
 	 * may be followed by wl_shm_pool.resize, which then increases the size
 	 */
-	if (sfd->type != FDC_FILE || (int32_t)sfd->file_size < size) {
+	if (sfd->type != FDC_FILE || (int32_t)sfd->buffer_size < size) {
 		wp_log(WP_ERROR,
 				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d",
 				sfd->remote_id, sfd->type, FDC_FILE,
-				sfd->file_size, size);
+				sfd->buffer_size, size);
 		return;
 	}
 
@@ -840,7 +840,7 @@ static void request_wl_shm_pool_resize(struct wl_client *client,
 		wp_log(WP_ERROR, "Pool to be resized owns no buffer");
 		return;
 	}
-	if ((int32_t)the_shm_pool->owned_buffer->file_size >= size) {
+	if ((int32_t)the_shm_pool->owned_buffer->buffer_size >= size) {
 		// The underlying buffer was already resized by the time
 		// this protocol message was received
 		return;
@@ -868,7 +868,7 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 
 	if (sfd->refcount_protocol == 1 && video_supports_shm_format(format) &&
 			offset == 0 &&
-			stride * height == (int32_t)sfd->file_size &&
+			stride * height == (int32_t)sfd->buffer_size &&
 			context->g->config->video_if_possible) {
 		/* shm data supports video only when there is a single
 		 * wl_buffer that references the underlying file and furthermore
@@ -1429,10 +1429,10 @@ static void zwlr_export_dmabuf_frame_v1_object(void *data,
 				index);
 		return;
 	}
-	if (sfd->dmabuf_size < size) {
+	if (sfd->buffer_size < size) {
 		wp_log(WP_ERROR,
 				"Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
-				index, (uint32_t)sfd->dmabuf_size, size);
+				index, (uint32_t)sfd->buffer_size, size);
 	}
 
 	// Convert the stored fds to buffer pointers now.
