@@ -52,11 +52,11 @@ rt = cc.find_library('rt')
 if cc.has_header('sys/sdt.h')
 	add_project_arguments('-DHAS_USDT=1', language : 'c')
 endif
-liblz4 = dependency('liblz4')
+liblz4 = dependency('liblz4', required : get_option('with_lz4'))
 if liblz4.found()
 	add_project_arguments('-DHAS_LZ4=1', language : 'c')
 endif
-libzstd = dependency('libzstd', version: '>=1.4.0')
+libzstd = dependency('libzstd', version: '>=1.4.0', required : get_option('with_zstd'))
 if libzstd.found()
 	add_project_arguments('-DHAS_ZSTD=1', language : 'c')
 endif
