@@ -560,10 +560,10 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	const int handler_idx = get_handler_idx_for_interface(objh->type);
-	const struct msg_handler *handler = &handlers[handler_idx];
 	void (*fn)(void) = NULL;
 	ffi_cif *cif = NULL;
-	if (handler) {
+	if (handler_idx >= 0) {
+		const struct msg_handler *handler = &handlers[handler_idx];
 		if (from_client && handler->request_handlers) {
 			fn = ((void (*const *)(
 					void))handler->request_handlers)[meth];
