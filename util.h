@@ -206,9 +206,6 @@ struct dmabuf_slice_data {
 	uint32_t strides[4];
 	uint32_t offsets[4];
 	uint64_t modifier;
-
-	// which update type to expect
-	bool using_video;
 };
 
 // Q: use uint32_t everywhere?
@@ -314,13 +311,16 @@ struct shadow_fd {
 	int64_t video_frameno;
 };
 
+#define FILE_SIZE_VIDEO_FLAG (1u << 31)
 struct transfer {
 	fdcat_t type;
 	int obj_id;
 	// type-specific extra data
 	union {
 		int pipeclose;
-		int file_actual_size;
+		/* top bit: file size video flag; lower 31, the size of
+		 * the transfer when uncompressed */
+		uint32_t block_meta;
 		int raw; // < for obviously type-independent cases
 	} special;
 
@@ -427,7 +427,7 @@ fdcat_t get_fd_type(int fd, size_t *size);
 struct dmabuf_slice_data;
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd,
-		struct dmabuf_slice_data *info);
+		struct dmabuf_slice_data *info, bool try_video);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,

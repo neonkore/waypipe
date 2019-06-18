@@ -416,7 +416,7 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd,
-		struct dmabuf_slice_data *info)
+		struct dmabuf_slice_data *info, bool use_video)
 {
 	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
 	if (sfd) {
@@ -490,7 +490,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->diff_buffer = NULL;
 		sfd->type = FDC_DMABUF;
 
-		if (info && info->using_video) {
+		if (info && use_video) {
 			setup_video_encode(sfd, (int)info->width,
 					(int)info->height,
 					(int)info->strides[0],
@@ -794,7 +794,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 					comp_size, comp_data);
 			tf->type = sfd->type;
 			tf->obj_id = sfd->remote_id;
-			tf->special.file_actual_size = sfd->file_size;
+			tf->special.block_meta = (uint32_t)sfd->file_size;
 		}
 
 		int intv_min, intv_max, total_area;
@@ -857,16 +857,16 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			tf->obj_id = sfd->remote_id;
 			tf->nblocks = 0;
 			tf->subtransfers = &blocks[*nblocks];
-			tf->special.file_actual_size = 0;
+			tf->special.block_meta = 0;
 
 			if (cd_actual_size0) {
-				tf->special.file_actual_size += cd_actual_size0;
+				tf->special.block_meta += cd_actual_size0;
 				blocks[(*nblocks)++] = cd_dst0;
 				tf->nblocks++;
 			}
 			for (int i = 0; i < map->nthreads - 1; i++) {
 				if (map->threads[i].cd_actual_size) {
-					tf->special.file_actual_size +=
+					tf->special.block_meta +=
 							map->threads[i].cd_actual_size;
 					blocks[(*nblocks)++] =
 							map->threads[i].cd_dst;
@@ -894,7 +894,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 								comp_data);
 				tf->obj_id = sfd->remote_id;
 				tf->type = sfd->type;
-				tf->special.file_actual_size = (int)diffsize;
+				tf->special.block_meta = (uint32_t)diffsize;
 			}
 		}
 		reset_damage(&sfd->damage);
@@ -909,7 +909,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		sfd->is_dirty = false;
 
 		bool first = false;
-		if (!sfd->mem_mirror && !sfd->dmabuf_info.using_video) {
+		if (!sfd->mem_mirror && !sfd->video_codec) {
 			sfd->mem_mirror = calloc(1, sfd->dmabuf_size);
 			// 8 extra bytes for diff messages, or
 			// alternatively for type header info
@@ -925,7 +925,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 									  1)
 							: NULL;
 			first = true;
-		} else if (!sfd->mem_mirror && sfd->dmabuf_info.using_video) {
+		} else if (!sfd->mem_mirror && sfd->video_codec) {
 			// required extra tail space, 16 bytes (?)
 			sfd->mem_mirror = calloc(1, sfd->dmabuf_size + 16);
 			first = true;
@@ -939,7 +939,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (!data) {
 			return;
 		}
-		if (sfd->dmabuf_info.using_video && sfd->video_context &&
+		if (sfd->video_codec && sfd->video_context &&
 				sfd->video_reg_frame && sfd->video_packet) {
 			memcpy(sfd->mem_mirror, data, sfd->dmabuf_size);
 			collect_video_from_mirror(sfd, ntransfers, transfers,
@@ -976,7 +976,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 					sfd->diff_buffer);
 			tf->type = sfd->type;
 			tf->obj_id = sfd->remote_id;
-			tf->special.file_actual_size = (int)sfd->dmabuf_size;
+			tf->special.block_meta = (uint32_t)sfd->dmabuf_size;
 		} else {
 			// Depending on the buffer format, doing a memcpy first
 			// can be significantly faster.
@@ -1024,7 +1024,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 								comp_data);
 				tf->obj_id = sfd->remote_id;
 				tf->type = sfd->type;
-				tf->special.file_actual_size = (int)diffsize;
+				tf->special.block_meta = (uint32_t)diffsize;
 			}
 		}
 		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
@@ -1085,7 +1085,8 @@ void create_from_update(struct fd_translation_map *map,
 	sfd->refcount_protocol = 0;
 	if (sfd->type == FDC_FILE) {
 		sfd->file_mem_local = NULL;
-		sfd->file_size = (size_t)transf->special.file_actual_size;
+		sfd->file_size = (size_t)(transf->special.block_meta &
+					  ~FILE_SIZE_VIDEO_FLAG);
 		sfd->mem_mirror = calloc(
 				(size_t)align((int)sfd->file_size, 8), 1);
 
@@ -1096,15 +1097,20 @@ void create_from_update(struct fd_translation_map *map,
 						? calloc(sfd->compress_space, 1)
 						: NULL;
 
-		size_t act_size = 0;
-		const char *act_buffer = NULL;
-		uncompress_buffer(map, transf->subtransfers[0].size,
-				transf->subtransfers[0].data, sfd->file_size,
-				sfd->compress_buffer, &act_size, &act_buffer);
+		if (transf->special.block_meta & FILE_SIZE_VIDEO_FLAG) {
+			wp_log(WP_ERROR, "TODO, full video frame fill");
+		} else {
+			size_t act_size = 0;
+			const char *act_buffer = NULL;
+			uncompress_buffer(map, transf->subtransfers[0].size,
+					transf->subtransfers[0].data,
+					sfd->file_size, sfd->compress_buffer,
+					&act_size, &act_buffer);
 
-		// The first time only, the transfer data is a direct copy of
-		// the source
-		memcpy(sfd->mem_mirror, act_buffer, act_size);
+			// The first time only, the transfer data is a direct
+			// copy of the source
+			memcpy(sfd->mem_mirror, act_buffer, act_size);
+		}
 		// The PID should be unique during the lifetime of the program
 		sprintf(sfd->file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
 				sfd->remote_id);
@@ -1177,7 +1183,10 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->pipe_recv.data = calloc((size_t)sfd->pipe_recv.size, 1);
 		sfd->pipe_onlyhere = false;
 	} else if (sfd->type == FDC_DMABUF) {
-		sfd->dmabuf_size = (size_t)transf->special.file_actual_size;
+		bool use_video = transf->special.block_meta &
+				 FILE_SIZE_VIDEO_FLAG;
+		sfd->dmabuf_size = (size_t)(transf->special.block_meta &
+					    ~FILE_SIZE_VIDEO_FLAG);
 		sfd->compress_space = compress_bufsize(map, sfd->dmabuf_size);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
 		sfd->mem_mirror = calloc(sfd->dmabuf_size, 1);
@@ -1187,7 +1196,7 @@ void create_from_update(struct fd_translation_map *map,
 				(struct dmabuf_slice_data *)block.data;
 		const char *contents = NULL;
 		size_t contents_size = sfd->dmabuf_size;
-		if (info->using_video) {
+		if (use_video) {
 			setup_video_decode(sfd, (int)info->width,
 					(int)info->height,
 					(int)info->strides[0],
@@ -1202,7 +1211,6 @@ void create_from_update(struct fd_translation_map *map,
 				memset(sfd->mem_mirror, 213, sfd->dmabuf_size);
 			}
 			contents = sfd->mem_mirror;
-
 		} else {
 			const char *compressed_contents =
 					block.data +
@@ -1260,7 +1268,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
 		uncompress_buffer(map, block.size, block.data,
-				transf->special.file_actual_size,
+				transf->special.block_meta,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff expansion
@@ -1316,7 +1324,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			return;
 		}
 
-		if (sfd->dmabuf_info.using_video) {
+		if (sfd->video_codec) {
 			apply_video_packet_to_mirror(
 					sfd, block.size, block.data);
 
@@ -1339,7 +1347,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			const char *act_buffer = NULL;
 			size_t act_size = 0;
 			uncompress_buffer(map, block.size, block.data,
-					transf->special.file_actual_size,
+					transf->special.block_meta,
 					sfd->compress_buffer, &act_size,
 					&act_buffer);
 

@@ -133,7 +133,8 @@ static void translate_fds(struct fd_translation_map *map,
 		int ids[])
 {
 	for (int i = 0; i < nfds; i++) {
-		ids[i] = translate_fd(map, render, fds[i], NULL)->remote_id;
+		ids[i] = translate_fd(map, render, fds[i], NULL, false)
+					 ->remote_id;
 	}
 }
 /** Given a list of global ids, and an up-to-date translation map, produce local

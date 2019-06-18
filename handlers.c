@@ -793,7 +793,7 @@ static void event_wl_keyboard_keymap(void *data,
 	struct context *context = get_context(data, wl_keyboard);
 
 	struct shadow_fd *sfd = translate_fd(
-			&context->g->map, &context->g->render, fd, NULL);
+			&context->g->map, &context->g->render, fd, NULL, false);
 	if (sfd->type != FDC_FILE || sfd->file_size != size) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d",
@@ -814,7 +814,7 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)listset_get(
 			context->obj_list, id);
 	struct shadow_fd *sfd = translate_fd(
-			&context->g->map, &context->g->render, fd, NULL);
+			&context->g->map, &context->g->render, fd, NULL, false);
 	/* It may be valid for the file descriptor size to be larger than the
 	 * immediately advertised size, since the call to wl_shm.create_pool
 	 * may be followed by wl_shm_pool.resize, which then increases the size
@@ -859,10 +859,24 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 		wp_log(WP_ERROR, "No buffer available");
 		return;
 	}
-	if (!the_shm_pool->owned_buffer) {
+	struct shadow_fd *sfd = the_shm_pool->owned_buffer;
+	if (!sfd) {
 		wp_log(WP_ERROR,
 				"Creating a wl_buffer from a pool that does not own an fd");
 		return;
+	}
+
+	if (sfd->refcount_protocol == 1 && video_supports_shm_format(format) &&
+			offset == 0 &&
+			stride * height == (int32_t)sfd->file_size &&
+			context->g->config->video_if_possible) {
+		/* shm data supports video only when there is a single
+		 * wl_buffer that references the underlying file and furthermore
+		 * that buffer lays claim to the entire buffer. Otherwise,
+		 * handling mixed use cases can become incredibly complicated.
+		 *
+		 * Additional complications can happen if the pool is reused */
+		// setup_video_encode(sfd, width, height, stride, format);
 	}
 
 	the_buffer->type = BUF_SHM;
@@ -1068,8 +1082,8 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 	info.strides[2] = (uint32_t)stride2;
 	info.modifier = 0;
 	info.format = format;
-	struct shadow_fd *sfd = translate_fd(
-			&context->g->map, &context->g->render, name, &info);
+	struct shadow_fd *sfd = translate_fd(&context->g->map,
+			&context->g->render, name, &info, false);
 	if (sfd->type != FDC_DMABUF) {
 		wp_log(WP_ERROR,
 				"keymap candidate RID=%d was not a dmabuf (type=%d)",
@@ -1281,8 +1295,7 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 			.offsets = {params->add[0].offset,
 					params->add[1].offset,
 					params->add[2].offset,
-					params->add[3].offset},
-			.using_video = false};
+					params->add[3].offset}};
 	for (int i = 0; i < params->nplanes; i++) {
 		memset(info.using_planes, 0, sizeof(info.using_planes));
 		for (int k = 0; k < params->nplanes; k++) {
@@ -1294,16 +1307,14 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		/* replace the format with something the driver can probably
 		 * handle */
 		info.format = dmabuf_get_simple_format_for_plane(format, i);
-		if (params->nplanes == 1 &&
-				video_supports_dmabuf_format(
-						format, info.modifier) &&
-				context->g->config->video_if_possible) {
-			// attempt video codec
-			info.using_video = true;
-		}
+		bool try_video = params->nplanes == 1 &&
+				 video_supports_dmabuf_format(
+						 format, info.modifier) &&
+				 context->g->config->video_if_possible;
 
 		struct shadow_fd *sfd = translate_fd(&context->g->map,
-				&context->g->render, params->add[i].fd, &info);
+				&context->g->render, params->add[i].fd, &info,
+				try_video);
 		if (sfd->type != FDC_DMABUF) {
 			wp_log(WP_ERROR,
 					"fd #%d for linux-dmabuf request wasn't a dmabuf",
@@ -1407,12 +1418,11 @@ static void zwlr_export_dmabuf_frame_v1_object(void *data,
 					frame->objects[2].offset,
 					frame->objects[3].offset},
 			.using_planes = {false, false, false, false},
-			.modifier = frame->modifier,
-			.using_video = false};
+			.modifier = frame->modifier};
 	info.using_planes[index] = true;
 
-	struct shadow_fd *sfd = translate_fd(
-			&context->g->map, &context->g->render, fd, &info);
+	struct shadow_fd *sfd = translate_fd(&context->g->map,
+			&context->g->render, fd, &info, false);
 	if (sfd->type != FDC_DMABUF) {
 		wp_log(WP_ERROR,
 				"fd #%d for wlr-export-dmabuf frame wasn't a dmabuf",

@@ -93,13 +93,69 @@ void apply_video_packet_to_mirror(
 #ifdef HAS_DMABUF
 /* these are equivalent to the GBM formats */
 #include <libdrm/drm_fourcc.h>
+
+static enum AVPixelFormat drm_to_av(uint32_t format)
+{
+	/* The avpixel formats are specified with reversed endianness relative
+	 * to DRM formats */
+	switch (format) {
+	case DRM_FORMAT_C8:
+		/* indexed */
+		return AV_PIX_FMT_NONE;
+
+	case DRM_FORMAT_R8:
+		return AV_PIX_FMT_GRAY8;
+
+	case DRM_FORMAT_RGB565:
+		return AV_PIX_FMT_RGB565LE;
+
+	/* there really isn't a matching format, because no fast video
+	 * codec supports alpha */
+	case DRM_FORMAT_GR88:
+		return AV_PIX_FMT_NONE;
+
+	case DRM_FORMAT_RGB888:
+		return AV_PIX_FMT_BGR24;
+	case DRM_FORMAT_BGR888:
+		return AV_PIX_FMT_RGB24;
+
+	case DRM_FORMAT_XRGB8888:
+		return AV_PIX_FMT_BGR0;
+	case DRM_FORMAT_XBGR8888:
+		return AV_PIX_FMT_RGB0;
+	case DRM_FORMAT_RGBX8888:
+		return AV_PIX_FMT_0BGR;
+	case DRM_FORMAT_BGRX8888:
+		return AV_PIX_FMT_0RGB;
+
+	/* there do not appear to be equivalents for these 10-bit formats */
+	case DRM_FORMAT_XRGB2101010:
+	case DRM_FORMAT_XBGR2101010:
+		return AV_PIX_FMT_NONE;
+
+	default:
+		return AV_PIX_FMT_NONE;
+	}
+}
 #endif
+
+static enum AVPixelFormat shm_to_av(uint32_t format)
+{
+	if (format == 0) {
+		return AV_PIX_FMT_BGR0;
+	}
+#ifdef HAS_DMABUF
+	return drm_to_av(format);
+#else
+	return AV_PIX_FMT_NONE;
+#endif
+}
 
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
 {
 #ifdef HAS_DMABUF
-	if (format == DRM_FORMAT_XRGB8888 &&
-			modifier == DRM_FORMAT_MOD_LINEAR) {
+	if (modifier == DRM_FORMAT_MOD_LINEAR &&
+			drm_to_av(format) != AV_PIX_FMT_NONE) {
 		return true;
 	}
 #else
@@ -110,8 +166,10 @@ bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
 }
 bool video_supports_shm_format(uint32_t format)
 {
-	(void)format;
-	return false;
+	if (format == 0) {
+		return true;
+	}
+	return video_supports_dmabuf_format(format, 0);
 }
 
 static void video_log_callback(
@@ -158,15 +216,32 @@ void destroy_video_data(struct shadow_fd *sfd)
 void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 		int stride, uint32_t drm_format)
 {
-	(void)drm_format;
+	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
+	if (avpixfmt == AV_PIX_FMT_NONE) {
+		wp_log(WP_ERROR, "Failed to find matching AvPixelFormat for %x",
+				drm_format);
+		return;
+	}
+	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
+	if (sws_isSupportedInput(avpixfmt) == 0) {
+		wp_log(WP_ERROR, "frame format %x not supported", avpixfmt);
+		return;
+	}
+	if (sws_isSupportedInput(videofmt) == 0) {
+		wp_log(WP_ERROR, "videofmt %x not supported", videofmt);
+		return;
+	}
 
 	// Try to set up a video encoding and a video decoding
 	// stream with AVCodec, although transmissions in each
 	// direction are relatively independent. TODO: use
 	// hardware support only if available.
+
+	/* note: "libx264rgb" should, if compiled in, support RGB directly */
 	struct AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
 	if (!codec) {
 		wp_log(WP_ERROR, "Failed to find encoder for h264");
+		return;
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
@@ -187,7 +262,7 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 	 * frames. The gop size is chosen by the driver. */
 	ctx->gop_size = -1;
 	ctx->max_b_frames = 0; // Q: how to get this to zero?
-	ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+	ctx->pix_fmt = videofmt;
 	// low latency
 	ctx->delay = 0;
 	ctx->thread_count = 1;
@@ -207,13 +282,15 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_log(WP_ERROR, "Failed to open codec");
+		return;
 	}
 
 	struct AVFrame *frame = av_frame_alloc();
 	if (!frame) {
 		wp_log(WP_ERROR, "Could not allocate video frame");
+		return;
 	}
-	frame->format = AV_PIX_FMT_BGR0;
+	frame->format = avpixfmt;
 	frame->width = ctx->width;
 	frame->height = ctx->height;
 	frame->linesize[0] = stride;
@@ -221,26 +298,21 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 	struct AVFrame *yuv_frame = av_frame_alloc();
 	yuv_frame->width = ctx->width;
 	yuv_frame->height = ctx->height;
-	yuv_frame->format = AV_PIX_FMT_YUV420P;
+	yuv_frame->format = videofmt;
 	if (av_image_alloc(yuv_frame->data, yuv_frame->linesize,
-			    yuv_frame->width, yuv_frame->height,
-			    AV_PIX_FMT_YUV420P, 64) < 0) {
+			    yuv_frame->width, yuv_frame->height, videofmt,
+			    64) < 0) {
 		wp_log(WP_ERROR, "Failed to allocate temp image");
-	}
-
-	if (sws_isSupportedInput(AV_PIX_FMT_BGR0) == 0) {
-		wp_log(WP_ERROR, "AV_PIX_FMT_BGR0 not supported");
-	}
-	if (sws_isSupportedInput(AV_PIX_FMT_YUV420P) == 0) {
-		wp_log(WP_ERROR, "AV_PIX_FMT_YUV420P not supported");
+		return;
 	}
 
 	struct SwsContext *sws = sws_getContext(ctx->width, ctx->height,
-			AV_PIX_FMT_BGR0, ctx->width, ctx->height,
-			AV_PIX_FMT_YUV420P, SWS_BILINEAR, NULL, NULL, NULL);
+			avpixfmt, ctx->width, ctx->height, videofmt,
+			SWS_BILINEAR, NULL, NULL, NULL);
 	if (!sws) {
 		wp_log(WP_ERROR,
 				"Could not create software color conversion context");
+		return;
 	}
 
 	sfd->video_codec = codec;
@@ -254,7 +326,23 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 		int stride, uint32_t drm_format)
 {
-	(void)drm_format;
+	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
+	if (avpixfmt == AV_PIX_FMT_NONE) {
+		wp_log(WP_ERROR, "Failed to find matching AvPixelFormat for %x",
+				drm_format);
+		return;
+	}
+	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
+
+	if (sws_isSupportedInput(avpixfmt) == 0) {
+		wp_log(WP_ERROR, "source pixel format %x not supported",
+				avpixfmt);
+		return;
+	}
+	if (sws_isSupportedInput(videofmt) == 0) {
+		wp_log(WP_ERROR, "AV_PIX_FMT_YUV420P not supported");
+		return;
+	}
 
 	struct AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
 	if (!codec) {
@@ -267,7 +355,7 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	// non-odd resolution ?
 	ctx->width = align(width, 8);
 	ctx->height = align(height, 8);
-	ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+	ctx->pix_fmt = videofmt;
 	ctx->delay = 0;
 	ctx->thread_count = 1;
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
@@ -278,21 +366,14 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	if (!frame) {
 		wp_log(WP_ERROR, "Could not allocate video frame");
 	}
-	frame->format = AV_PIX_FMT_BGR0;
+	frame->format = avpixfmt;
 	frame->width = ctx->width;
 	frame->height = ctx->height;
 	frame->linesize[0] = stride;
 
-	if (sws_isSupportedInput(AV_PIX_FMT_BGR0) == 0) {
-		wp_log(WP_ERROR, "AV_PIX_FMT_BGR0 not supported");
-	}
-	if (sws_isSupportedInput(AV_PIX_FMT_YUV420P) == 0) {
-		wp_log(WP_ERROR, "AV_PIX_FMT_YUV420P not supported");
-	}
-
 	struct SwsContext *sws = sws_getContext(ctx->width, ctx->height,
-			AV_PIX_FMT_YUV420P, ctx->width, ctx->height,
-			AV_PIX_FMT_BGR0, SWS_BILINEAR, NULL, NULL, NULL);
+			videofmt, ctx->width, ctx->height, avpixfmt,
+			SWS_BILINEAR, NULL, NULL, NULL);
 	if (!sws) {
 		wp_log(WP_ERROR,
 				"Could not create software color conversion context");
@@ -301,7 +382,7 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	struct AVFrame *yuv_frame = av_frame_alloc();
 	yuv_frame->width = ctx->width;
 	yuv_frame->height = ctx->height;
-	yuv_frame->format = AV_PIX_FMT_YUV420P;
+	yuv_frame->format = videofmt;
 
 	sfd->video_codec = codec;
 	sfd->video_reg_frame = frame;
@@ -385,7 +466,8 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 				sfd->video_buffer);
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
-		tf->special.file_actual_size = (int)sfd->dmabuf_size;
+		tf->special.block_meta = (uint32_t)sfd->dmabuf_size |
+					 FILE_SIZE_VIDEO_FLAG;
 	} else if (first) {
 		struct transfer *tf = setup_single_block_transfer(ntransfers,
 				transfers, nblocks, blocks,
@@ -394,7 +476,8 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 		// Q: use a subtype 'FDC_VIDEODMABUF ?'
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
-		tf->special.file_actual_size = (int)sfd->dmabuf_size;
+		tf->special.block_meta = (uint32_t)sfd->dmabuf_size |
+					 FILE_SIZE_VIDEO_FLAG;
 	}
 }
 
