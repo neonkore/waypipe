@@ -15,6 +15,22 @@ waypipe - A transparent proxy for Wayland applications
 waypipe is a proxy for Wayland clients, with the aim of supporting behavior
 like *ssh -X*.
 
+When run as *waypipe client*, it will open a socket (by default at
+_/tmp/waypipe-client.sock_) and will connect to the local Wayland compositor
+and forward all Wayland applications which were linked to it over the socket
+by a matching *waypipe server* instance.
+
+When run as *waypipe server*, it will run the command that follows in its
+command line invocation, set up its own Wayland compositor socket, and
+try to connect to its matching *waypipe client* socket (by default
+_/tmp/waypipe-server.sock_) and try to forward all the Wayland clients
+that connect to fake compositor socket to the matching *waypipe client*.
+
+Finally, prefixing an *ssh ...* command to become *waypipe ssh ...* will
+automatically set up local and remote copies of *waypipe*, as well as
+forwarding between their sockets, so that Wayland applications run remotely
+will be displayed locally.
+
 # OPTIONS
 
 *-c C, --compress C*
@@ -58,6 +74,16 @@ like *ssh -X*.
 	In ssh mode, specify the path *R* to the drm device that the remote instance
 	of waypipe (running in server mode) should use.
 
+*--linear-dmabuf*
+	Filter out all advertised DMABUF formats which have modifiers; only standard
+	linear image layouts are then permitted. Some applications by default use
+	DMABUF image layout modifiers which are very slow for waypipe to copy
+	and update; this flag can ensure that they fall back to friendlier formats.
+
+*--video*
+	Compress specific DMABUF formats using a lossy video codec. Opaque, 10-bit, and
+	multiplanar formats, among others, are not supported.
+
 # EXAMPLE 
 
 The following *waypipe ssh* subcommand will attempt to run *weston-flower* on
@@ -89,9 +115,17 @@ socket paths. For example:
 # ENVIRONMENT
 
 When running as a server, by default _WAYLAND_DISPLAY_ will be set for the
-invoked process. If the *--oneshot* flag is set, waypipe will instead set
-_WAYLAND_SOCKET_ and inherit a corresponding file descriptor to the invoked
-(child) process.
+invoked process.
+
+If the *--oneshot* flag is set, waypipe will instead set _WAYLAND_SOCKET_ and
+inherit an already connected socketpair file descriptor to the invoked (child)
+process. Some programs open and close a Wayland connection repeatedly as part
+of their initialization, and will not work correctly with this flag.
+
+# EXIT STATUS
+
+*waypipe ssh* will exit with the exit status code from the remote command, or
+with return code 1 if there has been an error.
 
 # SEE ALSO
 

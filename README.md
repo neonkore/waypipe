@@ -45,9 +45,10 @@ Requirements:
 * wayland (>= 1.15, to support absolute paths in WAYLAND_DISPLAY)
 * wayland-protocols (>= 1.12, for the xdg-shell protocol, and others)
 * libffi
-* libgbm (from a recent version of mesa)
 * libzstd
 * liblz4
+* libgbm (optional, to support programs using OpenGL via DMABUFs)
+* libdrm (optional, same as for libgbm)
 * ffmpeg (optional, >=3.1, for lossy video encoding)
 * scdoc (optional, to generate a man page)
 * sys/sdt.h (optional, to provide static tracepoints for profiling)
@@ -58,9 +59,9 @@ Requirements:
 
 ## Status
 
-This is just a prototype right now[0]. The source code[1], command-line
-interface, project name, primary branch, and git history may yet change
-completely. Bug reports and patches are always welcome.
+This is just a prototype right now[0]. The main development location[1],
+command-line interface, and project name may yet change completely. Bug
+reports and patches are always welcome.
 
 Any of the following will crash waypipe:
 
