@@ -550,7 +550,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	return sfd;
 }
 
-#define DIFF_WINDOW_SIZE 4
+/* large window sizes (64) can be faster if everything has changed,
+ * at the cost of overcopying sometimes. 0 is also a reasonable
+ * choice. Differences are amplified at low optimization levels. */
+#define DIFF_WINDOW_SIZE 32
 
 static uint64_t run_interval_diff(uint64_t blockrange_min,
 		uint64_t blockrange_max,
@@ -710,8 +713,8 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 	uint64_t ndiffblocks = diffsize / 8;
 	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
-	uint64_t ntrailing = size - 8 * nblocks;
-	if (diffsize % 8 != 0 && ntrailing != (diffsize - 8 * ndiffblocks)) {
+	uint64_t ndifftrailing = diffsize - 8 * ndiffblocks;
+	if (diffsize % 8 != 0 && ndifftrailing != (size - 8 * nblocks)) {
 		wp_log(WP_ERROR, "Trailing bytes mismatch for diff.");
 		return;
 	}
@@ -733,8 +736,8 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		i += nto - nfrom + 1;
 	}
 	DTRACE_PROBE(waypipe, apply_diff_exit);
-	if (ntrailing > 0) {
-		for (uint64_t i = 0; i < ntrailing; i++) {
+	if (ndifftrailing > 0) {
+		for (uint64_t i = 0; i < ndifftrailing; i++) {
 			base[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
 		}
 	}

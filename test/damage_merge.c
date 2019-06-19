@@ -78,6 +78,21 @@ static void fill_line_crossing_pattern(
 	}
 }
 
+static void fill_vline_pattern(
+		int Ntotal, int margin, struct ext_interval *data)
+{
+	int step = (margin + 2);
+	int stride = Ntotal * step;
+	for (int i = 0; i < Ntotal; i++) {
+		data[i] = (struct ext_interval){
+				.start = i * step,
+				.width = 1,
+				.rep = 2,
+				.stride = stride,
+		};
+	}
+}
+
 static int randint(int max)
 {
 	int cap = RAND_MAX - RAND_MAX % max;
@@ -145,7 +160,7 @@ struct pattern {
 static const struct pattern patterns[] = {{"overcopy", fill_overcopy_pattern},
 		{"line-crossing", fill_line_crossing_pattern},
 		{"circle", fill_circle_pattern}, {"snow", fill_snow_pattern},
-		{NULL, NULL}};
+		{"vline", fill_vline_pattern}, {NULL, NULL}};
 
 static inline int eint_low(const struct ext_interval i) { return i.start; }
 static inline int eint_high(const struct ext_interval i)
