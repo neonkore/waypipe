@@ -577,7 +577,8 @@ void apply_video_packet_to_mirror(
 		struct shadow_fd *sfd, size_t size, const char *data);
 
 // exported for testing
-void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
+void apply_diff(size_t size, char *__restrict__ target1,
+		char *__restrict__ target2, size_t diffsize,
 		const char *__restrict__ diff);
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
 		size_t copy_domain_start, size_t copy_domain_end,

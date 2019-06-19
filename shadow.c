@@ -706,12 +706,14 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 	}
 	DTRACE_PROBE1(waypipe, construct_diff_exit, *diffsize);
 }
-void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
+void apply_diff(size_t size, char *__restrict__ target1,
+		char *__restrict__ target2, size_t diffsize,
 		const char *__restrict__ diff)
 {
 	uint64_t nblocks = size / 8;
 	uint64_t ndiffblocks = diffsize / 8;
-	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
+	uint64_t *__restrict__ t1_blocks = (uint64_t *)target1;
+	uint64_t *__restrict__ t2_blocks = (uint64_t *)target2;
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
 	uint64_t ndifftrailing = diffsize - 8 * ndiffblocks;
 	if (diffsize % 8 != 0 && ndifftrailing != (size - 8 * nblocks)) {
@@ -723,6 +725,7 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 		uint64_t block = diff_blocks[i];
 		uint64_t nfrom = block >> 32;
 		uint64_t nto = (block << 32) >> 32;
+#if 1
 		if (nto > nblocks || nfrom >= nto ||
 				i + (nto - nfrom) >= ndiffblocks) {
 			wp_log(WP_ERROR,
@@ -731,14 +734,18 @@ void apply_diff(size_t size, char *__restrict__ base, size_t diffsize,
 					i + 1 + (nto - nfrom), ndiffblocks);
 			return;
 		}
-		memcpy(base_blocks + nfrom, diff_blocks + i + 1,
+#endif
+		memcpy(t1_blocks + nfrom, diff_blocks + i + 1,
+				8 * (nto - nfrom));
+		memcpy(t2_blocks + nfrom, diff_blocks + i + 1,
 				8 * (nto - nfrom));
 		i += nto - nfrom + 1;
 	}
 	DTRACE_PROBE(waypipe, apply_diff_exit);
 	if (ndifftrailing > 0) {
 		for (uint64_t i = 0; i < ndifftrailing; i++) {
-			base[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
+			target1[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
+			target2[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
 		}
 	}
 }
@@ -1371,10 +1378,8 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld",
 					act_size, sfd->buffer_size);
 		}
-		apply_diff(sfd->buffer_size, sfd->mem_mirror, act_size,
-				act_buffer);
-		apply_diff(sfd->buffer_size, sfd->mem_local, act_size,
-				act_buffer);
+		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
+				act_size, act_buffer);
 	} else if (fdcat_ispipe(sfd->type)) {
 		bool rw_match = sfd->type == FDC_PIPE_RW &&
 				transf->type == FDC_PIPE_RW;
@@ -1447,15 +1452,13 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 					&act_buffer);
 
 			wp_log(WP_DEBUG, "Applying dmabuf damage");
-			apply_diff(sfd->buffer_size, sfd->mem_mirror, act_size,
-					act_buffer);
 			void *handle = NULL;
 			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
 			if (!data) {
 				return;
 			}
-			apply_diff(sfd->buffer_size, data, act_size,
-					act_buffer);
+			apply_diff(sfd->buffer_size, sfd->mem_mirror, data,
+					act_size, act_buffer);
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				// there was an issue unmapping;
 				// unmap_dmabuf will log error

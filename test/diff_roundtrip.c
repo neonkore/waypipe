@@ -31,55 +31,6 @@
 #include <string.h>
 #include <time.h>
 
-static int buf_ndiff(size_t size, const char *left, const char *right,
-		const char *leftname, const char *rightname)
-{
-	if (!memcmp(left, right, size)) {
-		return 0;
-	}
-
-	int nchanged = 0;
-	for (size_t i = 0; i < size; i++) {
-		nchanged += (left[i] != right[i]);
-		if (left[i] != right[i]) {
-			printf("Disagreement at i=%d, %s=%02x, %s=%02x\n",
-					(int)i, leftname,
-					(uint32_t)(uint8_t)left[i], rightname,
-					(uint32_t)(uint8_t)right[i]);
-		}
-	}
-
-	return nchanged;
-}
-
-static const struct damage damage_all = {
-		.damage = DAMAGE_EVERYTHING,
-		.ndamage_rects = 0,
-};
-
-static int ideal_round(
-		size_t bufsize, char *base, const char *changed, char *other)
-{
-	char *diff = calloc(bufsize + 8, 1);
-	size_t diffsize = 0;
-	construct_diff(bufsize, &damage_all, 0, SIZE_MAX, base, changed,
-			&diffsize, diff);
-	apply_diff(bufsize, other, diffsize, diff);
-	free(diff);
-	int nch = 0;
-	if ((nch = buf_ndiff(bufsize, changed, base, "changed", "base"))) {
-		printf("Diff failed, base and changed disagree, at %d bytes\n",
-				nch);
-		return EXIT_FAILURE;
-	}
-	if ((nch = buf_ndiff(bufsize, changed, other, "changed", "other"))) {
-		printf("Diff failed, other and changed disagree, at %d bytes\n",
-				nch);
-		return EXIT_FAILURE;
-	}
-	return EXIT_SUCCESS;
-}
-
 static long rand_gap_fill(char *data, int size, int max_run)
 {
 	max_run = max(2, max_run);
@@ -110,6 +61,8 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
+	bool all_success = true;
+
 	struct damage d = {NULL, 0, 0, 0};
 	damage_everything(&d);
 	int nsubtests = (sizeof(subtests) / sizeof(subtests[0]));
@@ -135,8 +88,9 @@ int main(int argc, char **argv)
 					&diffsize, diff);
 			clock_gettime(CLOCK_MONOTONIC, &t1);
 			/* note: dual apply could be much faster */
-			apply_diff(bufsize, target1, diffsize, diff);
-			apply_diff(bufsize, target2, diffsize, diff);
+			apply_diff(bufsize, target1, target2, diffsize, diff);
+			//			apply_diff(bufsize, target2,
+			// diffsize, diff);
 			clock_gettime(CLOCK_MONOTONIC, &t2);
 			ns01 += (t1.tv_sec - t0.tv_sec) * 1000000000L +
 				(t1.tv_nsec - t0.tv_nsec);
@@ -154,6 +108,7 @@ int main(int argc, char **argv)
 							(uint8_t)source[i]);
 				}
 			}
+			all_success = false;
 		}
 
 		double scale = 1.0 / (nreps * bufsize);
@@ -166,38 +121,6 @@ int main(int argc, char **argv)
 		free(mirror);
 		free(target1);
 		free(target2);
-	}
-
-	bool all_success = true;
-	{
-		size_t bufsize = 333333;
-
-		char *changed = calloc(bufsize, 1);
-		for (size_t i = 0; i < bufsize; i++) {
-			changed[i] = (i * 251) % 256;
-		}
-		memset(changed + bufsize / 5, 0, bufsize / 7);
-		memset(changed + bufsize - bufsize / 17, 0, bufsize / 17);
-		char *zerobase = calloc(bufsize, 1);
-		char *zeroclone = calloc(bufsize, 1);
-		all_success &= ideal_round(bufsize, zerobase, changed,
-					       zeroclone) == EXIT_SUCCESS;
-
-		for (size_t i = 0; i < bufsize; i++) {
-			changed[i] = (char)(i >> 8);
-		}
-		memset(changed + 2 * bufsize / 3, 3, bufsize / 7);
-
-		all_success &= ideal_round(bufsize, zerobase, changed,
-					       zeroclone) == EXIT_SUCCESS;
-		memset(changed, 7, 1000);
-		memset(changed + bufsize - 7, 8, 7);
-		all_success &= ideal_round(bufsize, zerobase, changed,
-					       zeroclone) == EXIT_SUCCESS;
-
-		free(zerobase);
-		free(zeroclone);
-		free(changed);
 	}
 
 	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;
