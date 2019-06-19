@@ -204,7 +204,9 @@ void setup_video_logging()
 void destroy_video_data(struct shadow_fd *sfd)
 {
 	if (sfd->video_context) {
-
+		if (sfd->video_yuv_frame_data) {
+			av_freep(sfd->video_yuv_frame_data);
+		}
 		sws_freeContext(sfd->video_color_context);
 		av_frame_free(&sfd->video_reg_frame);
 		av_frame_free(&sfd->video_yuv_frame);
@@ -317,6 +319,8 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 
 	sfd->video_codec = codec;
 	sfd->video_yuv_frame = yuv_frame;
+	/* recorded pointer to be freed to match av_image_alloc */
+	sfd->video_yuv_frame_data = &yuv_frame->data[0];
 	sfd->video_reg_frame = frame;
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
@@ -387,6 +391,7 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	sfd->video_codec = codec;
 	sfd->video_reg_frame = frame;
 	sfd->video_yuv_frame = yuv_frame;
+	sfd->video_yuv_frame_data = NULL; /* yuv_frame not allocated by us */
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
 	sfd->video_color_context = sws;
@@ -402,7 +407,6 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 		sfd->video_reg_frame->data[i] = NULL;
 	}
 
-	av_frame_make_writable(sfd->video_yuv_frame);
 	if (sws_scale(sfd->video_color_context,
 			    (const uint8_t *const *)sfd->video_reg_frame->data,
 			    sfd->video_reg_frame->linesize, 0,
@@ -466,7 +470,7 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 				sfd->video_buffer);
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
-		tf->special.block_meta = (uint32_t)sfd->dmabuf_size |
+		tf->special.block_meta = (uint32_t)sfd->buffer_size |
 					 FILE_SIZE_VIDEO_FLAG;
 	} else if (first) {
 		struct transfer *tf = setup_single_block_transfer(ntransfers,
@@ -476,7 +480,7 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 		// Q: use a subtype 'FDC_VIDEODMABUF ?'
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
-		tf->special.block_meta = (uint32_t)sfd->dmabuf_size |
+		tf->special.block_meta = (uint32_t)sfd->buffer_size |
 					 FILE_SIZE_VIDEO_FLAG;
 	}
 }

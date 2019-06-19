@@ -317,6 +317,7 @@ struct shadow_fd {
 	struct AVCodecContext *video_context;
 	struct AVFrame *video_reg_frame;
 	struct AVFrame *video_yuv_frame;
+	void *video_yuv_frame_data;
 	struct AVPacket *video_packet;
 	struct SwsContext *video_color_context;
 	char *video_buffer;
