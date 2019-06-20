@@ -75,6 +75,9 @@ static void destroy_unlinked_sfd(
 	/* video must be cleaned up before any buffers that it may rely on */
 	destroy_video_data(sfd);
 
+	/* free all accumulated damage records */
+	reset_damage(&sfd->damage);
+
 	if (sfd->type == FDC_FILE) {
 		munmap(sfd->mem_local, sfd->buffer_size);
 		free(sfd->mem_mirror);
@@ -89,7 +92,6 @@ static void destroy_unlinked_sfd(
 		free(sfd->diff_buffer);
 		free(sfd->compress_buffer);
 		free(sfd->video_buffer);
-
 	} else if (fdcat_ispipe(sfd->type)) {
 		if (sfd->pipe_fd != sfd->fd_local && sfd->pipe_fd != -1 &&
 				sfd->pipe_fd != -2) {
