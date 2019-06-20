@@ -1073,8 +1073,15 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 							: NULL;
 			first = true;
 		} else if (!sfd->mem_mirror && sfd->video_codec) {
-			// required extra tail space, 16 bytes (?)
-			sfd->mem_mirror = calloc(1, sfd->buffer_size + 16);
+			int mirror_size = 0;
+			pad_video_mirror_size((int)sfd->dmabuf_info.width,
+					(int)sfd->dmabuf_info.height,
+					(int)sfd->dmabuf_info.strides[0], NULL,
+					NULL, &mirror_size);
+			sfd->mem_mirror = calloc(
+					(size_t)max((int)sfd->buffer_size,
+							mirror_size),
+					1);
 			first = true;
 		}
 		void *handle = NULL;
@@ -1292,7 +1299,6 @@ void create_from_update(struct fd_translation_map *map,
 					    ~FILE_SIZE_VIDEO_FLAG);
 		sfd->compress_space = compress_bufsize(map, sfd->buffer_size);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
-		sfd->mem_mirror = calloc(sfd->buffer_size, 1);
 
 		struct bytebuf block = transf->subtransfers[0];
 		struct dmabuf_slice_data *info =
@@ -1300,6 +1306,15 @@ void create_from_update(struct fd_translation_map *map,
 		const char *contents = NULL;
 		size_t contents_size = sfd->buffer_size;
 		if (use_video) {
+			int mirror_size = 0;
+			pad_video_mirror_size((int)info->width,
+					(int)info->height,
+					(int)info->strides[0], NULL, NULL,
+					&mirror_size);
+			sfd->mem_mirror = calloc(
+					(size_t)max((int)sfd->buffer_size,
+							mirror_size),
+					1);
 			setup_video_decode(sfd, (int)info->width,
 					(int)info->height,
 					(int)info->strides[0],
@@ -1315,6 +1330,7 @@ void create_from_update(struct fd_translation_map *map,
 			}
 			contents = sfd->mem_mirror;
 		} else {
+			sfd->mem_mirror = calloc(sfd->buffer_size, 1);
 			const char *compressed_contents =
 					block.data +
 					sizeof(struct dmabuf_slice_data);

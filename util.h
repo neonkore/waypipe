@@ -576,6 +576,10 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 		struct bytebuf blocks[], bool first);
 void apply_video_packet_to_mirror(
 		struct shadow_fd *sfd, size_t size, const char *data);
+/** All return pointers can be NULL. Determines how much extra space or
+ * padded width/height is needed for a video frame */
+void pad_video_mirror_size(int width, int height, int stride, int *new_width,
+		int *new_height, int *new_min_size);
 
 // exported for testing
 void apply_diff(size_t size, char *__restrict__ target1,

@@ -41,6 +41,16 @@ bool video_supports_shm_format(uint32_t format)
 	(void)format;
 	return false;
 }
+void pad_video_mirror_size(int width, int height, int stride, int *new_width,
+		int *new_height, int *new_min_size)
+{
+	(void)width;
+	(void)height;
+	(void)stride;
+	(void)new_width;
+	(void)new_height;
+	(void)new_min_size;
+}
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
 void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 		int stride, uint32_t drm_format)
@@ -204,14 +214,56 @@ void setup_video_logging()
 void destroy_video_data(struct shadow_fd *sfd)
 {
 	if (sfd->video_context) {
+		/* free contexts (which, theoretically, could have hooks into
+		 * frames/packets) first */
+		avcodec_free_context(&sfd->video_context);
+		sws_freeContext(sfd->video_color_context);
 		if (sfd->video_yuv_frame_data) {
 			av_freep(sfd->video_yuv_frame_data);
 		}
-		sws_freeContext(sfd->video_color_context);
 		av_frame_free(&sfd->video_reg_frame);
 		av_frame_free(&sfd->video_yuv_frame);
-		avcodec_free_context(&sfd->video_context);
 		av_packet_free(&sfd->video_packet);
+	}
+}
+
+/* see AVFrame::video documentation; needed due to overreads with SIMD  */
+#define VIDEO_MIRROR_EXTRA_BYTES 16
+
+void pad_video_mirror_size(int width, int height, int stride, int *new_width,
+		int *new_height, int *new_min_size)
+{
+	/* Encoding video with YUV420P is significantly faster than encoding
+	 * video with the YUV444P format. However, when using YUV420P, x264
+	 * imposes an additional condition, that the image width and height
+	 * be divisible by 2, so that there are no UV entries covering less than
+	 * a 2x2 field. Furthermore, if the image sizes for sws_scale disagree,
+	 * then the function becomes significantly more expensive.
+	 *
+	 * A solution that avoids this scaling is to pretend that the user
+	 * buffers actually have slightly larger sizes, which are correctly
+	 * aligned. This will produce border artifacts when the left/right
+	 * sides of an image disagree, but the video encoding wasn't meant to
+	 * be efficient anyway.
+	 *
+	 * Hopefully libswscale doesn't add sanity checks for stride vs.
+	 *width...
+	 **/
+	int m = 2;
+	int nwidth = align(width, m);
+	int nheight = align(height, m);
+	if (new_width) {
+		*new_width = nwidth;
+	}
+	if (new_height) {
+		*new_height = nheight;
+	}
+	if (new_min_size) {
+		/* the extra +8 * (m - 1) are because the width may have
+		 * increased by up to (m-1), making libswscale overread each
+		 * line. */
+		*new_min_size = nheight * stride + VIDEO_MIRROR_EXTRA_BYTES +
+				8 * (m - 1);
 	}
 }
 
@@ -220,7 +272,7 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 {
 	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
-		wp_log(WP_ERROR, "Failed to find matching AvPixelFormat for %x",
+		wp_log(WP_ERROR, "Failed to find matching AvPixelFormat	for %x",
 				drm_format);
 		return;
 	}
@@ -239,7 +291,8 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 	// direction are relatively independent. TODO: use
 	// hardware support only if available.
 
-	/* note: "libx264rgb" should, if compiled in, support RGB directly */
+	/* note: "libx264rgb" should, if compiled in, support RGB
+directly */
 	struct AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
 	if (!codec) {
 		wp_log(WP_ERROR, "Failed to find encoder for h264");
@@ -251,9 +304,8 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 	struct AVPacket *pkt = av_packet_alloc();
 
 	ctx->bit_rate = 3000000;
-	// non-odd resolution ?
-	ctx->width = align(width, 8);
-	ctx->height = align(height, 8);
+	pad_video_mirror_size(
+			width, height, stride, &ctx->width, &ctx->height, NULL);
 	// "time" is only meaningful in terms of the frames
 	// provided
 	ctx->time_base = (AVRational){1, 25};
@@ -293,6 +345,7 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 		return;
 	}
 	frame->format = avpixfmt;
+	/* adopt padded sizes */
 	frame->width = ctx->width;
 	frame->height = ctx->height;
 	frame->linesize[0] = stride;
@@ -307,9 +360,8 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 		wp_log(WP_ERROR, "Failed to allocate temp image");
 		return;
 	}
-
-	struct SwsContext *sws = sws_getContext(ctx->width, ctx->height,
-			avpixfmt, ctx->width, ctx->height, videofmt,
+	struct SwsContext *sws = sws_getContext(frame->width, frame->height,
+			avpixfmt, yuv_frame->width, yuv_frame->height, videofmt,
 			SWS_BILINEAR, NULL, NULL, NULL);
 	if (!sws) {
 		wp_log(WP_ERROR,
@@ -336,7 +388,7 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 				drm_format);
 		return;
 	}
-	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
+	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P /*AV_PIX_FMT_YUV420P*/;
 
 	if (sws_isSupportedInput(avpixfmt) == 0) {
 		wp_log(WP_ERROR, "source pixel format %x not supported",
@@ -354,11 +406,13 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
+	if (!ctx) {
+		wp_log(WP_ERROR, "Failed to allocate context");
+	}
 
-	struct AVPacket *pkt = av_packet_alloc();
-	// non-odd resolution ?
-	ctx->width = align(width, 8);
-	ctx->height = align(height, 8);
+	/* set context dimensions */
+	pad_video_mirror_size(
+			width, height, stride, &ctx->width, &ctx->height, NULL);
 	ctx->pix_fmt = videofmt;
 	ctx->delay = 0;
 	ctx->thread_count = 1;
@@ -371,22 +425,33 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 		wp_log(WP_ERROR, "Could not allocate video frame");
 	}
 	frame->format = avpixfmt;
+	/* adopt padded sizes */
 	frame->width = ctx->width;
 	frame->height = ctx->height;
 	frame->linesize[0] = stride;
 
-	struct SwsContext *sws = sws_getContext(ctx->width, ctx->height,
-			videofmt, ctx->width, ctx->height, avpixfmt,
-			SWS_BILINEAR, NULL, NULL, NULL);
+	struct AVFrame *yuv_frame = av_frame_alloc();
+	/* match context dimensions */
+	yuv_frame->width = ctx->width;
+	yuv_frame->height = ctx->height;
+	yuv_frame->format = videofmt;
+	if (!yuv_frame) {
+		wp_log(WP_ERROR, "Could not allocate video yuv_frame");
+	}
+
+	struct SwsContext *sws = sws_getContext(yuv_frame->width,
+			yuv_frame->height, videofmt, frame->width,
+			frame->height, avpixfmt, SWS_BILINEAR, NULL, NULL,
+			NULL);
 	if (!sws) {
 		wp_log(WP_ERROR,
 				"Could not create software color conversion context");
 	}
 
-	struct AVFrame *yuv_frame = av_frame_alloc();
-	yuv_frame->width = ctx->width;
-	yuv_frame->height = ctx->height;
-	yuv_frame->format = videofmt;
+	struct AVPacket *pkt = av_packet_alloc();
+	if (!pkt) {
+		wp_log(WP_ERROR, "Could not allocate video packet");
+	}
 
 	sfd->video_codec = codec;
 	sfd->video_reg_frame = frame;

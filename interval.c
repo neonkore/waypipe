@@ -418,7 +418,9 @@ void merge_core(const int old_count, struct ext_interval *old_list,
 	/* todo, limit number of copies */
 	struct ext_interval *src = malloc(
 			(old_count + new_count) * sizeof(struct ext_interval));
-	memcpy(src, old_list, old_count * sizeof(struct ext_interval));
+	if (old_list) {
+		memcpy(src, old_list, old_count * sizeof(struct ext_interval));
+	}
 	int count = old_count;
 	for (int i = 0; i < new_count; i++) {
 		struct ext_interval e = smooth_gaps(new_list[i], merge_margin);
