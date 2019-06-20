@@ -124,13 +124,15 @@ test_damage = executable('damage_merge', ['test/damage_merge.c'] + ['interval.c'
 test('If damage rectangles merge efficiently', test_damage)
 weston_prog = find_program('weston', required: false)
 weston_shm_prog = find_program('weston-simple-shm', required: false)
-weston_egl_prog = find_program('weston-simple-dmabuf-egl', required: false)
+weston_egl_prog = find_program('weston-simple-egl', required: false)
+weston_dma_prog = find_program('weston-simple-dmabuf-drm', required: false)
 if weston_prog.found() and weston_shm_prog.found() and weston_egl_prog.found()
 	envlist = [
-        'TEST_WAYPIPE_PATH=@0@'.format(waypipe_prog.full_path()),
+		'TEST_WAYPIPE_PATH=@0@'.format(waypipe_prog.full_path()),
 		'TEST_WESTON_PATH=@0@'.format(weston_prog.path()),
 		'TEST_WESTON_SHM_PATH=@0@'.format(weston_shm_prog.path()),
 		'TEST_WESTON_EGL_PATH=@0@'.format(weston_egl_prog.path()),
+		'TEST_WESTON_DMA_PATH=@0@'.format(weston_dma_prog.path()),
 	]
 	test_headless = find_program('test/headless.py')
 	test('If clients crash when run with weston via waypipe', test_headless, env: envlist)

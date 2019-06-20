@@ -43,6 +43,7 @@ def safe_cleanup(process):
 weston_path = os.environ["TEST_WESTON_PATH"]
 weston_shm_path = os.environ["TEST_WESTON_SHM_PATH"]
 weston_egl_path = os.environ["TEST_WESTON_EGL_PATH"]
+weston_dma_path = os.environ["TEST_WESTON_DMA_PATH"]
 waypipe_path = os.environ["TEST_WAYPIPE_PATH"]
 ld_library_path = (
     os.environ["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in os.environ else ""
@@ -106,7 +107,11 @@ if not wait_until_exists(abs_socket_path):
         "weston failed to create expected display socket path, " + abs_socket_path
     )
 
-sub_tests = {"SHM": [weston_shm_path], "EGL": [weston_egl_path, "-m", "--size=800"]}
+sub_tests = {
+    "SHM": [weston_shm_path],
+    "EGL": [weston_egl_path, "-o"],
+    "DMABUF": [weston_dma_path],
+}
 
 processes = {}
 
@@ -194,9 +199,16 @@ for sub_test_name, bundle in processes.items():
     ref_out.close()
 
     if wp_child is not None:
-        wp_child.send_signal(signal.SIGINT)
-        wp_server.wait()
-        wp_client.wait()
+        try:
+            wp_child.send_signal(signal.SIGINT)
+        except psutil.NoSuchProcess:
+            time.sleep(0.05)
+            safe_cleanup(wp_server)
+            time.sleep(0.05)
+            safe_cleanup(wp_client)
+        else:
+            wp_server.wait()
+            wp_client.wait()
     else:
         safe_cleanup(wp_server)
         time.sleep(0.05)
