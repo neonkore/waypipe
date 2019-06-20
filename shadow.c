@@ -856,10 +856,7 @@ static void wait_thread_task(struct fd_translation_map *map)
 {
 	pthread_mutex_lock(&map->work_state_mutex);
 	map->nthreads_completed++;
-	while (true) {
-		if (map->nthreads_completed == map->nthreads) {
-			break;
-		}
+	while (map->nthreads_completed < map->nthreads) {
 		pthread_cond_wait(
 				&map->work_done_notify, &map->work_state_mutex);
 	}
@@ -1749,7 +1746,9 @@ static void *worker_thread_main(void *arg)
 			pthread_mutex_lock(&map->work_state_mutex);
 
 			map->nthreads_completed++;
-			pthread_cond_signal(&map->work_done_notify);
+			if (map->nthreads_completed == map->nthreads) {
+				pthread_cond_signal(&map->work_done_notify);
+			}
 		}
 
 		pthread_cond_wait(&map->work_needed_notify,
