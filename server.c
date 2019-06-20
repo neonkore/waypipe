@@ -207,9 +207,13 @@ int run_server(const char *socket_path, const struct main_config *config,
 					close(wdisplay_socket);
 					int chanfd = connect_to_channel(
 							socket_path);
-
-					return main_interface_loop(chanfd,
-							appfd, config, false);
+					if (chanfd != -1) {
+						return main_interface_loop(
+								chanfd, appfd,
+								config, false);
+					} else {
+						return EXIT_FAILURE;
+					}
 				} else if (npid == -1) {
 					wp_log(WP_DEBUG, "Fork failure");
 					retcode = EXIT_FAILURE;
