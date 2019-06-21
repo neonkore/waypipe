@@ -83,11 +83,11 @@ extern log_handler_func_t log_funcs[2];
 #ifndef WAYPIPE_SRC_DIR_LENGTH
 #define WAYPIPE_SRC_DIR_LENGTH 0
 #endif
-// no trailing ;, user must supply
-#define wp_log(level, fmt, ...)                                                \
+// No trailing ;, user must supply. The first vararg must be the format string.
+#define wp_log(level, ...)                                                     \
 	if (log_funcs[level])                                                  \
 	(*log_funcs[level])(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH, \
-			__LINE__, (level), fmt, ##__VA_ARGS__)
+			__LINE__, (level), __VA_ARGS__)
 
 /** Run waitpid in a loop until there are no more
  * zombies to clean up. If the target_pid was one of the
@@ -197,7 +197,7 @@ typedef enum {
 bool fdcat_ispipe(fdcat_t t);
 
 struct pipe_buffer {
-	void *data;
+	char *data;
 	ssize_t size;
 	ssize_t used;
 };
