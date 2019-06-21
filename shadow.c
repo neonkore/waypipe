@@ -183,7 +183,7 @@ void cleanup_translation_map(struct fd_translation_map *map)
 
 static void *worker_thread_main(void *arg);
 void setup_translation_map(struct fd_translation_map *map, bool display_side,
-		enum compression_mode comp)
+		enum compression_mode comp, int nthreads)
 {
 	map->local_sign = display_side ? -1 : 1;
 	map->list = NULL;
@@ -191,10 +191,13 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 	map->compression = comp;
 	setup_comp_ctx(&map->comp_ctx, comp);
 
-	// platform dependent
-	long nt = sysconf(_SC_NPROCESSORS_ONLN);
-
-	map->nthreads = max((int)nt / 2, 1);
+	if (nthreads == 0) {
+		// platform dependent
+		long nt = sysconf(_SC_NPROCESSORS_ONLN);
+		map->nthreads = max((int)nt / 2, 1);
+	} else {
+		map->nthreads = nthreads;
+	}
 
 	// 1 ms wakeup for other threads, assuming mild CPU load.
 	float thread_switch_delay = 0.001f; // seconds

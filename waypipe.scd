@@ -84,6 +84,12 @@ will be displayed locally.
 	Compress specific DMABUF formats using a lossy video codec. Opaque, 10-bit, and
 	multiplanar formats, among others, are not supported.
 
+*--threads T*
+	Set the number of total threads (including the main thread) which a *waypipe*
+	instance will create. These threads will be used to parallelize compression
+	operations. This flag is passed on to *waypipe server* when given to *waypipe
+	ssh*.
+
 # EXAMPLE 
 
 The following *waypipe ssh* subcommand will attempt to run *weston-flower* on

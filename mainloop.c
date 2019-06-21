@@ -926,7 +926,8 @@ int main_interface_loop(int chanfd, int progfd,
 			.drm_fd = -1,
 			.dev = NULL,
 			.disabled = config->no_gpu};
-	setup_translation_map(&g.map, display_side, config->compression);
+	setup_translation_map(&g.map, display_side, config->compression,
+			config->n_worker_threads);
 	init_message_tracker(&g.tracker);
 	setup_video_logging();
 

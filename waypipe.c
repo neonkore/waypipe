@@ -83,6 +83,7 @@ static const char usage_string[] =
 		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
 		"      --linear-dmabuf  only permit gpu buffers without modifier flags\n"
 		"      --video          compress certain linear dmabufs only with a video codec\n"
+		"      --threads T      set thread pool size, default=hardware threads/2\n"
 		"\n";
 
 static int usage(int retcode)
@@ -255,6 +256,7 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_LOGIN_SHELL 1004
 #define ARG_LINEAR_DMABUF 1005
 #define ARG_VIDEO 1006
+#define ARG_THREADS 1007
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -269,7 +271,9 @@ static const struct option options[] = {
 		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
 		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
-		{"video", no_argument, NULL, ARG_VIDEO}, {0, 0, NULL, 0}};
+		{"video", no_argument, NULL, ARG_VIDEO},
+		{"threads", required_argument, NULL, ARG_THREADS},
+		{0, 0, NULL, 0}};
 
 int main(int argc, char **argv)
 {
@@ -282,9 +286,11 @@ int main(int argc, char **argv)
 	bool login_shell = false;
 	char *remote_drm_node = NULL;
 	char *comp_string = NULL;
+	char *nthread_string = NULL;
 	const char *socketpath = NULL;
 
 	struct main_config config = {
+			.n_worker_threads = 0,
 			.drm_node = NULL,
 			.compression = COMP_NONE,
 			.no_gpu = false,
@@ -389,6 +395,15 @@ int main(int argc, char **argv)
 		case ARG_VIDEO:
 			config.video_if_possible = true;
 			break;
+		case ARG_THREADS: {
+			char *endptr;
+			config.n_worker_threads =
+					(int)strtol(optarg, &endptr, 10);
+			nthread_string = optarg;
+			if (*endptr != 0 || config.n_worker_threads < 0) {
+				fail = true;
+			}
+		} break;
 		default:
 			fail = true;
 			break;
@@ -516,7 +531,8 @@ int main(int argc, char **argv)
 				     2 * (remote_drm_node != NULL) +
 				     2 * (config.compression != COMP_NONE) +
 				     config.video_if_possible +
-				     2 * needs_login_shell;
+				     2 * needs_login_shell +
+				     2 * (config.n_worker_threads != 0);
 			char **arglist = calloc(argc + nextra, sizeof(char *));
 
 			int offset = 0;
@@ -560,6 +576,10 @@ int main(int argc, char **argv)
 				arglist[dstidx + 1 + offset++] = "--drm-node";
 				arglist[dstidx + 1 + offset++] =
 						remote_drm_node;
+			}
+			if (config.n_worker_threads != 0) {
+				arglist[dstidx + 1 + offset++] = "--threads";
+				arglist[dstidx + 1 + offset++] = nthread_string;
 			}
 			arglist[dstidx + 1 + offset++] = "--unlink-socket";
 			arglist[dstidx + 1 + offset++] = "-s";

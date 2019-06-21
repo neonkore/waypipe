@@ -410,6 +410,7 @@ struct int_window {
 
 struct main_config {
 	const char *drm_node;
+	int n_worker_threads;
 	enum compression_mode compression;
 	bool no_gpu;
 	bool linear_dmabuf;
@@ -426,7 +427,7 @@ int main_interface_loop(int chanfd, int progfd,
 		const struct main_config *config, bool display_side);
 
 void setup_translation_map(struct fd_translation_map *map, bool display_side,
-		enum compression_mode compression);
+		enum compression_mode compression, int n_threads);
 void cleanup_translation_map(struct fd_translation_map *map);
 
 /** Given a file descriptor, return which type code would be applied to its
