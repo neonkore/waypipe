@@ -1,9 +1,17 @@
 #!/bin/sh
 
+# This probably requires root to set up the probes, and
+# a low sys/kernel/perf_event_paranoid to record them.
+
+# Also, perf record can create huge (>1 GB) files on busy machines,
+# so it's recommended to run this on a tmpfs
+
 prog=`which waypipe`
+
 perf buildid-cache -a $prog
 perf probe -d sdt_waypipe:*
 perf probe sdt_waypipe:*
-perf record -e sdt_waypipe:* -aR sleep 10
-perf script > scriptfile
-chmod 644 scriptfile
+
+perf record -e sdt_waypipe:*,sched:sched_switch -aR sleep 120
+perf script --ns > scriptfile
+chmod 644 scriptfile perf.data

@@ -553,6 +553,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 					size);
 			return -1;
 		} else {
+			DTRACE_PROBE1(waypipe, channel_read_start, size);
 			cmsg->cmsg_buffer = malloc(size);
 			cmsg->cmsg_end = 0;
 			cmsg->cmsg_size = (int)size;
@@ -577,6 +578,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 			}
 		}
 		if (cmsg->cmsg_end == cmsg->cmsg_size) {
+			DTRACE_PROBE(waypipe, channel_read_end);
 			if (interpret_chanmsg(cmsg, g, display_side) == -1) {
 				return -1;
 			}
@@ -627,11 +629,11 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
 		wp_log(WP_DEBUG, "Write to the %s succeeded", progdesc);
 		close_local_pipe_ends(&g->map);
-		cmsg->state = CM_WAITING_FOR_CHANNEL;
 		free(cmsg->cmsg_buffer);
 		cmsg->cmsg_buffer = NULL;
 		cmsg->cmsg_size = 0;
 		cmsg->cmsg_end = 0;
+		cmsg->state = CM_WAITING_FOR_CHANNEL;
 		DTRACE_PROBE(waypipe, chanmsg_channel_wait);
 	}
 	return 0;
