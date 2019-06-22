@@ -638,7 +638,7 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff)
 {
-	DTRACE_PROBE1(waypipe, construct_diff_enter, damage->ndamage_rects);
+	DTRACE_PROBE1(waypipe, construct_diff_enter, damage->ndamage_intvs);
 
 	uint64_t nblocks = (uint64_t)floordiv((int)size, 8);
 	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
@@ -670,26 +670,20 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 				minu(nblocks, cd_maxb), changed_blocks,
 				base_blocks, diff_blocks, cursor);
 	} else {
-		for (int b = 0; b < damage->ndamage_rects; b++) {
-			struct ext_interval ei = damage->damage[b];
-			for (uint64_t r = 0; r < (uint64_t)ei.rep; r++) {
-				uint64_t minc = maxu(ei.start + r * ei.stride,
-						copy_domain_start);
-				uint64_t maxc = minu(ei.start + r * ei.stride +
-								     ei.width,
-						copy_domain_end);
-				check_tail |= maxc > 8 * nblocks;
+		for (int b = 0; b < damage->ndamage_intvs; b++) {
+			struct interval ei = damage->damage[b];
+			uint64_t minc = maxu(
+					(uint64_t)ei.start, copy_domain_start);
+			uint64_t maxc = minu((uint64_t)ei.end, copy_domain_end);
+			check_tail |= maxc > 8 * nblocks;
 
-				uint64_t minb = minu(
-						floordiv(minc, 8), nblocks);
-				uint64_t maxb = minu(ceildiv(maxc, 8), nblocks);
-				if (minb >= maxb) {
-					continue;
-				}
-				cursor = run_interval_diff(minb, maxb,
-						changed_blocks, base_blocks,
-						diff_blocks, cursor);
+			uint64_t minb = minu(floordiv(minc, 8), nblocks);
+			uint64_t maxb = minu(ceildiv(maxc, 8), nblocks);
+			if (minb >= maxb) {
+				continue;
 			}
+			cursor = run_interval_diff(minb, maxb, changed_blocks,
+					base_blocks, diff_blocks, cursor);
 		}
 	}
 
@@ -1028,13 +1022,9 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 					transfers, nblocks, blocks);
 		}
 
-		int intv_min, intv_max, total_area;
-		get_damage_interval(&sfd->damage, &intv_min, &intv_max,
-				&total_area);
-		intv_min = clamp(intv_min, 0, (int)sfd->buffer_size);
-		intv_max = clamp(intv_max, 0, (int)sfd->buffer_size);
+		int total_area = get_damage_area(&sfd->damage);
 		total_area = min(total_area, (int)sfd->buffer_size);
-		if (intv_min >= intv_max) {
+		if (total_area == 0) {
 			reset_damage(&sfd->damage);
 			return;
 		}

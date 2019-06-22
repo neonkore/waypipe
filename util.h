@@ -218,7 +218,6 @@ struct dmabuf_slice_data {
 	uint64_t modifier;
 };
 
-// Q: use uint32_t everywhere?
 struct ext_interval {
 	/* A slight modification of the standard 'damage' rectangle
 	 * formulation, written to be agnostic of whatever buffers
@@ -237,15 +236,23 @@ struct ext_interval {
 	 * matter and is conventionally set to 0. */
 	int32_t stride;
 };
-#define DAMAGE_EVERYTHING ((struct ext_interval *)-1)
+struct interval {
+	/* start+end is better than start+width, since the limits are used
+	 * repeatedly by merge operations, while width is only needed for
+	 * e.g. streaming area estimates which are very fast anyway */
+	int32_t start;
+	int32_t end;
+};
+
+#define DAMAGE_EVERYTHING ((struct interval *)-1)
 
 struct damage {
 	/* Interval-based damage tracking. If damage is NULL, there is
 	 * no recorded damage. If damage is DAMAGE_EVERYTHING, the entire
 	 * region should be updated. If ndamage_rects > 0, then
 	 * damage points to an array of struct damage_interval objects. */
-	struct ext_interval *damage;
-	int ndamage_rects;
+	struct interval *damage;
+	int ndamage_intvs;
 
 	int acc_damage_stat, acc_count;
 };
@@ -255,9 +262,8 @@ struct damage {
  * which contains the old base set and the new set. */
 void merge_damage_records(struct damage *base, int nintervals,
 		const struct ext_interval *const new_list);
-/** Return a single interval containing the entire damaged region */
-void get_damage_interval(const struct damage *base, int *min, int *max,
-		int *total_covered_area);
+/** Return the total area covered by the damage region */
+int get_damage_area(const struct damage *base);
 /** Set damage to empty  */
 void reset_damage(struct damage *base);
 /** Expand damage to cover everything */
