@@ -592,7 +592,6 @@ void apply_video_packet_to_mirror(
 
 		} else {
 			if (recvstat != AVERROR(EAGAIN)) {
-				char errbuf[256];
 				strcpy(errbuf, "Unknown error");
 				av_strerror(sendstat, errbuf, sizeof(errbuf));
 				wp_log(WP_ERROR,

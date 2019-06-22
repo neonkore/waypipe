@@ -48,12 +48,12 @@ void handle_sigint(int sig)
 	char buf[20];
 	int pid = getpid();
 	sprintf(buf, "SIGINT(%d)\n", pid);
-	write(STDOUT_FILENO, buf, strlen(buf));
+	(void)write(STDOUT_FILENO, buf, strlen(buf));
 	if (!shutdown_flag) {
 		shutdown_flag = true;
 	} else {
 		const char msg[] = "Second SIGINT, aborting.\n";
-		write(STDERR_FILENO, msg, sizeof(msg));
+		(void)write(STDERR_FILENO, msg, sizeof(msg));
 		abort();
 	}
 }

@@ -1298,7 +1298,7 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 					params->add[3].offset}};
 	for (int i = 0; i < params->nplanes; i++) {
 		memset(info.using_planes, 0, sizeof(info.using_planes));
-		for (int k = 0; k < params->nplanes; k++) {
+		for (int k = 0; k < min(params->nplanes, 4); k++) {
 			if (params->add[k].fd == params->add[i].fd) {
 				info.using_planes[k] = 1;
 				info.modifier = params->add[k].modifier;

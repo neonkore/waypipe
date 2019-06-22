@@ -433,7 +433,7 @@ static bool test_mergeprop(struct ext_interval e, int margin)
 	int iter = 0;
 	for (int s = 0; s < maxq; s++) {
 		for (int w = 1; w <= e.stride - margin; w++) {
-			for (int r = 1; r < (maxq - s) / e.stride + 1; r++) {
+			for (int r = 1; r <= (maxq - s) / e.stride; r++) {
 				struct ext_interval t = {s, w, r, e.stride};
 				allpass &= sub_test_mergeprop(
 						iter++, t, e, margin);

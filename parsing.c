@@ -346,7 +346,8 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 				goto len_overflow;
 			}
 			uint32_t len = payload[i++];
-			if (i + ((int)len + 3) / 4 - 1 >= paylen) {
+			int reqd_len = i + ((int)len + 3) / 4;
+			if (reqd_len > paylen) {
 				goto len_overflow;
 			}
 
@@ -428,8 +429,8 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 				goto len_overflow;
 			}
 			uint32_t len = payload[i++];
-			if (i + ((int)len + 3) / 4 - 1 >= paylen) {
-
+			int reqd_len = i + ((int)len + 3) / 4;
+			if (reqd_len > paylen) {
 				goto len_overflow;
 			}
 			const char *str = (const char *)&payload[i];

@@ -99,13 +99,13 @@ int main(int argc, char **argv)
 		}
 		if (memcmp(target1, source, bufsize)) {
 			printf("Failed to synchronize\n");
-			for (int i = 0; i < bufsize; i++) {
-				if (target1[i] != source[i] ||
-						mirror[i] != source[i]) {
+			for (int k = 0; k < bufsize; k++) {
+				if (target1[k] != source[k] ||
+						mirror[k] != source[k]) {
 					printf("i %d: target1 %02x mirror %02x source %02x\n",
-							i, (uint8_t)target1[i],
-							(uint8_t)mirror[i],
-							(uint8_t)source[i]);
+							k, (uint8_t)target1[k],
+							(uint8_t)mirror[k],
+							(uint8_t)source[k]);
 				}
 			}
 			all_success = false;
