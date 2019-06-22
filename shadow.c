@@ -945,25 +945,36 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 		wait_thread_task(map);
 	}
 
-	struct transfer *tf = &transfers[(*ntransfers)++];
-	tf->type = sfd->type;
-	tf->obj_id = sfd->remote_id;
-	tf->nblocks = 0;
-	tf->subtransfers = &blocks[*nblocks];
-	tf->special.block_meta = 0;
-
-	if (cd_actual_size0) {
-		tf->special.block_meta += cd_actual_size0;
-		blocks[(*nblocks)++] = cd_dst0;
-		tf->nblocks++;
-	}
+	size_t actual_diff_size = cd_actual_size0;
 	if (use_threads) {
 		for (int i = 0; i < map->nthreads - 1; i++) {
 			if (map->threads[i].cd_actual_size) {
-				tf->special.block_meta +=
+				actual_diff_size +=
 						map->threads[i].cd_actual_size;
-				blocks[(*nblocks)++] = map->threads[i].cd_dst;
-				tf->nblocks++;
+			}
+		}
+	}
+
+	if (actual_diff_size > 0) {
+		/* Only make the transfer if there were changes */
+		struct transfer *tf = &transfers[(*ntransfers)++];
+		tf->type = sfd->type;
+		tf->obj_id = sfd->remote_id;
+		tf->nblocks = 0;
+		tf->subtransfers = &blocks[*nblocks];
+		tf->special.block_meta = actual_diff_size;
+
+		if (cd_actual_size0) {
+			blocks[(*nblocks)++] = cd_dst0;
+			tf->nblocks++;
+		}
+		if (use_threads) {
+			for (int i = 0; i < map->nthreads - 1; i++) {
+				if (map->threads[i].cd_actual_size) {
+					blocks[(*nblocks)++] =
+							map->threads[i].cd_dst;
+					tf->nblocks++;
+				}
 			}
 		}
 	}
@@ -1027,17 +1038,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			reset_damage(&sfd->damage);
 			return;
 		}
-		// todo: make the 'memcmp' fine grained, depending on
-		// damage complexity ? but we still don't want to
-		// over-allocate
-		bool delta = memcmp(sfd->mem_local + intv_min,
-					     (sfd->mem_mirror + intv_min),
-					     (size_t)(intv_max - intv_min)) !=
-			     0;
-		if (!delta) {
-			reset_damage(&sfd->damage);
-			return;
-		}
+
 		if (!sfd->diff_buffer) {
 			/* Create diff buffer by need for remote files
 			 */
@@ -1109,32 +1110,25 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			add_initial_compressed_block(map, sfd, ntransfers,
 					transfers, nblocks, blocks);
 		} else {
-			// Depending on the buffer format, doing a
-			// memcpy first can be significantly faster.
-			// TODO: autodetect when this happens
-			char *tmp = data;
 
-			/* todo: speed up the raw diff routine to be as
-			 * fast as memcmp; then remove this */
-			bool delta = memcmp(
-					sfd->mem_mirror, tmp, sfd->buffer_size);
-			if (delta) {
-				if (!sfd->diff_buffer) {
-					// This can happen in
-					// reverse-transport scenarios
-					sfd->diff_buffer = calloc(
-							align(sfd->buffer_size,
-									8),
-							1);
-				}
-
-				damage_everything(&sfd->damage);
-				sfd->mem_local = data;
-				add_updated_diff_block(map, sfd, ntransfers,
-						transfers, nblocks, blocks,
-						sfd->buffer_size);
-				sfd->mem_local = NULL;
+			if (!sfd->diff_buffer) {
+				// This can happen in
+				// reverse-transport scenarios
+				sfd->diff_buffer = calloc(
+						align(sfd->buffer_size, 8), 1);
 			}
+
+			damage_everything(&sfd->damage);
+			sfd->mem_local = data;
+
+			/* Depending on the buffer format, doing a memcpy before
+			 * running the diff construction routine can be
+			 * significantly faster. */
+			// TODO: Either autodetect when this happens, or write a
+			// faster/vectorizable diff routine
+			add_updated_diff_block(map, sfd, ntransfers, transfers,
+					nblocks, blocks, (int)sfd->buffer_size);
+			sfd->mem_local = NULL;
 		}
 		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 			// there was an issue unmapping; unmap_dmabuf
