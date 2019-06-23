@@ -632,7 +632,7 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
  * the damaged area.
  *
  * Requires that `diff` point to a memory buffer of size `size + 8`, or
- * if slices are used, `align(ceildiv(size, nslices), 8) + 8`.
+ * if slices are used, `align(ceildiv(size, nslices), 8) + 16`.
  */
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
 		uint64_t slice_no, uint64_t nslices, char *__restrict__ base,
@@ -741,7 +741,6 @@ void apply_diff(size_t size, char *__restrict__ target1,
 		uint64_t block = diff_blocks[i];
 		uint64_t nfrom = block >> 32;
 		uint64_t nto = (block << 32) >> 32;
-#if 1
 		if (nto > nblocks || nfrom >= nto ||
 				i + (nto - nfrom) >= ndiffblocks) {
 			wp_log(WP_ERROR,
@@ -750,7 +749,6 @@ void apply_diff(size_t size, char *__restrict__ target1,
 					i + 1 + (nto - nfrom), ndiffblocks);
 			return;
 		}
-#endif
 		memcpy(t1_blocks + nfrom, diff_blocks + i + 1,
 				8 * (nto - nfrom));
 		memcpy(t2_blocks + nfrom, diff_blocks + i + 1,
@@ -792,7 +790,7 @@ static void worker_run_compresseddiff(struct fd_translation_map *map,
 	struct shadow_fd *sfd = map->thread_target;
 
 	/* Allocate a disjoint target interval to each worker */
-	size_t diff_step = align(ceildiv(sfd->buffer_size, nthreads) + 8, 8);
+	size_t diff_step = align(ceildiv(sfd->buffer_size, nthreads) + 16, 8);
 	size_t comp_step = compress_bufsize(map, diff_step);
 
 	size_t diffsize;
@@ -986,6 +984,19 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 	wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld", diffsize,
 			sfd->buffer_size);
 }
+
+static void get_max_diff_space_usage(struct fd_translation_map *map,
+		size_t buffer_size, size_t *diff_size, size_t *compdiff_size)
+{
+	size_t slice_size = align(ceildiv(buffer_size, map->nthreads) + 16, 8);
+	*diff_size = slice_size * map->nthreads;
+
+	// Using a number of distinct compressions often (but not necessarily)
+	// will increase space needed
+	*compdiff_size = max(compress_bufsize(map, align(buffer_size + 8, 8)),
+			compress_bufsize(map, slice_size));
+}
+
 void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		int *ntransfers, struct transfer transfers[], int *nblocks,
 		struct bytebuf blocks[])
@@ -1004,28 +1015,18 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
 			sfd->mem_mirror = calloc(align(sfd->buffer_size, 8), 1);
-			// 8 extra bytes for worst case diff expansion
-			sfd->diff_buffer = calloc(
-					align(sfd->buffer_size + 8 * map->nthreads,
-							8),
-					1);
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
-			sfd->compress_space = compress_bufsize(
-					map, align(sfd->buffer_size + 8, 8));
-			size_t split_cs =
-					map->nthreads *
-					compress_bufsize(map,
-							align(ceildiv(sfd->buffer_size,
-									      map->nthreads) +
-											8,
-									8));
-			// Using a number of distinct compressions often
-			// (but not necessarily) will increase space
-			// needed
-			sfd->compress_space =
-					max(sfd->compress_space, split_cs);
-			sfd->compress_buffer = calloc(sfd->compress_space, 1);
+
+			size_t diff_space = 0;
+			get_max_diff_space_usage(map, sfd->buffer_size,
+					&diff_space, &sfd->compress_space);
+			sfd->diff_buffer = calloc(diff_space, 1);
+			sfd->compress_buffer =
+					sfd->compress_space
+							? calloc(sfd->compress_space,
+									  1)
+							: NULL;
 
 			add_initial_compressed_block(map, sfd, ntransfers,
 					transfers, nblocks, blocks);
@@ -1039,11 +1040,16 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		}
 
 		if (!sfd->diff_buffer) {
-			/* Create diff buffer by need for remote files
-			 */
-			sfd->diff_buffer = calloc(
-					sfd->buffer_size + 8 * map->nthreads,
-					1);
+			/* Create diff buffer by need for remote files */
+			size_t diff_space = 0;
+			get_max_diff_space_usage(map, sfd->buffer_size,
+					&diff_space, &sfd->compress_space);
+			sfd->diff_buffer = calloc(diff_space, 1);
+			sfd->compress_buffer =
+					sfd->compress_space
+							? calloc(sfd->compress_space,
+									  1)
+							: NULL;
 		}
 		add_updated_diff_block(map, sfd, ntransfers, transfers, nblocks,
 				blocks, total_area);
@@ -1058,14 +1064,11 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		bool first = false;
 		if (!sfd->mem_mirror && !sfd->video_codec) {
 			sfd->mem_mirror = calloc(1, sfd->buffer_size);
-			// 8 extra bytes for diff messages, or
-			// alternatively for type header info
-			size_t diffb_size =
-					(size_t)max(sizeof(struct dmabuf_slice_data),
-							8) +
-					(size_t)align((int)sfd->buffer_size, 8);
-			sfd->diff_buffer = calloc(diffb_size, 1);
-			sfd->compress_space = compress_bufsize(map, diffb_size);
+
+			size_t diff_space = 0;
+			get_max_diff_space_usage(map, sfd->buffer_size,
+					&diff_space, &sfd->compress_space);
+			sfd->diff_buffer = calloc(diff_space, 1);
 			sfd->compress_buffer =
 					sfd->compress_space
 							? calloc(sfd->compress_space,
@@ -1113,8 +1116,16 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			if (!sfd->diff_buffer) {
 				// This can happen in
 				// reverse-transport scenarios
-				sfd->diff_buffer = calloc(
-						align(sfd->buffer_size, 8), 1);
+				size_t diff_space = 0;
+				get_max_diff_space_usage(map, sfd->buffer_size,
+						&diff_space,
+						&sfd->compress_space);
+				sfd->diff_buffer = calloc(diff_space, 1);
+				sfd->compress_buffer =
+						sfd->compress_space
+								? calloc(sfd->compress_space,
+										  1)
+								: NULL;
 			}
 
 			damage_everything(&sfd->damage);
