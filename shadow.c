@@ -628,15 +628,16 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
  * because they are often mmap'd. Simultaneously updates the `base`
  * buffer to match the `changed` buffer.
  *
- * `copy_domain_start` and `copy_domain_end` should be divisible by 8,
- * or SIZE_MAX
+ * `slice_no` and `nslices` are used to restrict the diff to a subset of
+ * the damaged area.
  *
- * Requires that `diff` point to a memory buffer of size `size + 8`.
+ * Requires that `diff` point to a memory buffer of size `size + 8`, or
+ * if slices are used, `align(ceildiv(size, nslices), 8) + 8`.
  */
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
-		size_t copy_domain_start, size_t copy_domain_end,
-		char *__restrict__ base, const char *__restrict__ changed,
-		size_t *diffsize, char *__restrict__ diff)
+		uint64_t slice_no, uint64_t nslices, char *__restrict__ base,
+		const char *__restrict__ changed, size_t *diffsize,
+		char *__restrict__ diff)
 {
 	DTRACE_PROBE1(waypipe, construct_diff_enter, damage->ndamage_intvs);
 
@@ -648,45 +649,61 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 	uint64_t ntrailing = size - 8 * nblocks;
 	uint64_t cursor = 0;
 
-	if (copy_domain_start % 8 != 0 ||
-			(copy_domain_end % 8 != 0 &&
-					copy_domain_end != SIZE_MAX)) {
-		wp_log(WP_ERROR,
-				"Diff construction domain restrictions are misaligned");
-		copy_domain_start = alignu(copy_domain_start, 8);
-		copy_domain_end = copy_domain_end != SIZE_MAX
-						  ? alignu(copy_domain_end, 8)
-						  : SIZE_MAX;
-	}
-	uint64_t cd_minb = copy_domain_start / 8;
-	uint64_t cd_maxb = copy_domain_end / 8;
-
-	bool check_tail = false;
-
+	struct interval damage_everything = {0, size};
+	struct interval *damage_list;
+	int damage_len;
 	if (damage->damage == DAMAGE_EVERYTHING) {
-		check_tail = copy_domain_end > 8 * nblocks;
-
-		cursor = run_interval_diff(maxu(0, cd_minb),
-				minu(nblocks, cd_maxb), changed_blocks,
-				base_blocks, diff_blocks, cursor);
+		damage_list = &damage_everything;
+		damage_len = 1;
 	} else {
-		for (int b = 0; b < damage->ndamage_intvs; b++) {
-			struct interval ei = damage->damage[b];
-			uint64_t minc = maxu(
-					(uint64_t)ei.start, copy_domain_start);
-			uint64_t maxc = minu((uint64_t)ei.end, copy_domain_end);
-			check_tail |= maxc > 8 * nblocks;
-
-			uint64_t minb = minu(floordiv(minc, 8), nblocks);
-			uint64_t maxb = minu(ceildiv(maxc, 8), nblocks);
-			if (minb >= maxb) {
-				continue;
-			}
-			cursor = run_interval_diff(minb, maxb, changed_blocks,
-					base_blocks, diff_blocks, cursor);
-		}
+		damage_list = damage->damage;
+		damage_len = damage->ndamage_intvs;
 	}
 
+	uint64_t net_blocks = 0;
+	if (nslices > 1) {
+		for (int d = 0; d < damage_len; d++) {
+			/* realign to get true checked sizes */
+			struct interval intv = damage_list[d];
+			uint64_t bstart =
+					minu(floordiv(intv.start, 8), nblocks);
+			uint64_t bend = minu(ceildiv(intv.end, 8), nblocks);
+			net_blocks += bend - bstart;
+		}
+	} else {
+		net_blocks = UINT64_MAX;
+	}
+	uint64_t blockno_min = (net_blocks * slice_no) / nslices;
+	uint64_t blockno_max = (net_blocks * (slice_no + 1)) / nslices;
+
+	uint64_t acc_blocks = 0;
+	for (int d = 0; d < damage_len; d++) {
+		struct interval intv = damage_list[d];
+		uint64_t bstart = minu(floordiv(intv.start, 8), nblocks);
+		uint64_t bend = minu(ceildiv(intv.end, 8), nblocks);
+		uint64_t w = bend - bstart;
+		/* Adjust `bstart` and `bend` to be fall within the cumulative
+		 * block count restrictions. */
+		if (acc_blocks < blockno_min) {
+			bstart += (blockno_min - acc_blocks);
+		}
+		acc_blocks += w;
+		if (acc_blocks > blockno_max) {
+			/* don't wrap over */
+			if (bend < (acc_blocks - blockno_max)) {
+				bend = 0;
+			} else {
+				bend -= (acc_blocks - blockno_max);
+			}
+		}
+		if (bend <= bstart) {
+			continue;
+		}
+		cursor = run_interval_diff(bstart, bend, changed_blocks,
+				base_blocks, diff_blocks, cursor);
+	}
+
+	bool check_tail = slice_no + 1 == nslices;
 	bool tail_change = false;
 	if (check_tail && ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
@@ -775,34 +792,26 @@ static void worker_run_compresseddiff(struct fd_translation_map *map,
 	struct shadow_fd *sfd = map->thread_target;
 
 	/* Allocate a disjoint target interval to each worker */
-	size_t source_start =
-			align(((size_t)index * sfd->buffer_size) / nthreads, 8);
-	size_t source_end = align(
-			(((size_t)index + 1) * sfd->buffer_size) / nthreads, 8);
-
-	size_t diff_start = source_start + 8 * index;
-	size_t diff_end = source_end + 8 * (index + 1);
-
-	size_t comp_step = compress_bufsize(
-			map, align(ceildiv(sfd->buffer_size, nthreads) + 8, 8));
+	size_t diff_step = align(ceildiv(sfd->buffer_size, nthreads) + 8, 8);
+	size_t comp_step = compress_bufsize(map, diff_step);
 
 	size_t diffsize;
-	construct_diff(sfd->buffer_size, &sfd->damage, source_start, source_end,
+	construct_diff(sfd->buffer_size, &sfd->damage, index, nthreads,
 			sfd->mem_mirror, sfd->mem_local, &diffsize,
-			&sfd->diff_buffer[diff_start]);
+			&sfd->diff_buffer[diff_step * index]);
 	*actual_size = diffsize;
 
-	if (diffsize + diff_start > diff_end) {
+	if (diffsize > diff_step) {
 		wp_log(WP_ERROR, "Compression section %d overflow (%d>%d)",
-				index, (int)diffsize,
-				(int)(diff_end - diff_start));
+				index, (int)diffsize, (int)diff_step);
 	}
 
 	dst->size = 0;
 	dst->data = NULL;
-	compress_buffer(map, ctx, diffsize, &sfd->diff_buffer[diff_start],
-			comp_step, &sfd->compress_buffer[comp_step * index],
-			&dst->size, (const char **)&dst->data);
+	compress_buffer(map, ctx, diffsize,
+			&sfd->diff_buffer[diff_step * index], comp_step,
+			&sfd->compress_buffer[comp_step * index], &dst->size,
+			(const char **)&dst->data);
 
 	DTRACE_PROBE1(waypipe, worker_compdiff_exit, index);
 }
