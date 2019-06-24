@@ -41,30 +41,30 @@ wayland_client = dependency('wayland-client', version: '>=1.15') # WAYLAND_DISPL
 wayland_server = dependency('wayland-server', version: '>=1.15') # WAYLAND_DISPLAY=path
 wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
 wayland_scanner = dependency('wayland-scanner', native: true, version: '>=1.15') # public-code
-libgbm = dependency('gbm', required : get_option('with_dmabuf'))
-libdrm = dependency('libdrm', required : get_option('with_dmabuf'))
+libgbm = dependency('gbm', required: get_option('with_dmabuf'))
+libdrm = dependency('libdrm', required: get_option('with_dmabuf'))
 if libgbm.found() and libdrm.found()
-	add_project_arguments('-DHAS_DMABUF=1', language : 'c')
+	add_project_arguments('-DHAS_DMABUF=1', language: 'c')
 endif
 libffi = dependency('libffi')
 pthreads = dependency('threads')
 rt = cc.find_library('rt')
 if cc.has_header('sys/sdt.h')
-	add_project_arguments('-DHAS_USDT=1', language : 'c')
+	add_project_arguments('-DHAS_USDT=1', language: 'c')
 endif
-liblz4 = dependency('liblz4', required : get_option('with_lz4'))
+liblz4 = dependency('liblz4', required: get_option('with_lz4'))
 if liblz4.found()
-	add_project_arguments('-DHAS_LZ4=1', language : 'c')
+	add_project_arguments('-DHAS_LZ4=1', language: 'c')
 endif
-libzstd = dependency('libzstd', version: '>=1.4.0', required : get_option('with_zstd'))
+libzstd = dependency('libzstd', version: '>=1.4.0', required: get_option('with_zstd'))
 if libzstd.found()
-	add_project_arguments('-DHAS_ZSTD=1', language : 'c')
+	add_project_arguments('-DHAS_ZSTD=1', language: 'c')
 endif
-libavcodec = dependency('libavcodec', required : get_option('with_video'))
-libavutil = dependency('libavutil', required : get_option('with_video'))
-libswscale = dependency('libswscale', required : get_option('with_video'))
+libavcodec = dependency('libavcodec', required: get_option('with_video'))
+libavutil = dependency('libavutil', required: get_option('with_video'))
+libswscale = dependency('libswscale', required: get_option('with_video'))
 if libavcodec.found() and libavutil.found() and libswscale.found()
-	add_project_arguments('-DHAS_VIDEO=1', language : 'c')
+	add_project_arguments('-DHAS_VIDEO=1', language: 'c')
 endif
 
 subdir('protocols')
@@ -90,7 +90,7 @@ endif
 lib_waypipe_src = static_library(
 	'waypipe_src',
 	waypipe_source_files,
-	include_directories : waypipe_includes,
+	include_directories: waypipe_includes,
 	dependencies: waypipe_dependencies,
 )
 
@@ -122,7 +122,7 @@ endif
 test_diff = executable(
 	'diff_roundtrip',
 	['test/diff_roundtrip.c'],
-	include_directories : waypipe_includes,
+	include_directories: waypipe_includes,
 	link_with: lib_waypipe_src,
 )
 test('Whether diff operations successfully roundtrip', test_diff)
