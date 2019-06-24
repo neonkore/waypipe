@@ -87,11 +87,17 @@ if libdrm.found()
 	waypipe_includes += include_directories(libdrm.get_pkgconfig_variable('includedir'))
 endif
 
+lib_waypipe_src = static_library(
+	'waypipe_src',
+	waypipe_source_files,
+	include_directories : waypipe_includes,
+	dependencies: waypipe_dependencies,
+)
+
 waypipe_prog = executable(
 	'waypipe',
-	['waypipe.c'] + waypipe_source_files,
-	dependencies : waypipe_dependencies,
-	include_directories : waypipe_includes,
+	['waypipe.c'],
+	link_with: lib_waypipe_src,
 	install: true
 )
 
@@ -115,12 +121,16 @@ endif
 # Testing
 test_diff = executable(
 	'diff_roundtrip',
-	['test/diff_roundtrip.c'] + ['shadow.c', 'util.c', 'dmabuf.c', 'interval.c', 'video.c'],
+	['test/diff_roundtrip.c'],
 	include_directories : waypipe_includes,
-	dependencies: waypipe_dependencies
+	link_with: lib_waypipe_src,
 )
 test('Whether diff operations successfully roundtrip', test_diff)
-test_damage = executable('damage_merge', ['test/damage_merge.c'] + ['interval.c', 'util.c'])
+test_damage = executable(
+	'damage_merge',
+	['test/damage_merge.c'],
+	link_with: lib_waypipe_src
+)
 test('If damage rectangles merge efficiently', test_damage)
 weston_prog = find_program('weston', required: false)
 weston_shm_prog = find_program('weston-simple-shm', required: false)

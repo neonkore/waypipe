@@ -23,7 +23,7 @@ foreach xml : protocols
 		'@0@ code'.format(xml.underscorify()),
 		output: '@BASENAME@-data.c',
 		input: xml,
-		command: [wayland_scanner_prog, 'public-code', '@INPUT@', '@OUTPUT@'],
+		command: [wayland_scanner_prog, 'private-code', '@INPUT@', '@OUTPUT@'],
 	)
 	protocols_headers += custom_target(
 		'@0@ client-header'.format(xml.underscorify()),
