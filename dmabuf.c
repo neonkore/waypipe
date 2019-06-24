@@ -189,8 +189,10 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		for (unsigned int i = 0; i < info->num_planes; i++) {
 			if (info->using_planes[i]) {
 				data.fds[data.num_fds] = fd;
-				data.strides[data.num_fds] = info->strides[i];
-				data.offsets[data.num_fds] = info->offsets[i];
+				data.strides[data.num_fds] =
+						(int)info->strides[i];
+				data.offsets[data.num_fds] =
+						(int)info->offsets[i];
 				data.num_fds++;
 			}
 		}

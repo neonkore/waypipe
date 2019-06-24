@@ -1071,17 +1071,18 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 	struct context *context = get_context(client, resource);
 	struct wp_buffer *buf =
 			(struct wp_buffer *)listset_get(context->obj_list, id);
-	struct dmabuf_slice_data info;
-	info.width = (uint32_t)width;
-	info.height = (uint32_t)height;
-	info.offsets[0] = (uint32_t)offset0;
-	info.offsets[1] = (uint32_t)offset1;
-	info.offsets[2] = (uint32_t)offset2;
-	info.strides[0] = (uint32_t)stride0;
-	info.strides[1] = (uint32_t)stride1;
-	info.strides[2] = (uint32_t)stride2;
-	info.modifier = 0;
-	info.format = format;
+	struct dmabuf_slice_data info = {
+			.num_planes = 1,
+			.width = (uint32_t)width,
+			.height = (uint32_t)height,
+			.modifier = 0,
+			.format = format,
+			.offsets = {(uint32_t)offset0, (uint32_t)offset1,
+					(uint32_t)offset2, 0},
+			.strides = {(uint32_t)stride0, (uint32_t)stride1,
+					(uint32_t)stride2, 0},
+			.using_planes = {true, false, false, false},
+	};
 	struct shadow_fd *sfd = translate_fd(&context->g->map,
 			&context->g->render, name, &info, false);
 	if (sfd->type != FDC_DMABUF) {

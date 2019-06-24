@@ -211,11 +211,11 @@ struct dmabuf_slice_data {
 	uint32_t height;
 	uint32_t format;
 	uint32_t num_planes;
+	uint64_t modifier;
+	uint32_t offsets[4];
+	uint32_t strides[4];
 	// to which planes is the matching dmabuf assigned?
 	uint8_t using_planes[4];
-	uint32_t strides[4];
-	uint32_t offsets[4];
-	uint64_t modifier;
 };
 
 struct ext_interval {
