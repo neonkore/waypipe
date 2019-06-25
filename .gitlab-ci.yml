@@ -1,0 +1,44 @@
+
+variables:
+  UPSTREAM_REPO: mstoeckl/waypipe
+  DEBIAN_TAG: '2019-06-25.1'
+
+  DEBIAN_VERSION: buster
+  DEBIAN_EXEC: 'bash .gitlab-ci/debian-install.sh'
+  DEBIAN_CONTAINER_IMAGE: $CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_TAG
+include:
+  - project: 'wayland/ci-templates'
+    ref: 96912c7331cbc6da41fbf22c4217aa541176f063
+    file: '/templates/debian.yml'
+
+stages:
+  - container_prep
+  - build
+
+container_prep:
+  extends: .debian@container-ifnot-exists
+  stage: container_prep
+
+build:
+  stage: build
+  image: $DEBIAN_CONTAINER_IMAGE
+  before_script:
+  - export XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)"
+  - export BUILD_ID="waypipe-$CI_JOB_NAME_$CI_COMMIT_SHA-$CI_JOB_ID"
+  - export PREFIX="$(pwd)/prefix-$BUILD_ID"
+  - export BUILDDIR="$(pwd)/build-$BUILD_ID"
+  - mkdir "$BUILDDIR" "$PREFIX"
+  script:
+  - export PATH=~/.local/bin:$PATH
+  - cd "$BUILDDIR"
+  - meson --prefix="$PREFIX" -Dwerror=true ..
+  - ninja -k0
+  - ninja install
+  - ninja test
+  - ninja clean
+  artifacts:
+    name: waypipe-$CI_COMMIT_SHA-$CI_JOB_ID
+    when: always
+    paths:
+    - build-*/meson-logs
+    - prefix-*

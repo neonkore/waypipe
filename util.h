@@ -593,7 +593,7 @@ void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize,
 		const char *__restrict__ diff);
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
-		size_t copy_domain_start, size_t copy_domain_end,
+		uint64_t slice_no, uint64_t nslices,
 		char *__restrict__ base, const char *__restrict__ changed,
 		size_t *diffsize, char *__restrict__ diff);
 

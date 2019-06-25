@@ -91,7 +91,7 @@ void apply_video_packet_to_mirror(
 
 #else /* HAS_VIDEO */
 
-#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
 #include <libavutil/display.h>
 #include <libavutil/hwcontext_drm.h>
 #include <libavutil/imgutils.h>
