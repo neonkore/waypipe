@@ -37,10 +37,10 @@ else
 	)
 endif
 
-wayland_client = dependency('wayland-client', version: '>=1.15') # WAYLAND_DISPLAY=path
-wayland_server = dependency('wayland-server', version: '>=1.15') # WAYLAND_DISPLAY=path
-wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
+wayland_client = dependency('wayland-client', version: '>=1.15') # scanner headers
+wayland_server = dependency('wayland-server', version: '>=1.15') # scanner headers
 wayland_scanner = dependency('wayland-scanner', native: true, version: '>=1.15') # public-code
+wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
 libgbm = dependency('gbm', required: get_option('with_dmabuf'))
 libdrm = dependency('libdrm', required: get_option('with_dmabuf'))
 if libgbm.found() and libdrm.found()
@@ -79,7 +79,6 @@ waypipe_dependencies = [
 	pthreads,        # To run expensive computations in parallel
 	protos,          # Wayland protocol data
 	rt,              # For shared memory
-	wayland_client   # For wl_display_connnect
 ]
 
 waypipe_includes = []
