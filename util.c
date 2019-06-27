@@ -108,6 +108,34 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	return sock;
 }
 
+int connect_to_socket(const char *socket_path)
+{
+	struct sockaddr_un saddr;
+	int chanfd;
+	saddr.sun_family = AF_UNIX;
+	int len = (int)strlen(socket_path);
+	if (len >= (int)sizeof(saddr.sun_path)) {
+		wp_log(WP_ERROR, "Socket path (%s) is too long, at %d bytes",
+				socket_path, len);
+		return -1;
+	}
+	memcpy(saddr.sun_path, socket_path, (size_t)(len + 1));
+
+	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (chanfd == -1) {
+		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
+		return -1;
+	}
+
+	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
+		wp_log(WP_ERROR, "Error connecting to socket (%s): %s",
+				socket_path, strerror(errno));
+		close(chanfd);
+		return -1;
+	}
+	return chanfd;
+}
+
 void test_log_handler(const char *file, int line, enum log_level level,
 		const char *fmt, ...)
 {

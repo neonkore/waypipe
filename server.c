@@ -38,27 +38,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static int connect_to_channel(const char *socket_path)
-{
-	struct sockaddr_un saddr;
-	int chanfd;
-	saddr.sun_family = AF_UNIX;
-	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (chanfd == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
-		return -1;
-	}
-
-	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error connecting to socket (%s): %s",
-				socket_path, strerror(errno));
-		close(chanfd);
-		return -1;
-	}
-	return chanfd;
-}
-
 int run_server(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool unlink_at_end, const char *application,
 		char *const app_argv[])
@@ -140,7 +119,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 
 	int retcode = EXIT_SUCCESS;
 	if (oneshot) {
-		int chanfd = connect_to_channel(socket_path);
+		int chanfd = connect_to_socket(socket_path);
 		if (unlink_at_end) {
 			unlink(socket_path);
 		}
@@ -205,7 +184,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 					// shared state being the new channel
 					// socket
 					close(wdisplay_socket);
-					int chanfd = connect_to_channel(
+					int chanfd = connect_to_socket(
 							socket_path);
 					if (chanfd != -1) {
 						return main_interface_loop(

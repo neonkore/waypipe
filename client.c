@@ -28,41 +28,100 @@
 #include "util.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <wayland-client-core.h>
 
-/*
- * Connect-disconnect cycle, to verify that the client can connect to a display.
- */
-static int verify_connection()
+static int get_inherited_socket()
 {
-	struct wl_display *display = wl_display_connect(NULL);
-	if (!display) {
+	const char *fd_no = getenv("WAYLAND_SOCKET");
+	char *endptr = NULL;
+	errno = 0;
+	int fd = (int)strtol(fd_no, &endptr, 10);
+	if (*endptr || errno) {
+		wp_log(WP_ERROR,
+				"Failed to parse WAYLAND_SOCKET env variable with value \"%s\", exiting",
+				fd_no);
 		return -1;
 	}
-	wl_display_disconnect(display);
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1 && errno == EBADF) {
+		wp_log(WP_ERROR,
+				"The file descriptor WAYLAND_SOCKET=%d was invalid, exiting",
+				fd);
+		return -1;
+	}
+	return fd;
+}
+
+#define MAX_SOCKETPATH_LEN (int)sizeof(((struct sockaddr_un *)NULL)->sun_path)
+
+static int get_display_path(char path[static MAX_SOCKETPATH_LEN])
+{
+	const char *display = getenv("WAYLAND_DISPLAY");
+	if (!display) {
+		wp_log(WP_ERROR, "WAYLAND_DISPLAY is not set, exiting");
+		return -1;
+	}
+	int len = 0;
+	if (display[0] != '/') {
+		const char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
+		if (!xdg_runtime_dir) {
+			wp_log(WP_ERROR, "XDG_RUNTIME_DIR is not set, exiting");
+			return -1;
+		}
+		len = snprintf(path, MAX_SOCKETPATH_LEN, "%s/%s",
+				xdg_runtime_dir, display);
+	} else {
+		len = snprintf(path, MAX_SOCKETPATH_LEN, "%s", display);
+	}
+	if (len >= MAX_SOCKETPATH_LEN) {
+		wp_log(WP_ERROR,
+				"Wayland display socket path is longer that %d bytes, truncated to \"%s\", exiting",
+				MAX_SOCKETPATH_LEN, path);
+		return -1;
+	}
 	return 0;
 }
 
 int run_client(const char *socket_path, const struct main_config *config,
-		bool oneshot, pid_t eol_pid)
+		bool oneshot, bool via_socket, pid_t eol_pid)
 {
-	struct wl_display *display = NULL;
-	if (oneshot) {
-		display = wl_display_connect(NULL);
-		if (!display) {
-			wp_log(WP_ERROR,
-					"Failed to connect to a wayland server.");
+	/* Connect to Wayland display. We don't use the wayland-client
+	 * function here, because its errors aren't immediately useful,
+	 * and older Wayland versions have edge cases */
+	int dispfd = -1;
+	char disp_path[MAX_SOCKETPATH_LEN];
+	if (via_socket) {
+		dispfd = get_inherited_socket();
+		if (dispfd == -1) {
+			if (eol_pid) {
+				waitpid(eol_pid, NULL, 0);
+			}
 			return EXIT_FAILURE;
 		}
 	} else {
-		if (verify_connection() == -1) {
+		if (get_display_path(disp_path) == -1) {
+			if (eol_pid) {
+				waitpid(eol_pid, NULL, 0);
+			}
+			return EXIT_FAILURE;
+		}
+	}
+
+	if (oneshot) {
+		if (!via_socket) {
+			dispfd = connect_to_socket(disp_path);
+		}
+	} else {
+		int test_conn = connect_to_socket(disp_path);
+		if (test_conn == -1) {
 			wp_log(WP_ERROR,
 					"Failed to connect to a wayland compositor.");
 			if (eol_pid) {
@@ -70,6 +129,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 			}
 			return EXIT_FAILURE;
 		}
+		close(test_conn);
 	}
 	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.");
 
@@ -80,8 +140,8 @@ int run_client(const char *socket_path, const struct main_config *config,
 		if (eol_pid) {
 			waitpid(eol_pid, NULL, 0);
 		}
-		if (display) {
-			wl_display_disconnect(display);
+		if (dispfd != -1) {
+			close(dispfd);
 		}
 		return EXIT_FAILURE;
 	}
@@ -133,8 +193,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 		} else {
 			if (oneshot) {
 				retcode = main_interface_loop(chanclient,
-						wl_display_get_fd(display),
-						config, true);
+						dispfd, config, true);
 				break;
 			} else {
 				pid_t npid = fork();
@@ -144,20 +203,14 @@ int run_client(const char *socket_path, const struct main_config *config,
 					// socket
 					close(channelsock);
 
-					struct wl_display *local_display =
-							wl_display_connect(
-									NULL);
-					if (!local_display) {
-						wp_log(WP_ERROR,
-								"Failed to connect to a wayland server.");
+					int dfd = connect_to_socket(disp_path);
+					if (dfd == -1) {
 						return EXIT_FAILURE;
 					}
-					int dispfd = wl_display_get_fd(
-							local_display);
 					// ignore retcode ?
-					main_interface_loop(chanclient, dispfd,
+					main_interface_loop(chanclient, dfd,
 							config, true);
-					wl_display_disconnect(local_display);
+					close(dfd);
 
 					// exit path?
 					return EXIT_SUCCESS;
@@ -174,8 +227,8 @@ int run_client(const char *socket_path, const struct main_config *config,
 		}
 	}
 
-	if (display) {
-		wl_display_disconnect(display);
+	if (dispfd != -1) {
+		close(dispfd);
 	}
 	close(channelsock);
 	unlink(socket_path);

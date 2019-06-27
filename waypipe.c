@@ -43,7 +43,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool unlink_at_end, const char *application,
 		char *const app_argv[]);
 int run_client(const char *socket_path, const struct main_config *config,
-		bool oneshot, pid_t eol_pid);
+		bool oneshot, bool via_socket, pid_t eol_pid);
 
 enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
 
@@ -462,11 +462,16 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	bool via_socket = getenv("WAYLAND_SOCKET") != NULL;
+	if (via_socket) {
+		oneshot = true;
+	}
+
 	if (mode == MODE_CLIENT) {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";
 		}
-		return run_client(socketpath, &config, oneshot, 0);
+		return run_client(socketpath, &config, oneshot, via_socket, 0);
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
 		const char *application = app_argv[0];
@@ -596,8 +601,8 @@ int main(int argc, char **argv)
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
-			return run_client(
-					clientsock, &config, oneshot, conn_pid);
+			return run_client(clientsock, &config, oneshot,
+					via_socket, conn_pid);
 		}
 	}
 }

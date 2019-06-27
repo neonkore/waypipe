@@ -68,6 +68,9 @@ int set_fnctl_flag(int fd, int the_flag);
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);
+/** Connect to the socket at the given path, returning created fd if
+ * successful, else -1.*/
+int connect_to_socket(const char *socket_path);
 
 enum log_level { WP_DEBUG = 0, WP_ERROR = 1 };
 typedef void (*log_handler_func_t)(const char *file, int line,
@@ -593,8 +596,8 @@ void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize,
 		const char *__restrict__ diff);
 void construct_diff(size_t size, const struct damage *__restrict__ damage,
-		uint64_t slice_no, uint64_t nslices,
-		char *__restrict__ base, const char *__restrict__ changed,
-		size_t *diffsize, char *__restrict__ diff);
+		uint64_t slice_no, uint64_t nslices, char *__restrict__ base,
+		const char *__restrict__ changed, size_t *diffsize,
+		char *__restrict__ diff);
 
 #endif // WAYPIPE_UTIL_H
