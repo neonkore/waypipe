@@ -83,7 +83,7 @@ static int get_display_path(char path[static MAX_SOCKETPATH_LEN])
 	}
 	if (len >= MAX_SOCKETPATH_LEN) {
 		wp_log(WP_ERROR,
-				"Wayland display socket path is longer that %d bytes, truncated to \"%s\", exiting",
+				"Wayland display socket path is >=%d bytes, truncated to \"%s\", exiting",
 				MAX_SOCKETPATH_LEN, path);
 		return -1;
 	}
@@ -122,8 +122,6 @@ int run_client(const char *socket_path, const struct main_config *config,
 	} else {
 		int test_conn = connect_to_socket(disp_path);
 		if (test_conn == -1) {
-			wp_log(WP_ERROR,
-					"Failed to connect to a wayland compositor.");
 			if (eol_pid) {
 				waitpid(eol_pid, NULL, 0);
 			}

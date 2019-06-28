@@ -3,7 +3,7 @@
 if __name__ != "__main__":
     quit(1)
 
-import os, subprocess, random, time, signal
+import os, subprocess, time, signal
 
 
 def try_unlink(path):
