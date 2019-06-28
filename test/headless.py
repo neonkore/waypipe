@@ -49,12 +49,12 @@ ld_library_path = (
     os.environ["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in os.environ else ""
 )
 
-xdg_runtime_dir = os.path.abspath("./test_headless")
+xdg_runtime_dir = os.path.abspath("./test/")
 os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
 os.chmod(xdg_runtime_dir, 0o700)
 
 # weston does not currently appear to support setting absolute socket paths
-socket_path = "weston-test-socket"
+socket_path = "w_sock"
 abs_socket_path = os.path.join(xdg_runtime_dir, socket_path)
 try_unlink(abs_socket_path)
 try_unlink(abs_socket_path + ".lock")

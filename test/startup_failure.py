@@ -22,15 +22,16 @@ ld_library_path = (
     os.environ["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in os.environ else ""
 )
 
-xdg_runtime_dir = os.path.abspath("./test_startup_failure")
+xdg_runtime_dir = os.path.abspath("./test/")
 os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
 os.chmod(xdg_runtime_dir, 0o700)
 
 all_succeeding = True
 
-client_socket_path = xdg_runtime_dir + "/socket-client"
-server_socket_path = xdg_runtime_dir + "/socket-server"
-wayland_display_path = xdg_runtime_dir + "/socket-wayland-display"
+wayland_display_short = "s_disp"
+client_socket_path = xdg_runtime_dir + "/s_cli"
+server_socket_path = xdg_runtime_dir + "/s_srv"
+wayland_display_path = xdg_runtime_dir + "/" + wayland_display_short
 
 try_unlink(wayland_display_path)
 display_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -158,7 +159,7 @@ run_test(
 run_test(
     "b_client_nxdg_offset",
     [waypipe_path, "-s", client_socket_path, "client"],
-    dict(base_env, WAYLAND_DISPLAY="socket-wayland-display"),
+    dict(base_env, WAYLAND_DISPLAY=wayland_display_short),
     False,
     False,
 )
@@ -181,7 +182,7 @@ run_test(
 run_test(
     "g_client_offset_sock",
     [waypipe_path, "-s", client_socket_path, "client"],
-    dict(standard_env, WAYLAND_DISPLAY="socket-wayland-display"),
+    dict(standard_env, WAYLAND_DISPLAY=wayland_display_short),
     False,
     True,
 )
