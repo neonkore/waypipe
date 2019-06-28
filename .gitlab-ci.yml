@@ -25,7 +25,7 @@ build:
   before_script:
   - export XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)"
   - export BUILD_ID="$CI_COMMIT_SHA-$CI_JOB_ID"
-  - export PREFIX="$(pwd)/d-$BUILD_ID"
+  - export PREFIX="$(pwd)/p-$BUILD_ID"
   - export BUILDDIR="$(pwd)/b-$BUILD_ID"
   - mkdir "$BUILDDIR" "$PREFIX"
   script:
@@ -40,5 +40,5 @@ build:
     name: waypipe-$CI_COMMIT_SHA-$CI_JOB_ID
     when: always
     paths:
-    - build-*/meson-logs
-    - prefix-*
+    - b-*/meson-logs
+    - p-*
