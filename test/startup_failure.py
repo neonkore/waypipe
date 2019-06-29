@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 """
 Verifying all the ways in which waypipe can fail before even making a connection.
