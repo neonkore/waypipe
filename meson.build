@@ -49,7 +49,10 @@ endif
 libffi = dependency('libffi')
 pthreads = dependency('threads')
 rt = cc.find_library('rt')
-if cc.has_header('sys/sdt.h')
+# XXX dtrace -G (Solaris, FreeBSD, NetBSD) isn't supported yet
+is_linux = host_machine.system() == 'linux'
+is_darwin = host_machine.system() == 'darwin'
+if (is_linux or is_darwin) and cc.has_header('sys/sdt.h')
 	add_project_arguments('-DHAS_USDT=1', language: 'c')
 endif
 liblz4 = dependency('liblz4', required: get_option('with_lz4'))
