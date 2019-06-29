@@ -104,7 +104,7 @@ waypipe_prog = executable(
 	install: true
 )
 
-scdoc = dependency('scdoc', version: '>=1.9.4', native: true, required: false)
+scdoc = dependency('scdoc', version: '>=1.9.4', native: true, required: get_option('man-pages'))
 if scdoc.found()
 	scdoc_prog = find_program(scdoc.get_pkgconfig_variable('scdoc'), native: true)
 	sh = find_program('sh', native: true)

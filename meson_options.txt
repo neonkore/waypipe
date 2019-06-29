@@ -1,3 +1,4 @@
+option('man-pages', type: 'feature', value: 'auto', description: 'Generate and install man pages')
 option('with_video', type : 'feature', value : 'auto', description : 'Link with ffmpeg libraries and provide a command line option to display all buffers using a video stream')
 option('with_dmabuf', type : 'feature', value : 'auto', description : 'Support DMABUFs, the file descriptors used to exchange data for e.g. OpenGL applications')
 option('with_lz4', type : 'feature', value : 'auto', description : 'Support LZ4 as a compression mechanism')
