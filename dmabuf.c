@@ -103,7 +103,15 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 #include <unistd.h>
 
 #include <gbm.h>
+#if defined(__DragonFly__) || defined(__FreeBSD__)
+/* kms-drm doesn't install any headers */
+#define DMA_BUF_IOCTL_SYNC _IOW('b', 0, struct dma_buf_sync)
+struct dma_buf_sync {
+	uint64_t flags;
+};
+#else
 #include <linux/dma-buf.h>
+#endif
 
 int init_render_data(struct render_data *data)
 {

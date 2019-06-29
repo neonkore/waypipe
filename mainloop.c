@@ -23,7 +23,10 @@
  * SOFTWARE.
  */
 
+#if !defined(__FreeBSD__)
+/* CMSG_LEN isn't part of any X/Open version */
 #define _XOPEN_SOURCE 700
+#endif
 
 #include "util.h"
 

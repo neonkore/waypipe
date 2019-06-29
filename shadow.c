@@ -23,7 +23,10 @@
  * SOFTWARE.
  */
 
+#if !defined(__DragonFly__) && !defined(__FreeBSD__) && !defined(__NetBSD__)
+/* _SC_NPROCESSORS_ONLN isn't part of any X/Open version */
 #define _XOPEN_SOURCE 700
+#endif
 
 #include "util.h"
 
@@ -314,7 +317,7 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	} else {
 		wp_log(WP_ERROR,
 				"The fd %d has an unusual mode %x (type=%x): blk=%d chr=%d dir=%d lnk=%d reg=%d fifo=%d sock=%d; expect an application crash!",
-				fd, fsdata.st_mode, fsdata.st_mode & __S_IFMT,
+				fd, fsdata.st_mode, fsdata.st_mode & S_IFMT,
 				S_ISBLK(fsdata.st_mode),
 				S_ISCHR(fsdata.st_mode),
 				S_ISDIR(fsdata.st_mode),
