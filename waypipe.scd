@@ -118,6 +118,15 @@ socket paths. For example:
 	rm /tmp/waypipe.sock
 ```
 
+Many applications require specific environment variables to use Wayland instead
+of X11. If ssh isn't configured to support loading _~/.ssh/environment_,
+one can use _env_ to set the needed variables each time; or run waypipe without
+a command, to use the login shell environment.
+
+```
+	 waypipe ssh user@host env XDG_SESSION_TYPE=wayland dolphin
+```
+
 # ENVIRONMENT
 
 When running as a server, by default _WAYLAND_DISPLAY_ will be set for the
@@ -135,4 +144,4 @@ with return code 1 if there has been an error.
 
 # SEE ALSO
 
-*weston*(1)
+*weston*(1), *ssh*(1)
