@@ -41,15 +41,15 @@ Build with meson[0]. A typical incantation is
 
 Requirements:
 
-* meson (>= 0.47. and its dependencies `ninja` and `pkg-config`)
-* wayland (>= 1.15, to support absolute paths in WAYLAND_DISPLAY)
-* wayland-protocols (>= 1.12, for the xdg-shell protocol, and others)
 * libffi
-* libzstd
-* liblz4
+* meson (build, >= 0.47. and its dependencies `ninja` and `pkg-config`)
+* wayland (build, >= 1.15, to support absolute paths in WAYLAND_DISPLAY)
+* wayland-protocols (build, >= 1.12, for the xdg-shell protocol, and others)
+* libzstd (optional)
+* liblz4 (optional)
 * libgbm (optional, to support programs using OpenGL via DMABUFs)
 * libdrm (optional, same as for libgbm)
-* ffmpeg (optional, >=3.1, for lossy video encoding)
+* ffmpeg (optional, >=3.1, needs avcodec/avutil/swscale for lossy video encoding)
 * scdoc (optional, to generate a man page)
 * sys/sdt.h (optional, to provide static tracepoints for profiling)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)
