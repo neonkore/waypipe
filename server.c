@@ -64,10 +64,6 @@ int run_server(const char *socket_path, const struct main_config *config,
 					strerror(errno));
 			return EXIT_FAILURE;
 		}
-		if (set_fnctl_flag(csockpair[0], FD_CLOEXEC) == -1) {
-			wp_log(WP_ERROR, "Fnctl failed: %s", strerror(errno));
-			return EXIT_FAILURE;
-		}
 		wayland_socket = csockpair[1];
 		server_link = csockpair[0];
 	} else {
@@ -97,6 +93,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 			// application
 			unsetenv("WAYLAND_DISPLAY");
 			setenv("WAYLAND_SOCKET", bufs2, 1);
+			close(server_link);
 		} else {
 			// Since Wayland 1.15, absolute paths are supported in
 			// WAYLAND_DISPLAY

@@ -859,7 +859,7 @@ int main_interface_loop(int chanfd, int progfd,
 		const struct main_config *config, bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
-	if (set_fnctl_flag(chanfd, O_NONBLOCK | O_CLOEXEC) == -1) {
+	if (set_nonblocking(chanfd) == -1) {
 		wp_log(WP_ERROR,
 				"Error making channel connection nonblocking: %s",
 				strerror(errno));
@@ -867,7 +867,7 @@ int main_interface_loop(int chanfd, int progfd,
 		close(progfd);
 		return EXIT_FAILURE;
 	}
-	if (set_fnctl_flag(progfd, O_NONBLOCK | O_CLOEXEC) == -1) {
+	if (set_nonblocking(progfd) == -1) {
 		wp_log(WP_ERROR, "Error making %s connection nonblocking: %s",
 				progdesc, strerror(errno));
 		close(chanfd);

@@ -61,13 +61,13 @@ void handle_sigint(int sig)
 	}
 }
 
-int set_fnctl_flag(int fd, int the_flag)
+int set_nonblocking(int fd)
 {
 	int flags = fcntl(fd, F_GETFL, 0);
 	if (flags == -1) {
 		return -1;
 	}
-	return fcntl(fd, F_SETFL, flags | the_flag);
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 int setup_nb_socket(const char *socket_path, int nmaxclients)
@@ -89,7 +89,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
 		return -1;
 	}
-	if (set_fnctl_flag(sock, O_NONBLOCK | O_CLOEXEC) == -1) {
+	if (set_nonblocking(sock) == -1) {
 		wp_log(WP_ERROR, "Error making socket nonblocking: %s",
 				strerror(errno));
 		close(sock);

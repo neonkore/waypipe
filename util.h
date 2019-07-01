@@ -63,8 +63,9 @@ static inline uint64_t alignu(uint64_t v, uint64_t m)
 static inline int floordiv(int v, int u) { return v / u; }
 static inline int ceildiv(int v, int u) { return (v + u - 1) / u; }
 
-/** Set the given flag with fcntl. Silently return -1 on failure. */
-int set_fnctl_flag(int fd, int the_flag);
+/** Make the file underlying this file descriptor nonblocking.
+ * Silently return -1 on failure. */
+int set_nonblocking(int fd);
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
 int setup_nb_socket(const char *socket_path, int nmaxclients);

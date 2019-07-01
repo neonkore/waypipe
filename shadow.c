@@ -520,7 +520,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	} else if (fdcat_ispipe(sfd->type)) {
 		// Make this end of the pipe nonblocking, so that we can
 		// include it in our main loop.
-		set_fnctl_flag(sfd->fd_local, O_NONBLOCK);
+		if (set_nonblocking(sfd->fd_local) == -1) {
+			wp_log(WP_ERROR, "Failed to make fd nonblocking");
+		}
 		sfd->pipe_fd = sfd->fd_local;
 
 		// Allocate a reasonably small read buffer
@@ -1287,7 +1289,7 @@ void create_from_update(struct fd_translation_map *map,
 			sfd->type = FDC_PIPE_RW;
 		}
 
-		if (set_fnctl_flag(sfd->pipe_fd, O_NONBLOCK) == -1) {
+		if (set_nonblocking(sfd->pipe_fd) == -1) {
 			wp_log(WP_ERROR,
 					"Failed to make private pipe end nonblocking: %s",
 					strerror(errno));
