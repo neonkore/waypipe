@@ -83,6 +83,7 @@ waypipe_dependencies = [
 	pthreads,        # To run expensive computations in parallel
 	protos,          # Wayland protocol data
 	rt,              # For shared memory
+	wayland_client.partial_dependency(compile_args: true), # protocol headers need these
 ]
 
 waypipe_includes = []
