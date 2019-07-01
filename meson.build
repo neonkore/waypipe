@@ -136,6 +136,12 @@ test_damage = executable(
 	link_with: lib_waypipe_src
 )
 test('If damage rectangles merge efficiently', test_damage)
+test_mirror = executable(
+	'fd_mirror',
+	['test/fd_mirror.c'],
+	link_with: lib_waypipe_src
+)
+test('How well file descriptors are replicated', test_mirror)
 weston_prog = find_program('weston', required: false)
 weston_shm_prog = find_program('weston-simple-shm', required: false)
 weston_egl_prog = find_program('weston-simple-egl', required: false)

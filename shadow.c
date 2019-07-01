@@ -930,7 +930,6 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 		struct transfer transfers[], int *nblocks,
 		struct bytebuf blocks[], int total_damaged_area)
 {
-	size_t diffsize = 0;
 	DTRACE_PROBE2(waypipe, diffcomp_start, total_damaged_area,
 			sfd->buffer_size);
 	bool use_threads = total_damaged_area > map->diffcomp_thread_threshold;
@@ -983,9 +982,9 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 		}
 	}
 	reset_damage(&sfd->damage);
-	DTRACE_PROBE1(waypipe, diffcomp_end, diffsize);
-	wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld", diffsize,
-			sfd->buffer_size);
+	DTRACE_PROBE1(waypipe, diffcomp_end, actual_diff_size);
+	wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld",
+			(uint64_t)actual_diff_size, (uint64_t)sfd->buffer_size);
 }
 
 static void get_max_diff_space_usage(struct fd_translation_map *map,
@@ -1048,11 +1047,10 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			get_max_diff_space_usage(map, sfd->buffer_size,
 					&diff_space, &sfd->compress_space);
 			sfd->diff_buffer = calloc(diff_space, 1);
-			sfd->compress_buffer =
-					sfd->compress_space
-							? calloc(sfd->compress_space,
-									  1)
-							: NULL;
+			if (!sfd->compress_buffer && sfd->compress_space) {
+				sfd->compress_buffer =
+						calloc(sfd->compress_space, 1);
+			}
 		}
 		add_updated_diff_block(map, sfd, ntransfers, transfers, nblocks,
 				blocks, total_area);
@@ -1206,8 +1204,9 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)align((int)sfd->buffer_size, 8), 1);
 
-		sfd->compress_space = compress_bufsize(map,
-				(size_t)align((int)sfd->buffer_size, 8) + 8);
+		size_t diff_space = 0;
+		get_max_diff_space_usage(map, sfd->buffer_size, &diff_space,
+				&sfd->compress_space);
 		sfd->compress_buffer =
 				sfd->compress_space
 						? calloc(sfd->compress_space, 1)
@@ -1304,7 +1303,9 @@ void create_from_update(struct fd_translation_map *map,
 				 FILE_SIZE_VIDEO_FLAG;
 		sfd->buffer_size = (size_t)(transf->special.block_meta &
 					    ~FILE_SIZE_VIDEO_FLAG);
-		sfd->compress_space = compress_bufsize(map, sfd->buffer_size);
+		size_t diff_space = 0;
+		get_max_diff_space_usage(map, sfd->buffer_size, &diff_space,
+				&sfd->compress_space);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
 		struct bytebuf block = transf->subtransfers[0];
