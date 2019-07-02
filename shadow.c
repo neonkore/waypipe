@@ -281,6 +281,25 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 	}
 }
 
+const char *fdcat_to_str(fdcat_t cat)
+{
+	switch (cat) {
+	case FDC_UNKNOWN:
+		return "FDC_UNKNOWN";
+	case FDC_FILE:
+		return "FDC_FILE";
+	case FDC_PIPE_IR:
+		return "FDC_PIPE_IR";
+	case FDC_PIPE_IW:
+		return "FDC_PIPE_IW";
+	case FDC_PIPE_RW:
+		return "FDC_PIPE_RW";
+	case FDC_DMABUF:
+		return "FDC_DMABUF";
+	}
+	return "<invalid>";
+}
+
 fdcat_t get_fd_type(int fd, size_t *size)
 {
 	struct stat fsdata;
@@ -295,10 +314,16 @@ fdcat_t get_fd_type(int fd, size_t *size)
 			*size = (size_t)fsdata.st_size;
 		}
 		return FDC_FILE;
-	} else if (S_ISFIFO(fsdata.st_mode) || S_ISCHR(fsdata.st_mode)) {
-		if (!S_ISFIFO(fsdata.st_mode)) {
+	} else if (S_ISFIFO(fsdata.st_mode) || S_ISCHR(fsdata.st_mode) ||
+			S_ISSOCK(fsdata.st_mode)) {
+		if (S_ISCHR(fsdata.st_mode)) {
 			wp_log(WP_ERROR,
 					"The fd %d, size %ld, mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
+					fd, fsdata.st_size, fsdata.st_mode);
+		}
+		if (S_ISSOCK(fsdata.st_mode)) {
+			wp_log(WP_ERROR,
+					"The fd %d, size %ld, mode %x is a socket. Proceeding under the assumption that it is pipe-like.",
 					fd, fsdata.st_size, fsdata.st_mode);
 		}
 		int flags = fcntl(fd, F_GETFL, 0);
@@ -471,8 +496,8 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 }
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
-		struct render_data *render, int fd,
-		struct dmabuf_slice_data *info, bool use_video)
+		struct render_data *render, int fd, fdcat_t type,
+		size_t file_sz, struct dmabuf_slice_data *info, bool use_video)
 {
 	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
 	if (sfd) {
@@ -488,7 +513,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->mem_mirror = NULL;
 	sfd->buffer_size = (size_t)-1;
 	sfd->remote_id = (map->max_local_id++) * map->local_sign;
-	sfd->type = FDC_UNKNOWN;
+	sfd->type = type;
 	// File changes must be propagated
 	sfd->is_dirty = true;
 	damage_everything(&sfd->damage);
@@ -500,12 +525,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->refcount_protocol = 0;
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
-
-	size_t fsize = 0;
-	sfd->type = get_fd_type(fd, &fsize);
 	if (sfd->type == FDC_FILE) {
 		// We have a file-like object
-		sfd->buffer_size = fsize;
+		sfd->buffer_size = file_sz;
 		// both r/w permissions, because the size the allocates
 		// the memory does not always have to be the size that
 		// modifies it

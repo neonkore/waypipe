@@ -444,13 +444,15 @@ void cleanup_translation_map(struct fd_translation_map *map);
  * shadow entry. (For example, FDC_PIPE_IR for a pipe-like object that can only
  * be read.) Sets *size if non-NULL and if the object is an FDC_FILE. */
 fdcat_t get_fd_type(int fd, size_t *size);
-/** Given a local file descriptor, produce matching global id, and register it
- * into the translation map if not already done. The function can also be
- * provided with optional extra information.
+const char *fdcat_to_str(fdcat_t cat);
+/** Given a local file descriptor, type hint, and already computed size,
+ * produce matching global id, and register it into the translation map if
+ * not already done. The function can also be provided with optional extra
+ * information (*info).
  */
 struct dmabuf_slice_data;
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
-		struct render_data *render, int fd,
+		struct render_data *render, int fd, fdcat_t type, size_t sz,
 		struct dmabuf_slice_data *info, bool try_video);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */

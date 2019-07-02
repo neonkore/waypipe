@@ -63,6 +63,8 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #include <virtual-keyboard-unstable-v1-server-defs.h>
 #include <wayland-drm-client-defs.h>
 #include <wayland-drm-server-defs.h>
+#include <wlr-data-control-unstable-v1-client-defs.h>
+#include <wlr-data-control-unstable-v1-server-defs.h>
 #include <wlr-export-dmabuf-unstable-v1-client-defs.h>
 #include <wlr-export-dmabuf-unstable-v1-server-defs.h>
 #include <wlr-screencopy-unstable-v1-client-defs.h>
@@ -792,15 +794,17 @@ static void event_wl_keyboard_keymap(void *data,
 {
 	struct context *context = get_context(data, wl_keyboard);
 
-	struct shadow_fd *sfd = translate_fd(
-			&context->g->map, &context->g->render, fd, NULL, false);
-	if (sfd->type != FDC_FILE || sfd->buffer_size != size) {
+	size_t fdsz = 0;
+	fdcat_t fdtype = get_fd_type(fd, &fdsz);
+	if (fdtype != FDC_FILE || fdsz != size) {
 		wp_log(WP_ERROR,
-				"keymap candidate RID=%d was not file-like (type=%d), and with size=%ld did not match %d",
-				sfd->remote_id, sfd->type, sfd->buffer_size,
-				size);
+				"keymap candidate fd %d was not file-like (type=%s), and with size=%ld did not match %d",
+				fd, fdcat_to_str(fdtype), fdsz, size);
 		return;
 	}
+
+	struct shadow_fd *sfd = translate_fd(&context->g->map,
+			&context->g->render, fd, fdtype, fdsz, NULL, false);
 	struct wp_keyboard *keyboard = (struct wp_keyboard *)context->obj;
 	keyboard->owned_buffer = shadow_incref_protocol(sfd);
 	(void)format;
@@ -813,20 +817,23 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 	struct context *context = get_context(client, resource);
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)listset_get(
 			context->obj_list, id);
-	struct shadow_fd *sfd = translate_fd(
-			&context->g->map, &context->g->render, fd, NULL, false);
+
+	size_t fdsz = 0;
+	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	/* It may be valid for the file descriptor size to be larger than the
 	 * immediately advertised size, since the call to wl_shm.create_pool
 	 * may be followed by wl_shm_pool.resize, which then increases the size
 	 */
-	if (sfd->type != FDC_FILE || (int32_t)sfd->buffer_size < size) {
+	if (fdtype != FDC_FILE || (int32_t)fdsz < size) {
 		wp_log(WP_ERROR,
-				"File type or size mismatch for RID=%d with claimed: %d %d | %ld %d",
-				sfd->remote_id, sfd->type, FDC_FILE,
-				sfd->buffer_size, size);
+				"File type or size mismatch for fd %d with claimed: %s %s | %ld %d",
+				fd, fdcat_to_str(fdtype),
+				fdcat_to_str(FDC_FILE), fdsz, size);
 		return;
 	}
 
+	struct shadow_fd *sfd = translate_fd(&context->g->map,
+			&context->g->render, fd, fdtype, fdsz, NULL, false);
 	the_shm_pool->owned_buffer = shadow_incref_protocol(sfd);
 }
 
@@ -1083,15 +1090,18 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 					(uint32_t)stride2, 0},
 			.using_planes = {true, false, false, false},
 	};
-	struct shadow_fd *sfd = translate_fd(&context->g->map,
-			&context->g->render, name, &info, false);
-	if (sfd->type != FDC_DMABUF) {
+
+	size_t fdsz = 0;
+	fdcat_t fdtype = get_fd_type(name, &fdsz);
+	if (fdtype != FDC_DMABUF) {
 		wp_log(WP_ERROR,
-				"keymap candidate RID=%d was not a dmabuf (type=%d)",
-				sfd->remote_id, sfd->type);
+				"create_prime_buffer candidate fd %d was not a dmabuf (type=%s)",
+				name, fdcat_to_str(fdtype));
 		return;
 	}
 
+	struct shadow_fd *sfd = translate_fd(&context->g->map,
+			&context->g->render, name, FDC_DMABUF, 0, &info, false);
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = 1;
 	buf->dmabuf_buffers[0] = shadow_incref_protocol(sfd);
@@ -1313,15 +1323,18 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 						 format, info.modifier) &&
 				 context->g->config->video_if_possible;
 
-		struct shadow_fd *sfd = translate_fd(&context->g->map,
-				&context->g->render, params->add[i].fd, &info,
-				try_video);
-		if (sfd->type != FDC_DMABUF) {
+		size_t fdsz = 0;
+		fdcat_t fdtype = get_fd_type(params->add[i].fd, &fdsz);
+		if (fdtype != FDC_DMABUF) {
 			wp_log(WP_ERROR,
-					"fd #%d for linux-dmabuf request wasn't a dmabuf",
-					i);
+					"fd #%d for linux-dmabuf request wasn't a dmabuf, instead %s",
+					i, fdcat_to_str(fdtype));
 			continue;
 		}
+
+		struct shadow_fd *sfd = translate_fd(&context->g->map,
+				&context->g->render, params->add[i].fd,
+				FDC_DMABUF, 0, &info, try_video);
 		/* increment for each extra time this fd will be sent */
 		if (sfd->has_owner) {
 			shadow_incref_transfer(sfd);
@@ -1422,14 +1435,17 @@ static void zwlr_export_dmabuf_frame_v1_object(void *data,
 			.modifier = frame->modifier};
 	info.using_planes[index] = true;
 
-	struct shadow_fd *sfd = translate_fd(&context->g->map,
-			&context->g->render, fd, &info, false);
-	if (sfd->type != FDC_DMABUF) {
+	size_t fdsz = 0;
+	fdcat_t fdtype = get_fd_type(fd, &fdsz);
+	if (fdtype != FDC_DMABUF) {
 		wp_log(WP_ERROR,
-				"fd #%d for wlr-export-dmabuf frame wasn't a dmabuf",
-				index);
+				"fd %d, #%d for wlr-export-dmabuf frame wasn't a dmabuf, instead %s",
+				fd, index, fdcat_to_str(fdtype));
 		return;
 	}
+
+	struct shadow_fd *sfd = translate_fd(&context->g->map,
+			&context->g->render, fd, FDC_DMABUF, 0, &info, false);
 	if (sfd->buffer_size < size) {
 		wp_log(WP_ERROR,
 				"Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
@@ -1465,6 +1481,24 @@ static void zwlr_export_dmabuf_frame_v1_ready(void *data,
 			damage_everything(&sfd->damage);
 		}
 	}
+}
+static void data_source_send(
+		void *data, void *noop, const char *mime_type, int32_t fd)
+{
+	struct context *context = get_context(data, noop);
+	/* treat the fd as a one-way pipe, even if it has other properties */
+	translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE_IW, 0,
+			NULL, false);
+	(void)mime_type;
+}
+static void data_offer_receive(struct wl_client *client,
+		struct wl_resource *resource, const char *mime_type, int32_t fd)
+{
+	struct context *context = get_context(client, resource);
+	/* treat the fd as a one-way pipe, even if it is e.g. a file */
+	translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE_IW, 0,
+			NULL, false);
+	(void)mime_type;
 }
 
 static const struct wl_display_listener wl_display_event_handler = {
@@ -1534,6 +1568,30 @@ static const struct zwlr_export_dmabuf_frame_v1_listener
 				.object = zwlr_export_dmabuf_frame_v1_object,
 				.ready = zwlr_export_dmabuf_frame_v1_ready,
 };
+typedef void (*zwlr_data_control_source_v1_send_t)(void *,
+		struct zwlr_data_control_source_v1 *, const char *, int32_t);
+static const struct zwlr_data_control_source_v1_listener
+		zwlr_data_control_source_v1_event_handler = {
+				.send = (zwlr_data_control_source_v1_send_t)
+						data_source_send};
+typedef void (*gtk_primary_selection_source_send_t)(void *,
+		struct gtk_primary_selection_source *, const char *, int32_t);
+static const struct gtk_primary_selection_source_listener
+		gtk_primary_selection_source_event_handler = {
+				.send = (gtk_primary_selection_source_send_t)
+						data_source_send};
+typedef void (*wl_data_source_send_t)(
+		void *, struct wl_data_source *, const char *, int32_t);
+static const struct wl_data_source_listener wl_data_source_event_handler = {
+		.send = (wl_data_source_send_t)data_source_send};
+static const struct zwlr_data_control_offer_v1_interface
+		zwlr_data_control_offer_v1_request_handler = {
+				.receive = data_offer_receive};
+static const struct gtk_primary_selection_offer_interface
+		gtk_primary_selection_offer_request_handler = {
+				.receive = data_offer_receive};
+static const struct wl_data_offer_interface wl_data_offer_request_handler = {
+		.receive = data_offer_receive};
 
 const struct msg_handler handlers[] = {
 		{&wl_display_interface, &wl_display_event_handler,
@@ -1553,6 +1611,23 @@ const struct msg_handler handlers[] = {
 				&zwp_linux_buffer_params_v1_request_handler},
 		{&zwlr_export_dmabuf_frame_v1_interface,
 				&zwlr_export_dmabuf_frame_v1_event_handler,
+				NULL},
+
+		/* Copy-paste protocol handlers, handled near identically */
+		{&zwlr_data_control_offer_v1_interface, NULL,
+				&zwlr_data_control_offer_v1_request_handler},
+		{&gtk_primary_selection_offer_interface, NULL,
+				&gtk_primary_selection_offer_request_handler},
+		{&wl_data_offer_interface, NULL,
+				&wl_data_offer_request_handler},
+
+		{&zwlr_data_control_source_v1_interface,
+				&zwlr_data_control_source_v1_event_handler,
+				NULL},
+		{&gtk_primary_selection_source_interface,
+				&gtk_primary_selection_source_event_handler,
+				NULL},
+		{&wl_data_source_interface, &wl_data_source_event_handler,
 				NULL},
 
 		/* List all other known global object interface types, so
@@ -1586,6 +1661,8 @@ const struct msg_handler handlers[] = {
 				&wl_drm_request_handler},
 		// wlr-export-dmabuf
 		{&zwlr_export_dmabuf_manager_v1_interface, NULL, NULL},
+		// wlr-export-dmabuf
+		{&zwlr_data_control_manager_v1_interface, NULL, NULL},
 
 		{NULL, NULL, NULL}};
 const struct wl_interface *the_display_interface = &wl_display_interface;
