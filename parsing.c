@@ -306,12 +306,12 @@ struct uarg {
 
 /* Parse the message payload and apply it to a function, creating new objects
  * and consuming fds */
-static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
+void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 		const struct wl_message *msg, bool is_event,
 		const uint32_t *const payload, const int paylen,
 		const int *const fd_list, const int fdlen, int *fds_used,
 		void (*const func)(void), struct context *ctx,
-		struct message_tracker *mt)
+		struct message_tracker *mt, struct fd_translation_map *map)
 {
 	/* The types to match these arguments are set up once in
 	 * `setup_subhandler_cif` */
@@ -395,6 +395,7 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 			call_args_val[nargs].obj = lo;
 			call_args_ptr[nargs] = &call_args_val[nargs].obj;
 			nargs++;
+
 		} break;
 		case 'n': {
 			if (i >= paylen) {
@@ -406,7 +407,7 @@ static void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
 			 * the client's events are fed the object pointer. */
 			struct wp_object *new_obj =
 					create_wp_object(v, msg->types[k]);
-			listset_insert(&ctx->g->map, &mt->objects, new_obj);
+			listset_insert(map, &mt->objects, new_obj);
 
 			if (ctx->obj->is_zombie) {
 				/* todo: handle misc data ? */
@@ -599,7 +600,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	invoke_msg_handler(cif, intf, msg, !from_client, payload, len / 4 - 2,
 			&fds->data[fds->zone_start],
 			fds->zone_end - fds->zone_start, &fds_used, fn, &ctx,
-			&g->tracker);
+			&g->tracker, &g->map);
 	if (ctx.drop_this_msg) {
 		wp_log(WP_DEBUG, "Dropping %s.%s, with %d fds", intf->name,
 				msg->name, fds_used);

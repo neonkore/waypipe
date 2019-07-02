@@ -142,6 +142,13 @@ test_mirror = executable(
 	link_with: lib_waypipe_src
 )
 test('How well file descriptors are replicated', test_mirror)
+test_parse = executable(
+	'wire_parse',
+	['test/wire_parse.c'],
+	link_with: lib_waypipe_src,
+	dependencies: [libffi, wayland_client.partial_dependency(compile_args: true)]
+)
+test('That protocol parsing fails cleanly', test_parse)
 weston_prog = find_program('weston', required: false)
 weston_shm_prog = find_program('weston-simple-shm', required: false)
 weston_egl_prog = find_program('weston-simple-egl', required: false)
