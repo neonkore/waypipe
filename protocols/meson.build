@@ -13,6 +13,7 @@ protocols = [
 	'virtual-keyboard-unstable-v1.xml',
 	'wlr-screencopy-unstable-v1.xml',
 	'wlr-export-dmabuf-unstable-v1.xml',
+	'wlr-data-control-unstable-v1.xml',
 	'wayland-drm.xml',
 ]
 
