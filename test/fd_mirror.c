@@ -47,8 +47,16 @@ static const enum compression_mode comp_modes[] = {
 		COMP_NONE,
 };
 
-static int update_file(int file_fd, size_t sz, int seqno)
+#ifdef HAS_DMABUF
+#include <gbm.h>
+#define TEST_2CPP_FORMAT GBM_FORMAT_GR88
+#else
+#define TEST_2CPP_FORMAT 0
+#endif
+
+static int update_file(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 {
+	(void)bo;
 	if (rand() % 11 == 0) {
 		/* no change */
 		return 0;
@@ -73,6 +81,33 @@ static int update_file(int file_fd, size_t sz, int seqno)
 	return end - start;
 }
 
+static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
+{
+	(void)file_fd;
+	if (rand() % 11 == 0) {
+		/* no change */
+		return 0;
+	}
+
+	void *map_handle = NULL;
+	void *data = map_dmabuf(bo, true, &map_handle);
+	if (data == MAP_FAILED) {
+		return -1;
+	}
+
+	size_t start = (size_t)rand() % sz;
+	size_t end = (size_t)rand() % sz;
+	if (start > end) {
+		size_t tmp = start;
+		start = end;
+		end = tmp;
+	}
+	memset((char *)data + start, seqno, end - start);
+
+	unmap_dmabuf(bo, map_handle);
+	return end - start;
+}
+
 static void combine_transfer_blocks(struct transfer *transfer,
 		struct bytebuf *ret_block, int nblocks, struct bytebuf *blocks)
 {
@@ -91,7 +126,8 @@ static void combine_transfer_blocks(struct transfer *transfer,
 	transfer->nblocks = 1;
 }
 
-static bool check_match(int orig_fd, int copy_fd)
+static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
+		struct gbm_bo *copy_bo)
 {
 	size_t csz = 0, osz = 0;
 	fdcat_t ctype = get_fd_type(copy_fd, &csz);
@@ -103,20 +139,40 @@ static bool check_match(int orig_fd, int copy_fd)
 		return false;
 	}
 
-	void *cdata = mmap(NULL, csz, PROT_READ, MAP_SHARED, copy_fd, 0);
-	if (cdata == MAP_FAILED) {
-		return false;
-	}
-	void *odata = mmap(NULL, osz, PROT_READ, MAP_SHARED, orig_fd, 0);
-	if (odata == MAP_FAILED) {
-		munmap(cdata, csz);
-		return false;
+	void *ohandle = NULL, *chandle = NULL;
+	void *cdata = NULL, *odata = NULL;
+	if (otype == FDC_FILE) {
+		cdata = mmap(NULL, csz, PROT_READ, MAP_SHARED, copy_fd, 0);
+		if (cdata == MAP_FAILED) {
+			return false;
+		}
+		odata = mmap(NULL, osz, PROT_READ, MAP_SHARED, orig_fd, 0);
+		if (odata == MAP_FAILED) {
+			munmap(cdata, csz);
+			return false;
+		}
+	} else if (otype == FDC_DMABUF) {
+		cdata = map_dmabuf(copy_bo, false, &chandle);
+		if (cdata == MAP_FAILED) {
+			return false;
+		}
+		odata = map_dmabuf(orig_bo, false, &ohandle);
+		if (odata == MAP_FAILED) {
+			unmap_dmabuf(copy_bo, chandle);
+			return false;
+		}
 	}
 
 	bool pass = memcmp(cdata, odata, csz) == 0;
 
-	munmap(odata, osz);
-	munmap(cdata, csz);
+	if (otype == FDC_FILE) {
+		munmap(odata, osz);
+		munmap(cdata, csz);
+	} else if (otype == FDC_DMABUF) {
+		unmap_dmabuf(orig_bo, ohandle);
+		unmap_dmabuf(copy_bo, chandle);
+	}
+
 	if (!pass) {
 		wp_log(WP_ERROR, "Mirrored file descriptor contents differ");
 	}
@@ -125,7 +181,8 @@ static bool check_match(int orig_fd, int copy_fd)
 }
 
 static bool test_transfer(struct fd_translation_map *src_map,
-		struct fd_translation_map *dst_map, int rid, int ndiff)
+		struct fd_translation_map *dst_map, int rid, int ndiff,
+		struct render_data *render_data)
 {
 	int ntransfers = 0, nblocks = 0;
 	struct transfer transfers[10];
@@ -154,20 +211,22 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	struct transfer res_transfer = transfers[0];
 	struct bytebuf ret_block;
 	combine_transfer_blocks(&res_transfer, &ret_block, nblocks, blocks);
-	apply_update(dst_map, NULL, &res_transfer);
+	apply_update(dst_map, render_data, &res_transfer);
 	free(ret_block.data);
 
 	/* first round, this only exists after the transfer */
 	struct shadow_fd *dst_shadow = get_shadow_for_rid(dst_map, rid);
 
-	return check_match(src_shadow->fd_local, dst_shadow->fd_local);
+	return check_match(src_shadow->fd_local, dst_shadow->fd_local,
+			src_shadow->dmabuf_bo, dst_shadow->dmabuf_bo);
 }
 
 /* This test closes the provided file fd */
 static bool test_mirror(int new_file_fd, size_t sz,
-		int (*update)(int fd, size_t sz, int seqno),
+		int (*update)(int fd, struct gbm_bo *bo, size_t sz, int seqno),
 		enum compression_mode comp_mode, int n_src_threads,
-		int n_dst_threads)
+		int n_dst_threads, struct render_data *rd,
+		struct dmabuf_slice_data *slice_data)
 {
 	struct fd_translation_map src_map;
 	setup_translation_map(&src_map, false, comp_mode, n_src_threads);
@@ -185,8 +244,8 @@ static bool test_mirror(int new_file_fd, size_t sz,
 		dst_map.comp_thread_threshold = 1000;
 	}
 
-	struct shadow_fd *src_shadow =
-			translate_fd(&src_map, NULL, new_file_fd, NULL, false);
+	struct shadow_fd *src_shadow = translate_fd(
+			&src_map, rd, new_file_fd, slice_data, false);
 	struct shadow_fd *dst_shadow = NULL;
 	int rid = src_shadow->remote_id;
 
@@ -196,7 +255,10 @@ static bool test_mirror(int new_file_fd, size_t sz,
 
 		int target_fd = fwd ? src_shadow->fd_local
 				    : dst_shadow->fd_local;
-		int ndiff = i > 0 ? (*update)(target_fd, sz, i) : (int)sz;
+		struct gbm_bo *target_bo = fwd ? src_shadow->dmabuf_bo
+					       : dst_shadow->dmabuf_bo;
+		int ndiff = i > 0 ? (*update)(target_fd, target_bo, sz, i)
+				  : (int)sz;
 		if (ndiff == -1) {
 			pass = false;
 			break;
@@ -205,11 +267,13 @@ static bool test_mirror(int new_file_fd, size_t sz,
 		if (fwd) {
 			src_shadow->is_dirty = true;
 			damage_everything(&src_shadow->damage);
-			subpass = test_transfer(&src_map, &dst_map, rid, ndiff);
+			subpass = test_transfer(
+					&src_map, &dst_map, rid, ndiff, rd);
 		} else {
 			dst_shadow->is_dirty = true;
 			damage_everything(&dst_shadow->damage);
-			subpass = test_transfer(&dst_map, &src_map, rid, ndiff);
+			subpass = test_transfer(
+					&dst_map, &src_map, rid, ndiff, rd);
 		}
 		pass &= subpass;
 		if (!pass) {
@@ -237,18 +301,44 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	/* to avoid warnings when the driver dmabuf size constraints require
+	 * significant alignment, the width/height are already 64 aligned */
+	size_t test_width = 256;
+	size_t test_height = 320;
+	size_t test_cpp = 2;
+
+	size_t test_size = test_width * test_height * test_cpp;
+	uint8_t *test_pattern = malloc(test_size);
+	for (size_t i = 0; i < test_size; i++) {
+		test_pattern[i] = (uint8_t)i;
+	}
+
+	struct render_data rd = {
+			.drm_node_path = NULL,
+			.drm_fd = -1,
+			.dev = NULL,
+			.disabled = false,
+	};
+	bool has_dmabuf = TEST_2CPP_FORMAT != 0;
+	if (has_dmabuf && init_render_data(&rd) == -1) {
+		has_dmabuf = false;
+	}
+
+	struct dmabuf_slice_data slice_data = {.width = (uint32_t)test_width,
+			.height = (uint32_t)test_height,
+			.format = TEST_2CPP_FORMAT,
+			.num_planes = 1,
+			.modifier = 0,
+			.offsets = {0, 0, 0, 0},
+			.strides = {(uint32_t)(test_width * test_cpp), 0, 0, 0},
+			.using_planes = {true, false, false, false}};
+
 	bool all_success = true;
 	srand(0);
 	for (size_t c = 0; c < sizeof(comp_modes) / sizeof(comp_modes[0]);
 			c++) {
 		for (int gt = 1; gt <= 5; gt++) {
 			for (int rt = 1; rt <= 3; rt++) {
-				size_t test_size = (1u << 15) + 259;
-				uint8_t *test_pattern = malloc(test_size);
-				for (size_t i = 0; i < test_size; i++) {
-					test_pattern[i] = (uint8_t)i;
-				}
-
 				int file_fd = open("test/file",
 						O_CREAT | O_RDWR | O_TRUNC,
 						0644);
@@ -266,19 +356,50 @@ int main(int argc, char **argv)
 					close(file_fd);
 					continue;
 				}
-				free(test_pattern);
 
 				bool pass = test_mirror(file_fd, test_size,
 						update_file, comp_modes[c], gt,
-						rt);
+						rt, &rd, &slice_data);
 
-				printf("Tested comp=%d src_thread=%d dst_thread=%d, %s\n",
+				printf("  FILE comp=%d src_thread=%d dst_thread=%d, %s\n",
 						(int)c, gt, rt,
 						pass ? "pass" : "FAIL");
 				all_success &= pass;
+
+				if (has_dmabuf) {
+					struct gbm_bo *bo = make_dmabuf(&rd,
+							(const char *)test_pattern,
+							test_size, &slice_data);
+					if (!bo) {
+						has_dmabuf = false;
+						continue;
+					}
+					int dmafd = export_dmabuf(bo);
+					if (dmafd == -1) {
+						has_dmabuf = false;
+						continue;
+					}
+					destroy_dmabuf(bo);
+
+					bool dpass = test_mirror(dmafd,
+							test_size,
+							update_dmabuf,
+							comp_modes[c], gt, rt,
+							&rd, &slice_data);
+
+					printf("DMABUF comp=%d src_thread=%d dst_thread=%d, %s\n",
+							(int)c, gt, rt,
+							dpass ? "pass"
+							      : "FAIL");
+					all_success &= dpass;
+				}
 			}
 		}
 	}
 
+	cleanup_render_data(&rd);
+	free(test_pattern);
+
+	printf("All pass: %c\n", all_success ? 'Y' : 'n');
 	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;
 }

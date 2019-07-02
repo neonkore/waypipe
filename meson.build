@@ -139,9 +139,11 @@ test('If damage rectangles merge efficiently', test_damage)
 test_mirror = executable(
 	'fd_mirror',
 	['test/fd_mirror.c'],
-	link_with: lib_waypipe_src
+	link_with: lib_waypipe_src,
+	dependencies: [libgbm]
 )
-test('How well file descriptors are replicated', test_mirror)
+# disable leak checking, because library code is often responsible
+test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'])
 test_parse = executable(
 	'wire_parse',
 	['test/wire_parse.c'],

@@ -1124,11 +1124,11 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 						&diff_space,
 						&sfd->compress_space);
 				sfd->diff_buffer = calloc(diff_space, 1);
-				sfd->compress_buffer =
-						sfd->compress_space
-								? calloc(sfd->compress_space,
-										  1)
-								: NULL;
+				if (!sfd->compress_buffer &&
+						sfd->compress_space) {
+					sfd->compress_buffer = calloc(
+							sfd->compress_space, 1);
+				}
 			}
 
 			damage_everything(&sfd->damage);
