@@ -60,20 +60,27 @@ static ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds,
 		// Read cmsg
 		struct cmsghdr *header = CMSG_FIRSTHDR(&msg);
 		while (header) {
-			if (header->cmsg_level == SOL_SOCKET &&
-					header->cmsg_type == SCM_RIGHTS) {
-				int *data = (int *)CMSG_DATA(header);
-				int nf = (header->cmsg_len -
-							 sizeof(struct cmsghdr)) /
-					 sizeof(int);
-				for (int i = 0; i < nf && *numfds < maxfds;
-						i++) {
-					fds[(*numfds)++] = data[i];
-				}
-				// todo: close overflow...
+			struct cmsghdr *nxt_hdr = CMSG_NXTHDR(&msg, header);
+			if (header->cmsg_level != SOL_SOCKET ||
+					header->cmsg_type != SCM_RIGHTS) {
+				header = nxt_hdr;
+				continue;
 			}
 
-			header = CMSG_NXTHDR(&msg, header);
+			int *data = (int *)CMSG_DATA(header);
+			int nf = (int)((header->cmsg_len - CMSG_LEN(0)) /
+					sizeof(int));
+			for (int i = 0; i < nf; i++) {
+				if (*numfds < maxfds) {
+					fds[(*numfds)++] = data[i];
+				} else {
+					wp_log(WP_ERROR,
+							"Closing fd %d, internal buffer ran out of space");
+					close(data[i]);
+				}
+			}
+
+			header = nxt_hdr;
 		}
 	}
 	return ret;
@@ -734,11 +741,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	int old_fbuffer_end = wmsg->fds.zone_end;
 	if (progsock_readable) {
 		// Read /once/
-		int nmaxfds = wmsg->fds.size - wmsg->fds.zone_end;
 		rc = iovec_read(progfd, wmsg->dbuffer + wmsg->dbuffer_end,
 				(size_t)(wmsg->dbuffer_maxsize -
 						wmsg->dbuffer_end),
-				wmsg->fds.data, &wmsg->fds.zone_end, nmaxfds);
+				wmsg->fds.data, &wmsg->fds.zone_end,
+				wmsg->fds.size);
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
 		} else if (rc == -1) {
