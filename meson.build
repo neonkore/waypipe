@@ -38,16 +38,11 @@ else
 	)
 endif
 
-wayland_client = dependency('wayland-client', version: '>=1.15') # scanner headers
-wayland_server = dependency('wayland-server', version: '>=1.15') # scanner headers
-wayland_scanner = dependency('wayland-scanner', native: true, version: '>=1.15') # public-code
-wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
 libgbm = dependency('gbm', required: get_option('with_dmabuf'))
 libdrm = dependency('libdrm', required: get_option('with_dmabuf'))
 if libgbm.found() and libdrm.found()
 	add_project_arguments('-DHAS_DMABUF=1', language: 'c')
 endif
-libffi = dependency('libffi')
 pthreads = dependency('threads')
 rt = cc.find_library('rt')
 # XXX dtrace -G (Solaris, FreeBSD, NetBSD) isn't supported yet
@@ -76,14 +71,12 @@ subdir('protocols')
 waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
 waypipe_dependencies = [
 	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
-	libffi,          # To call wayland protocol functions
 	liblz4,          # Fast compression option
 	libzstd,         # Slow compression option
 	libavcodec,libavutil,libswscale, # Video encoding
 	pthreads,        # To run expensive computations in parallel
 	protos,          # Wayland protocol data
 	rt,              # For shared memory
-	wayland_client.partial_dependency(compile_args: true), # protocol headers need these
 ]
 
 waypipe_includes = []
@@ -148,7 +141,7 @@ test_parse = executable(
 	'wire_parse',
 	['test/wire_parse.c'],
 	link_with: lib_waypipe_src,
-	dependencies: [libffi, wayland_client.partial_dependency(compile_args: true)]
+	dependencies: []
 )
 test('That protocol parsing fails cleanly', test_parse)
 weston_prog = find_program('weston', required: false)

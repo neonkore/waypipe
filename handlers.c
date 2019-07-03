@@ -24,56 +24,6 @@
  */
 
 #define _XOPEN_SOURCE 700
-#include <wayland-util.h>
-
-/* TODO: eventually, create a mode for wayland-scanner that produces just the
- * needed information (constants, and listener structs)
- *
- * Also, make this bundle its own header.
- */
-struct wl_proxy;
-void wl_proxy_destroy(struct wl_proxy *proxy);
-int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
-		void *data);
-void wl_proxy_set_user_data(struct wl_proxy *proxy, void *user_data);
-void *wl_proxy_get_user_data(struct wl_proxy *proxy);
-uint32_t wl_proxy_get_version(struct wl_proxy *proxy);
-struct wl_proxy *wl_proxy_marshal_constructor(struct wl_proxy *proxy,
-		uint32_t opcode, const struct wl_interface *interface, ...);
-struct wl_proxy *wl_proxy_marshal_constructor_versioned(struct wl_proxy *proxy,
-		uint32_t opcode, const struct wl_interface *interface,
-		uint32_t version, ...);
-void wl_proxy_marshal(struct wl_proxy *p, uint32_t opcode, ...);
-struct wl_resource;
-void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
-#define WAYLAND_CLIENT_H
-#define WAYLAND_SERVER_H
-#include <wayland-client-defs.h>
-#include <wayland-server-defs.h>
-// Include order required as some require e.g. &wl_buffer_interface
-#include <gtk-primary-selection-client-defs.h>
-#include <gtk-primary-selection-server-defs.h>
-#include <input-method-unstable-v2-client-defs.h>
-#include <input-method-unstable-v2-server-defs.h>
-#include <linux-dmabuf-unstable-v1-client-defs.h>
-#include <linux-dmabuf-unstable-v1-server-defs.h>
-#include <presentation-time-client-defs.h>
-#include <presentation-time-server-defs.h>
-#include <virtual-keyboard-unstable-v1-client-defs.h>
-#include <virtual-keyboard-unstable-v1-server-defs.h>
-#include <wayland-drm-client-defs.h>
-#include <wayland-drm-server-defs.h>
-#include <wlr-data-control-unstable-v1-client-defs.h>
-#include <wlr-data-control-unstable-v1-server-defs.h>
-#include <wlr-export-dmabuf-unstable-v1-client-defs.h>
-#include <wlr-export-dmabuf-unstable-v1-server-defs.h>
-#include <wlr-screencopy-unstable-v1-client-defs.h>
-#include <wlr-screencopy-unstable-v1-server-defs.h>
-#include <xdg-shell-client-defs.h>
-#include <xdg-shell-server-defs.h>
-#undef WAYLAND_CLIENT_H
-#undef WAYLAND_SERVER_H
-
 #include "util.h"
 
 #include <errno.h>
@@ -82,11 +32,17 @@ void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode, ...);
 #include <time.h>
 #include <unistd.h>
 
-static inline struct context *get_context(void *first_arg, void *second_arg)
-{
-	(void)second_arg;
-	return (struct context *)first_arg;
-}
+#include <gtk-primary-selection-defs.h>
+#include <input-method-unstable-v2-defs.h>
+#include <linux-dmabuf-unstable-v1-defs.h>
+#include <presentation-time-defs.h>
+#include <virtual-keyboard-unstable-v1-defs.h>
+#include <wayland-defs.h>
+#include <wayland-drm-defs.h>
+#include <wlr-data-control-unstable-v1-defs.h>
+#include <wlr-export-dmabuf-unstable-v1-defs.h>
+#include <wlr-screencopy-unstable-v1-defs.h>
+#include <xdg-shell-defs.h>
 
 struct wp_shm_pool {
 	struct wp_object base;
@@ -221,12 +177,12 @@ static void free_damage_stack(struct damage_record **root)
 }
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
-	if (object->type == &wl_shm_pool_interface) {
+	if (object->type == &intf_wl_shm_pool) {
 		struct wp_shm_pool *r = (struct wp_shm_pool *)object;
 		if (r->owned_buffer) {
 			shadow_decref_protocol(map, r->owned_buffer);
 		}
-	} else if (object->type == &wl_buffer_interface) {
+	} else if (object->type == &intf_wl_buffer) {
 		struct wp_buffer *r = (struct wp_buffer *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->dmabuf_buffers[i]) {
@@ -237,21 +193,21 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		if (r->shm_buffer) {
 			shadow_decref_protocol(map, r->shm_buffer);
 		}
-	} else if (object->type == &wl_surface_interface) {
+	} else if (object->type == &intf_wl_surface) {
 		struct wp_surface *r = (struct wp_surface *)object;
 		free_damage_stack(&r->damage_stack);
-	} else if (object->type == &wl_keyboard_interface) {
+	} else if (object->type == &intf_wl_keyboard) {
 		struct wp_keyboard *r = (struct wp_keyboard *)object;
 		if (r->owned_buffer) {
 			shadow_decref_protocol(map, r->owned_buffer);
 		}
-	} else if (object->type == &zwlr_screencopy_frame_v1_interface) {
+	} else if (object->type == &intf_zwlr_screencopy_frame_v1) {
 		struct wp_wlr_screencopy_frame *r =
 				(struct wp_wlr_screencopy_frame *)object;
 		(void)r;
-	} else if (object->type == &wp_presentation_interface) {
-	} else if (object->type == &wp_presentation_feedback_interface) {
-	} else if (object->type == &zwp_linux_buffer_params_v1_interface) {
+	} else if (object->type == &intf_wp_presentation) {
+	} else if (object->type == &intf_wp_presentation_feedback) {
+	} else if (object->type == &intf_zwp_linux_buffer_params_v1) {
 		struct wp_linux_dmabuf_params *r =
 				(struct wp_linux_dmabuf_params *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
@@ -277,7 +233,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 				free(r->add[i].msg);
 			}
 		}
-	} else if (object->type == &zwlr_export_dmabuf_frame_v1_interface) {
+	} else if (object->type == &intf_zwlr_export_dmabuf_frame_v1) {
 		struct wp_export_dmabuf_frame *r =
 				(struct wp_export_dmabuf_frame *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
@@ -289,35 +245,35 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 	}
 	free(object);
 }
-struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
+struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 {
 	/* Note: if custom types are ever implemented for globals, they would
 	 * need special replacement logic when the type is set */
 	struct wp_object *new_obj;
-	if (type == &wl_shm_pool_interface) {
+	if (type == &intf_wl_shm_pool) {
 		new_obj = calloc(1, sizeof(struct wp_shm_pool));
-	} else if (type == &wl_buffer_interface) {
+	} else if (type == &intf_wl_buffer) {
 		new_obj = calloc(1, sizeof(struct wp_buffer));
-	} else if (type == &wl_surface_interface) {
+	} else if (type == &intf_wl_surface) {
 		new_obj = calloc(1, sizeof(struct wp_surface));
 		((struct wp_surface *)new_obj)->scale = 1;
-	} else if (type == &wl_keyboard_interface) {
+	} else if (type == &intf_wl_keyboard) {
 		new_obj = calloc(1, sizeof(struct wp_keyboard));
-	} else if (type == &zwlr_screencopy_frame_v1_interface) {
+	} else if (type == &intf_zwlr_screencopy_frame_v1) {
 		new_obj = calloc(1, sizeof(struct wp_wlr_screencopy_frame));
-	} else if (type == &wp_presentation_interface) {
+	} else if (type == &intf_wp_presentation) {
 		new_obj = calloc(1, sizeof(struct waypipe_presentation));
-	} else if (type == &wp_presentation_feedback_interface) {
+	} else if (type == &intf_wp_presentation_feedback) {
 		new_obj = calloc(1,
 				sizeof(struct waypipe_presentation_feedback));
-	} else if (type == &zwp_linux_buffer_params_v1_interface) {
+	} else if (type == &intf_zwp_linux_buffer_params_v1) {
 		new_obj = calloc(1, sizeof(struct wp_linux_dmabuf_params));
 		struct wp_linux_dmabuf_params *params =
 				(struct wp_linux_dmabuf_params *)new_obj;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			params->add[i].fd = -1;
 		}
-	} else if (type == &zwlr_export_dmabuf_frame_v1_interface) {
+	} else if (type == &intf_zwlr_export_dmabuf_frame_v1) {
 		new_obj = calloc(1, sizeof(struct wp_export_dmabuf_frame));
 	} else {
 		new_obj = calloc(1, sizeof(struct wp_object));
@@ -328,51 +284,43 @@ struct wp_object *create_wp_object(uint32_t id, const struct wl_interface *type)
 	return new_obj;
 }
 
-static void event_wl_display_error(void *data, struct wl_display *wl_display,
-		void *object_id, uint32_t code, const char *message)
+void do_wl_display_evt_error(struct context *ctx, struct wp_object *object_id,
+		uint32_t code, const char *message)
 {
-	struct context *context = get_context(data, wl_display);
-	(void)context;
+	(void)ctx;
 	(void)object_id;
 	(void)code;
 	(void)message;
 }
-static void event_wl_display_delete_id(
-		void *data, struct wl_display *wl_display, uint32_t id)
+void do_wl_display_evt_delete_id(struct context *ctx, uint32_t id)
 {
-	struct context *context = get_context(data, wl_display);
-	struct wp_object *obj = listset_get(context->obj_list, id);
+	struct wp_object *obj = listset_get(ctx->obj_list, id);
 	if (obj) {
-		listset_remove(context->obj_list, obj);
-		destroy_wp_object(&context->g->map, obj);
+		listset_remove(ctx->obj_list, obj);
+		destroy_wp_object(&ctx->g->map, obj);
 	}
 }
-static void request_wl_display_get_registry(struct wl_client *client,
-		struct wl_resource *resource, uint32_t registry)
+void do_wl_display_req_get_registry(
+		struct context *ctx, struct wp_object *registry)
 {
-	struct context *context = get_context(client, resource);
-	(void)context;
+	(void)ctx;
 	(void)registry;
 }
-static void request_wl_display_sync(struct wl_client *client,
-		struct wl_resource *resource, uint32_t callback)
+void do_wl_display_req_sync(struct context *ctx, struct wp_object *callback)
 {
-	struct context *context = get_context(client, resource);
-	(void)context;
+	(void)ctx;
 	(void)callback;
 }
 
-static void event_wl_registry_global(void *data,
-		struct wl_registry *wl_registry, uint32_t name,
+void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 		const char *interface, uint32_t version)
 {
-	struct context *context = get_context(data, wl_registry);
 	bool requires_rnode = false;
 	requires_rnode |= !strcmp(interface, "wl_drm");
 	requires_rnode |= !strcmp(interface, "zwp_linux_dmabuf_v1");
 	requires_rnode |= !strcmp(interface, "zwlr_export_dmabuf_manager_v1");
 	if (requires_rnode) {
-		if (init_render_data(&context->g->render) == -1) {
+		if (init_render_data(&ctx->g->render) == -1) {
 			/* A gpu connection supported by waypipe is required on
 			 * both sides, since data transfers may occur in both
 			 * directions, and
@@ -380,7 +328,7 @@ static void event_wl_registry_global(void *data,
 			wp_log(WP_DEBUG,
 					"Discarding protocol advertisement for %s, render node support disabled",
 					interface);
-			context->drop_this_msg = true;
+			ctx->drop_this_msg = true;
 			return;
 		}
 	}
@@ -391,44 +339,42 @@ static void event_wl_registry_global(void *data,
 	if (unsupported) {
 		wp_log(WP_DEBUG, "Hiding %s advertisement, unsupported",
 				interface);
-		context->drop_this_msg = true;
+		ctx->drop_this_msg = true;
 	}
 
 	(void)name;
 	(void)version;
 }
-static void event_wl_registry_global_remove(
-		void *data, struct wl_registry *wl_registry, uint32_t name)
+void do_wl_registry_evt_global_remove(struct context *ctx, uint32_t name)
 {
-	struct context *context = get_context(data, wl_registry);
-	(void)context;
+	(void)ctx;
 	(void)name;
 }
-static void request_wl_registry_bind(struct wl_client *client,
-		struct wl_resource *resource, uint32_t name,
-		const char *interface, uint32_t version, uint32_t id)
+
+void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
+		const char *interface, uint32_t version, struct wp_object *id)
 {
-	struct context *context = get_context(client, resource);
 	/* The object has already been created, but its type is NULL */
-	struct wp_object *the_object = listset_get(context->obj_list, id);
+	struct wp_object *the_object = (struct wp_object *)id;
+	uint32_t obj_id = the_object->obj_id;
 	for (int i = 0; handlers[i].interface; i++) {
 		if (!strcmp(interface, handlers[i].interface->name)) {
 			// Set the object type
 			the_object->type = handlers[i].interface;
-			if (handlers[i].interface ==
-					&wp_presentation_interface) {
-				// Replace the object with a specialized version
-				listset_remove(context->obj_list, the_object);
+			if (handlers[i].interface == &intf_wp_presentation) {
+				// Replace the object with a specialized
+				// version
+				listset_remove(ctx->obj_list, the_object);
 				free(the_object);
 				the_object = create_wp_object(
-						id, &wp_presentation_interface);
-				listset_insert(&context->g->map,
-						context->obj_list, the_object);
+						obj_id, &intf_wp_presentation);
+				listset_insert(&ctx->g->map, ctx->obj_list,
+						the_object);
 			}
 			return;
 		}
 	}
-	listset_remove(context->obj_list, the_object);
+	listset_remove(ctx->obj_list, the_object);
 	free(the_object);
 
 	wp_log(WP_DEBUG, "Binding fail name=%d %s id=%d (v%d)", name, interface,
@@ -437,11 +383,7 @@ static void request_wl_registry_bind(struct wl_client *client,
 	(void)version;
 }
 
-static void event_wl_buffer_release(void *data, struct wl_buffer *wl_buffer)
-{
-	struct context *context = get_context(data, wl_buffer);
-	(void)context;
-}
+void do_wl_buffer_evt_release(struct context *ctx) { (void)ctx; }
 static int get_shm_bytes_per_pixel(uint32_t format)
 {
 	switch (format) {
@@ -544,8 +486,8 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 		int xh = (rec->width + rec->x) * scale;
 		int yh = (rec->y + rec->height) * scale;
 
-		/* Each of the eight transformations corresponds to a unique set
-		 * of reflections: X<->Y | Xflip | Yflip */
+		/* Each of the eight transformations corresponds to a
+		 * unique set of reflections: X<->Y | Xflip | Yflip */
 		uint32_t magic = 0x14723650;
 		/* idx     76543210
 		 * xyech = 10101010
@@ -585,52 +527,49 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 	}
 	return 0;
 }
-static void request_wl_surface_attach(struct wl_client *client,
-		struct wl_resource *resource, struct wl_resource *buffer,
+void do_wl_surface_req_attach(struct context *ctx, struct wp_object *buffer,
 		int32_t x, int32_t y)
 {
-	struct context *context = get_context(client, resource);
 	(void)x;
 	(void)y;
 	struct wp_object *bufobj = (struct wp_object *)buffer;
 	if (!bufobj) {
-		/* A null buffer can legitimately be send to remove surface
-		 * contents, presumably with shell-defined semantics */
+		/* A null buffer can legitimately be send to remove
+		 * surface contents, presumably with shell-defined
+		 * semantics */
 		wp_log(WP_DEBUG, "Buffer to be attached is null");
 		return;
 	}
-	if (bufobj->type != &wl_buffer_interface) {
+	if (bufobj->type != &intf_wl_buffer) {
 		wp_log(WP_ERROR, "Buffer to be attached has the wrong type");
 		return;
 	}
-	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	surface->attached_buffer_id = bufobj->obj_id;
 }
-static void request_wl_surface_commit(
-		struct wl_client *client, struct wl_resource *resource)
+void do_wl_surface_req_commit(struct context *ctx)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	if (!surface->attached_buffer_id) {
-		/* The wl_surface.commit operation applies all "pending state",
-		 * much of which we don't care about. Typically, when a
-		 * wl_surface is first created, it is soon committed to
-		 * atomically update state variables. An attached wl_buffer is
-		 * not required.
+		/* The wl_surface.commit operation applies all "pending
+		 * state", much of which we don't care about. Typically,
+		 * when a wl_surface is first created, it is soon
+		 * committed to atomically update state variables. An
+		 * attached wl_buffer is not required.
 		 */
 		return;
 	}
-	if (context->on_display_side) {
+	if (ctx->on_display_side) {
 		/* commit signifies a client-side update only */
 		return;
 	}
-	struct wp_object *obj = listset_get(
-			context->obj_list, surface->attached_buffer_id);
+	struct wp_object *obj =
+			listset_get(ctx->obj_list, surface->attached_buffer_id);
 	if (!obj) {
 		wp_log(WP_ERROR, "Attached buffer no longer exists");
 		return;
 	}
-	if (obj->type != &wl_buffer_interface) {
+	if (obj->type != &intf_wl_buffer) {
 		wp_log(WP_ERROR,
 				"Buffer to commit has the wrong type, and may have been recycled");
 		return;
@@ -727,12 +666,10 @@ static void request_wl_surface_commit(
 	surface->damage_stack = NULL;
 	surface->damage_stack_len = 0;
 }
-static void request_wl_surface_damage(struct wl_client *client,
-		struct wl_resource *resource, int32_t x, int32_t y,
+void do_wl_surface_req_damage(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
 {
-	struct context *context = get_context(client, resource);
-	if (context->on_display_side) {
+	if (ctx->on_display_side) {
 		// The display side does not need to track the damage
 		return;
 	}
@@ -745,17 +682,15 @@ static void request_wl_surface_damage(struct wl_client *client,
 	damage->width = width;
 	damage->height = height;
 
-	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	damage->next = surface->damage_stack;
 	surface->damage_stack = damage;
 	surface->damage_stack_len++;
 }
-static void request_wl_surface_damage_buffer(struct wl_client *client,
-		struct wl_resource *resource, int32_t x, int32_t y,
+void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
 {
-	struct context *context = get_context(client, resource);
-	if (context->on_display_side) {
+	if (ctx->on_display_side) {
 		// The display side does not need to track the damage
 		return;
 	}
@@ -768,32 +703,26 @@ static void request_wl_surface_damage_buffer(struct wl_client *client,
 	damage->width = width;
 	damage->height = height;
 
-	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	damage->next = surface->damage_stack;
 	surface->damage_stack = damage;
 	surface->damage_stack_len++;
 }
-static void request_wl_surface_set_buffer_transform(struct wl_client *client,
-		struct wl_resource *resource, int32_t transform)
+void do_wl_surface_req_set_buffer_transform(
+		struct context *ctx, int32_t transform)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_surface *surface = (struct wp_surface *)context->obj;
+
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	surface->transform = transform;
 }
-static void request_wl_surface_set_buffer_scale(struct wl_client *client,
-		struct wl_resource *resource, int32_t scale)
+void do_wl_surface_req_set_buffer_scale(struct context *ctx, int32_t scale)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_surface *surface = (struct wp_surface *)context->obj;
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	surface->scale = scale;
 }
-
-static void event_wl_keyboard_keymap(void *data,
-		struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd,
-		uint32_t size)
+void do_wl_keyboard_evt_keymap(
+		struct context *ctx, uint32_t format, int fd, uint32_t size)
 {
-	struct context *context = get_context(data, wl_keyboard);
-
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_FILE || fdsz != size) {
@@ -803,26 +732,24 @@ static void event_wl_keyboard_keymap(void *data,
 		return;
 	}
 
-	struct shadow_fd *sfd = translate_fd(&context->g->map,
-			&context->g->render, fd, fdtype, fdsz, NULL, false);
-	struct wp_keyboard *keyboard = (struct wp_keyboard *)context->obj;
+	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
+			fdtype, fdsz, NULL, false);
+	struct wp_keyboard *keyboard = (struct wp_keyboard *)ctx->obj;
 	keyboard->owned_buffer = shadow_incref_protocol(sfd);
 	(void)format;
 }
 
-static void request_wl_shm_create_pool(struct wl_client *client,
-		struct wl_resource *resource, uint32_t id, int32_t fd,
-		int32_t size)
+void do_wl_shm_req_create_pool(
+		struct context *ctx, struct wp_object *id, int fd, int32_t size)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)listset_get(
-			context->obj_list, id);
+	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)id;
 
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
-	/* It may be valid for the file descriptor size to be larger than the
-	 * immediately advertised size, since the call to wl_shm.create_pool
-	 * may be followed by wl_shm_pool.resize, which then increases the size
+	/* It may be valid for the file descriptor size to be larger
+	 * than the immediately advertised size, since the call to
+	 * wl_shm.create_pool may be followed by wl_shm_pool.resize,
+	 * which then increases the size
 	 */
 	if (fdtype != FDC_FILE || (int32_t)fdsz < size) {
 		wp_log(WP_ERROR,
@@ -832,16 +759,14 @@ static void request_wl_shm_create_pool(struct wl_client *client,
 		return;
 	}
 
-	struct shadow_fd *sfd = translate_fd(&context->g->map,
-			&context->g->render, fd, fdtype, fdsz, NULL, false);
+	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
+			fdtype, fdsz, NULL, false);
 	the_shm_pool->owned_buffer = shadow_incref_protocol(sfd);
 }
 
-static void request_wl_shm_pool_resize(struct wl_client *client,
-		struct wl_resource *resource, int32_t size)
+void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
+	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)ctx->obj;
 
 	if (!the_shm_pool->owned_buffer) {
 		wp_log(WP_ERROR, "Pool to be resized owns no buffer");
@@ -854,14 +779,12 @@ static void request_wl_shm_pool_resize(struct wl_client *client,
 	}
 	wp_log(WP_ERROR, "Pool resize to %d, TODO", size);
 }
-static void request_wl_shm_pool_create_buffer(struct wl_client *client,
-		struct wl_resource *resource, uint32_t id, int32_t offset,
-		int32_t width, int32_t height, int32_t stride, uint32_t format)
+void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
+		int32_t offset, int32_t width, int32_t height, int32_t stride,
+		uint32_t format)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)context->obj;
-	struct wp_buffer *the_buffer =
-			(struct wp_buffer *)listset_get(context->obj_list, id);
+	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)ctx->obj;
+	struct wp_buffer *the_buffer = (struct wp_buffer *)id;
 	if (!the_buffer) {
 		wp_log(WP_ERROR, "No buffer available");
 		return;
@@ -876,14 +799,17 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 	if (sfd->refcount_protocol == 1 && video_supports_shm_format(format) &&
 			offset == 0 &&
 			stride * height == (int32_t)sfd->buffer_size &&
-			context->g->config->video_if_possible) {
+			ctx->g->config->video_if_possible) {
 		/* shm data supports video only when there is a single
-		 * wl_buffer that references the underlying file and furthermore
-		 * that buffer lays claim to the entire buffer. Otherwise,
-		 * handling mixed use cases can become incredibly complicated.
+		 * wl_buffer that references the underlying file and
+		 * furthermore that buffer lays claim to the entire
+		 * buffer. Otherwise, handling mixed use cases can
+		 * become incredibly complicated.
 		 *
-		 * Additional complications can happen if the pool is reused */
-		// setup_video_encode(sfd, width, height, stride, format);
+		 * Additional complications can happen if the pool is
+		 * reused */
+		// setup_video_encode(sfd, width, height, stride,
+		// format);
 	}
 
 	the_buffer->type = BUF_SHM;
@@ -896,24 +822,22 @@ static void request_wl_shm_pool_create_buffer(struct wl_client *client,
 	the_buffer->shm_format = format;
 }
 
-static void event_zwlr_screencopy_frame_v1_ready(void *data,
-		struct zwlr_screencopy_frame_v1 *zwlr_screencopy_frame_v1,
+void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
 {
-	struct context *context = get_context(data, zwlr_screencopy_frame_v1);
 	struct wp_wlr_screencopy_frame *frame =
-			(struct wp_wlr_screencopy_frame *)context->obj;
+			(struct wp_wlr_screencopy_frame *)ctx->obj;
 	if (!frame->buffer_id) {
 		wp_log(WP_ERROR, "frame has no copy target");
 		return;
 	}
 	struct wp_object *obj = (struct wp_object *)listset_get(
-			context->obj_list, frame->buffer_id);
+			ctx->obj_list, frame->buffer_id);
 	if (!obj) {
 		wp_log(WP_ERROR, "frame copy target no longer exists");
 		return;
 	}
-	if (obj->type != &wl_buffer_interface) {
+	if (obj->type != &intf_wl_buffer) {
 		wp_log(WP_ERROR, "frame copy target is not a wl_buffer");
 		return;
 	}
@@ -934,13 +858,13 @@ static void event_zwlr_screencopy_frame_v1_ready(void *data,
 				"screencopy not yet supported for non-shm-backed buffers");
 		return;
 	}
-	if (!context->on_display_side) {
+	if (!ctx->on_display_side) {
 		// The display side performs the update
 		return;
 	}
 	sfd->is_dirty = true;
-	/* The protocol guarantees that the buffer attributes match those of the
-	 * written frame */
+	/* The protocol guarantees that the buffer attributes match
+	 * those of the written frame */
 	const struct ext_interval interval = {.start = buffer->shm_offset,
 			.width = buffer->shm_height * buffer->shm_stride,
 			.stride = 0,
@@ -951,14 +875,13 @@ static void event_zwlr_screencopy_frame_v1_ready(void *data,
 	(void)tv_sec_hi;
 	(void)tv_nsec;
 }
-static void request_zwlr_screencopy_frame_v1_copy(struct wl_client *client,
-		struct wl_resource *resource, struct wl_resource *buffer)
+void do_zwlr_screencopy_frame_v1_req_copy(
+		struct context *ctx, struct wp_object *buffer)
 {
-	struct context *context = get_context(client, resource);
 	struct wp_wlr_screencopy_frame *frame =
-			(struct wp_wlr_screencopy_frame *)context->obj;
+			(struct wp_wlr_screencopy_frame *)ctx->obj;
 	struct wp_object *buf = (struct wp_object *)buffer;
-	if (buf->type != &wl_buffer_interface) {
+	if (buf->type != &intf_wl_buffer) {
 		wp_log(WP_ERROR, "frame copy destination is not a wl_buffer");
 		return;
 	}
@@ -971,12 +894,10 @@ static long timespec_diff(struct timespec val, struct timespec sub)
 	return (val.tv_sec - sub.tv_sec) * 1000000000L +
 	       (val.tv_nsec - sub.tv_nsec);
 }
-static void event_wp_presentation_clock_id(void *data,
-		struct wp_presentation *wp_presentation, uint32_t clk_id)
+void do_wp_presentation_evt_clock_id(struct context *ctx, uint32_t clk_id)
 {
-	struct context *context = get_context(data, wp_presentation);
 	struct waypipe_presentation *pres =
-			(struct waypipe_presentation *)context->obj;
+			(struct waypipe_presentation *)ctx->obj;
 	pres->clock_id = (int)clk_id;
 	int reference_clock = CLOCK_REALTIME;
 
@@ -984,7 +905,8 @@ static void event_wp_presentation_clock_id(void *data,
 		pres->clock_delta_nsec = 0;
 	} else {
 		/* Estimate the difference in baseline between clocks.
-		 * (TODO: Is there a syscall for this?) do median of 3? */
+		 * (TODO: Is there a syscall for this?) do median of 3?
+		 */
 		struct timespec t0, t1, t2;
 		clock_gettime(pres->clock_id, &t0);
 		clock_gettime(reference_clock, &t1);
@@ -994,29 +916,24 @@ static void event_wp_presentation_clock_id(void *data,
 		pres->clock_delta_nsec = (diff1m0 - diff2m1) / 2;
 	}
 }
-static void request_wp_presentation_feedback(struct wl_client *client,
-		struct wl_resource *resource, struct wl_resource *surface,
-		uint32_t callback)
+void do_wp_presentation_req_feedback(struct context *ctx,
+		struct wp_object *surface, struct wp_object *callback)
 {
-	struct context *context = get_context(client, resource);
 	struct waypipe_presentation *pres =
-			(struct waypipe_presentation *)context->obj;
+			(struct waypipe_presentation *)ctx->obj;
 	struct waypipe_presentation_feedback *feedback =
-			(struct waypipe_presentation_feedback *)listset_get(
-					context->obj_list, callback);
+			(struct waypipe_presentation_feedback *)callback;
 	(void)surface;
 
 	feedback->clock_delta_nsec = pres->clock_delta_nsec;
 }
-static void event_wp_presentation_feedback_presented(void *data,
-		struct wp_presentation_feedback *wp_presentation_feedback,
+void do_wp_presentation_feedback_evt_presented(struct context *ctx,
 		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec,
 		uint32_t refresh, uint32_t seq_hi, uint32_t seq_lo,
 		uint32_t flags)
 {
-	struct context *context = get_context(data, wp_presentation_feedback);
 	struct waypipe_presentation_feedback *feedback =
-			(struct waypipe_presentation_feedback *)context->obj;
+			(struct waypipe_presentation_feedback *)ctx->obj;
 
 	(void)refresh;
 	(void)seq_hi;
@@ -1024,7 +941,7 @@ static void event_wp_presentation_feedback_presented(void *data,
 	(void)flags;
 
 	/* convert local to reference, on display side */
-	int dir = context->on_display_side ? 1 : -1;
+	int dir = ctx->on_display_side ? 1 : -1;
 
 	uint64_t sec = tv_sec_lo + tv_sec_hi * 0x100000000L;
 	long nsec = tv_nsec;
@@ -1036,48 +953,47 @@ static void event_wp_presentation_feedback_presented(void *data,
 		sec--;
 	}
 	// Size not changed, no other edits required
-	context->message[2] = (uint32_t)(sec / 0x100000000L);
-	context->message[3] = (uint32_t)(sec % 0x100000000L);
-	context->message[4] = (uint32_t)nsec;
+	ctx->message[2] = (uint32_t)(sec / 0x100000000L);
+	ctx->message[3] = (uint32_t)(sec % 0x100000000L);
+	ctx->message[4] = (uint32_t)nsec;
 }
 
-static void event_wl_drm_device(
-		void *data, struct wl_drm *wl_drm, const char *name)
+void do_wl_drm_evt_device(struct context *ctx, const char *name)
 {
-	struct context *context = get_context(data, wl_drm);
-	if (context->on_display_side) {
-		/* Replacing the (remote) DRM device path with a local render
-		 * node path only is useful on the application side */
+
+	if (ctx->on_display_side) {
+		/* Replacing the (remote) DRM device path with a local
+		 * render node path only is useful on the application
+		 * side */
 		return;
 	}
-	/* The render node was already initialized in wl_registry.global,
-	 * so the render node path is provides has been checked */
-	int path_len = (int)strlen(context->g->render.drm_node_path);
+	/* The render node was already initialized in
+	 * wl_registry.global, so the render node path is provides has
+	 * been checked */
+	int path_len = (int)strlen(ctx->g->render.drm_node_path);
 	int message_bytes = 8 + 4 + 4 * ((path_len + 1 + 3) / 4);
-	if (message_bytes > context->message_available_space) {
+	if (message_bytes > ctx->message_available_space) {
 		wp_log(WP_ERROR,
 				"Not enough space to modify DRM device advertisement from '%s' to '%s'",
-				name, context->g->render.drm_node_path);
+				name, ctx->g->render.drm_node_path);
 		return;
 	}
-	context->message_length = message_bytes;
-	uint32_t *payload = context->message + 2;
+	ctx->message_length = message_bytes;
+	uint32_t *payload = ctx->message + 2;
 	memset(payload, 0, (size_t)message_bytes - 8);
 	payload[0] = (uint32_t)path_len + 1;
-	memcpy(context->message + 3, context->g->render.drm_node_path,
+	memcpy(ctx->message + 3, ctx->g->render.drm_node_path,
 			(size_t)path_len);
-	uint32_t meth = (context->message[1] << 16) >> 16;
-	context->message[1] = meth | ((uint32_t)message_bytes << 16);
+	uint32_t meth = (ctx->message[1] << 16) >> 16;
+	ctx->message[1] = meth | ((uint32_t)message_bytes << 16);
 }
-static void request_wl_drm_create_prime_buffer(struct wl_client *client,
-		struct wl_resource *resource, uint32_t id, int32_t name,
-		int32_t width, int32_t height, uint32_t format, int32_t offset0,
-		int32_t stride0, int32_t offset1, int32_t stride1,
-		int32_t offset2, int32_t stride2)
+void do_wl_drm_req_create_prime_buffer(struct context *ctx,
+		struct wp_object *id, int name, int32_t width, int32_t height,
+		uint32_t format, int32_t offset0, int32_t stride0,
+		int32_t offset1, int32_t stride1, int32_t offset2,
+		int32_t stride2)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_buffer *buf =
-			(struct wp_buffer *)listset_get(context->obj_list, id);
+	struct wp_buffer *buf = (struct wp_buffer *)id;
 	struct dmabuf_slice_data info = {
 			.num_planes = 1,
 			.width = (uint32_t)width,
@@ -1100,8 +1016,8 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 		return;
 	}
 
-	struct shadow_fd *sfd = translate_fd(&context->g->map,
-			&context->g->render, name, FDC_DMABUF, 0, &info, false);
+	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render,
+			name, FDC_DMABUF, 0, &info, false);
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = 1;
 	buf->dmabuf_buffers[0] = shadow_incref_protocol(sfd);
@@ -1113,25 +1029,22 @@ static void request_wl_drm_create_prime_buffer(struct wl_client *client,
 	buf->dmabuf_strides[0] = (uint32_t)stride0;
 }
 
-static void event_zwp_linux_dmabuf_v1_modifier(void *data,
-		struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf_v1,
-		uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo)
+void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
+		uint32_t modifier_hi, uint32_t modifier_lo)
 {
-	struct context *context = get_context(data, zwp_linux_dmabuf_v1);
+
 	(void)format;
 	uint64_t modifier = modifier_hi * 0x100000000uL * modifier_lo;
 	// Prevent all advertisements for dmabufs with modifiers
-	if (modifier && context->g->config->linear_dmabuf) {
-		context->drop_this_msg = true;
+	if (modifier && ctx->g->config->linear_dmabuf) {
+		ctx->drop_this_msg = true;
 	}
 }
-static void event_zwp_linux_buffer_params_v1_created(void *data,
-		struct zwp_linux_buffer_params_v1 *zwp_linux_buffer_params_v1,
-		struct wl_buffer *buffer)
+void do_zwp_linux_buffer_params_v1_evt_created(
+		struct context *ctx, struct wp_object *buffer)
 {
-	struct context *context = get_context(data, zwp_linux_buffer_params_v1);
 	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)context->obj;
+			(struct wp_linux_dmabuf_params *)ctx->obj;
 	struct wp_buffer *buf = (struct wp_buffer *)buffer;
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = params->nplanes;
@@ -1153,14 +1066,12 @@ static void event_zwp_linux_buffer_params_v1_created(void *data,
 	buf->dmabuf_height = params->create_height;
 	buf->dmabuf_format = params->create_format;
 }
-static void request_zwp_linux_buffer_params_v1_add(struct wl_client *client,
-		struct wl_resource *resource, int32_t fd, uint32_t plane_idx,
-		uint32_t offset, uint32_t stride, uint32_t modifier_hi,
-		uint32_t modifier_lo)
+void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
+		uint32_t plane_idx, uint32_t offset, uint32_t stride,
+		uint32_t modifier_hi, uint32_t modifier_lo)
 {
-	struct context *context = get_context(client, resource);
 	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)context->obj;
+			(struct wp_linux_dmabuf_params *)ctx->obj;
 	if (params->nplanes != (int)plane_idx) {
 		wp_log(WP_ERROR,
 				"Expected sequentially assigned plane fds: got new_idx=%d != %d=nplanes",
@@ -1178,14 +1089,14 @@ static void request_zwp_linux_buffer_params_v1_add(struct wl_client *client,
 	params->add[plane_idx].modifier =
 			modifier_lo + modifier_hi * 0x100000000uL;
 	// Only perform rearrangement on the client side, for now
-	if (!context->on_display_side) {
+	if (!ctx->on_display_side) {
 		params->add[plane_idx].msg =
-				malloc((size_t)context->message_length);
-		memcpy(params->add[plane_idx].msg, context->message,
-				(size_t)context->message_length);
-		params->add[plane_idx].msg_len = context->message_length;
+				malloc((size_t)ctx->message_length);
+		memcpy(params->add[plane_idx].msg, ctx->message,
+				(size_t)ctx->message_length);
+		params->add[plane_idx].msg_len = ctx->message_length;
 
-		context->drop_this_msg = true;
+		ctx->drop_this_msg = true;
 	}
 }
 static int reintroduce_add_msgs(
@@ -1280,20 +1191,19 @@ static void deduplicate_dmabuf_fds(
 		params->add[i].fd = params->add[lowest].fd;
 	}
 }
-static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
-		struct wl_resource *resource, int32_t width, int32_t height,
-		uint32_t format, uint32_t flags)
+
+void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
+		int32_t width, int32_t height, uint32_t format, uint32_t flags)
 {
-	struct context *context = get_context(client, resource);
 	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)context->obj;
+			(struct wp_linux_dmabuf_params *)ctx->obj;
 	params->create_flags = flags;
 	params->create_width = width;
 	params->create_height = height;
 	params->create_format = format;
-	deduplicate_dmabuf_fds(context, params);
-	if (!context->on_display_side) {
-		reintroduce_add_msgs(context, params);
+	deduplicate_dmabuf_fds(ctx, params);
+	if (!ctx->on_display_side) {
+		reintroduce_add_msgs(ctx, params);
 	}
 	struct dmabuf_slice_data info = {.width = width,
 			.height = height,
@@ -1315,13 +1225,13 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 				info.modifier = params->add[k].modifier;
 			}
 		}
-		/* replace the format with something the driver can probably
-		 * handle */
+		/* replace the format with something the driver can
+		 * probably handle */
 		info.format = dmabuf_get_simple_format_for_plane(format, i);
 		bool try_video = params->nplanes == 1 &&
 				 video_supports_dmabuf_format(
 						 format, info.modifier) &&
-				 context->g->config->video_if_possible;
+				 ctx->g->config->video_if_possible;
 
 		size_t fdsz = 0;
 		fdcat_t fdtype = get_fd_type(params->add[i].fd, &fdsz);
@@ -1332,9 +1242,9 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 			continue;
 		}
 
-		struct shadow_fd *sfd = translate_fd(&context->g->map,
-				&context->g->render, params->add[i].fd,
-				FDC_DMABUF, 0, &info, try_video);
+		struct shadow_fd *sfd = translate_fd(&ctx->g->map,
+				&ctx->g->render, params->add[i].fd, FDC_DMABUF,
+				0, &info, try_video);
 		/* increment for each extra time this fd will be sent */
 		if (sfd->has_owner) {
 			shadow_incref_transfer(sfd);
@@ -1347,35 +1257,25 @@ static void request_zwp_linux_buffer_params_v1_create(struct wl_client *client,
 		params->add[i].fd = -1;
 	}
 }
-static void request_zwp_linux_buffer_params_v1_create_immed(
-		struct wl_client *client, struct wl_resource *resource,
-		uint32_t buffer_id, int32_t width, int32_t height,
+void do_zwp_linux_buffer_params_v1_req_create_immed(struct context *ctx,
+		struct wp_object *buffer_id, int32_t width, int32_t height,
 		uint32_t format, uint32_t flags)
 {
-	struct context *context = get_context(client, resource);
-	struct wp_buffer *buf = (struct wp_buffer *)listset_get(
-			context->obj_list, buffer_id);
-
 	// There isn't really that much unnecessary copying. Note that
 	// 'create' may modify messages
-	request_zwp_linux_buffer_params_v1_create(
-			(void *)context, NULL, width, height, format, flags);
-	event_zwp_linux_buffer_params_v1_created(
-			(void *)context, NULL, (void *)buf);
-	return;
+	do_zwp_linux_buffer_params_v1_req_create(
+			ctx, width, height, format, flags);
+	do_zwp_linux_buffer_params_v1_evt_created(ctx, buffer_id);
 }
 
-static void zwlr_export_dmabuf_frame_v1_frame(void *data,
-		struct zwlr_export_dmabuf_frame_v1 *zwlr_export_dmabuf_frame_v1,
+void do_zwlr_export_dmabuf_frame_v1_evt_frame(struct context *ctx,
 		uint32_t width, uint32_t height, uint32_t offset_x,
 		uint32_t offset_y, uint32_t buffer_flags, uint32_t flags,
 		uint32_t format, uint32_t mod_high, uint32_t mod_low,
 		uint32_t num_objects)
 {
-	struct context *context =
-			get_context(data, zwlr_export_dmabuf_frame_v1);
 	struct wp_export_dmabuf_frame *frame =
-			(struct wp_export_dmabuf_frame *)context->obj;
+			(struct wp_export_dmabuf_frame *)ctx->obj;
 
 	frame->width = width;
 	frame->height = height;
@@ -1393,15 +1293,12 @@ static void zwlr_export_dmabuf_frame_v1_frame(void *data,
 		frame->nobjects = MAX_DMABUF_PLANES;
 	}
 }
-static void zwlr_export_dmabuf_frame_v1_object(void *data,
-		struct zwlr_export_dmabuf_frame_v1 *zwlr_export_dmabuf_frame_v1,
-		uint32_t index, int32_t fd, uint32_t size, uint32_t offset,
+void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
+		uint32_t index, int fd, uint32_t size, uint32_t offset,
 		uint32_t stride, uint32_t plane_index)
 {
-	struct context *context =
-			get_context(data, zwlr_export_dmabuf_frame_v1);
 	struct wp_export_dmabuf_frame *frame =
-			(struct wp_export_dmabuf_frame *)context->obj;
+			(struct wp_export_dmabuf_frame *)ctx->obj;
 	if (index > frame->nobjects) {
 		wp_log(WP_ERROR, "Cannot add frame object with index %u >= %u",
 				index, frame->nobjects);
@@ -1417,8 +1314,8 @@ static void zwlr_export_dmabuf_frame_v1_object(void *data,
 	frame->objects[index].offset = offset;
 	frame->objects[index].stride = stride;
 
-	// for lack of a test program, we assume all dmabufs passed in here are
-	// distinct, and hence need no 'multiplane' adjustments
+	// for lack of a test program, we assume all dmabufs passed in
+	// here are distinct, and hence need no 'multiplane' adjustments
 	struct dmabuf_slice_data info = {.width = frame->width,
 			.height = frame->height,
 			.format = frame->format,
@@ -1444,8 +1341,8 @@ static void zwlr_export_dmabuf_frame_v1_object(void *data,
 		return;
 	}
 
-	struct shadow_fd *sfd = translate_fd(&context->g->map,
-			&context->g->render, fd, FDC_DMABUF, 0, &info, false);
+	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
+			FDC_DMABUF, 0, &info, false);
 	if (sfd->buffer_size < size) {
 		wp_log(WP_ERROR,
 				"Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
@@ -1458,15 +1355,13 @@ static void zwlr_export_dmabuf_frame_v1_object(void *data,
 	// in practice, index+1?
 	(void)plane_index;
 }
-static void zwlr_export_dmabuf_frame_v1_ready(void *data,
-		struct zwlr_export_dmabuf_frame_v1 *zwlr_export_dmabuf_frame_v1,
+void do_zwlr_export_dmabuf_frame_v1_evt_ready(struct context *ctx,
 		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
 {
-	struct context *context =
-			get_context(data, zwlr_export_dmabuf_frame_v1);
+
 	struct wp_export_dmabuf_frame *frame =
-			(struct wp_export_dmabuf_frame *)context->obj;
-	if (!context->on_display_side) {
+			(struct wp_export_dmabuf_frame *)ctx->obj;
+	if (!ctx->on_display_side) {
 		/* The client side does not update the buffer */
 		return;
 	}
@@ -1482,187 +1377,205 @@ static void zwlr_export_dmabuf_frame_v1_ready(void *data,
 		}
 	}
 }
-static void data_source_send(
-		void *data, void *noop, const char *mime_type, int32_t fd)
+static void translate_data_transfer_fd(struct context *context, int32_t fd)
 {
-	struct context *context = get_context(data, noop);
-	/* treat the fd as a one-way pipe, even if it has other properties */
+	/* treat the fd as a one-way pipe, even if it is e.g. a file or
+	 * socketpair, with additional properties. The fd being sent
+	 * around should be, according to the protocol, only written into and
+	 * closed */
 	translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE_IW, 0,
 			NULL, false);
+}
+void do_gtk_primary_selection_offer_req_receive(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
 	(void)mime_type;
 }
-static void data_offer_receive(struct wl_client *client,
-		struct wl_resource *resource, const char *mime_type, int32_t fd)
+void do_gtk_primary_selection_source_evt_send(
+		struct context *ctx, const char *mime_type, int fd)
 {
-	struct context *context = get_context(client, resource);
-	/* treat the fd as a one-way pipe, even if it is e.g. a file */
-	translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE_IW, 0,
-			NULL, false);
+	translate_data_transfer_fd(ctx, fd);
+	(void)mime_type;
+}
+void do_zwlr_data_control_offer_v1_req_receive(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
+	(void)mime_type;
+}
+void do_zwlr_data_control_source_v1_evt_send(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
+	(void)mime_type;
+}
+void do_wl_data_offer_req_receive(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
+	(void)mime_type;
+}
+void do_wl_data_source_evt_send(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
 	(void)mime_type;
 }
 
-static const struct wl_display_listener wl_display_event_handler = {
-		.error = event_wl_display_error,
-		.delete_id = event_wl_display_delete_id};
-static const struct wl_display_interface wl_display_request_handler = {
-		.get_registry = request_wl_display_get_registry,
-		.sync = request_wl_display_sync};
-static const struct wl_registry_listener wl_registry_event_handler = {
-		.global = event_wl_registry_global,
-		.global_remove = event_wl_registry_global_remove};
-static const struct wl_registry_interface wl_registry_request_handler = {
-		.bind = request_wl_registry_bind};
-static const struct wl_buffer_listener wl_buffer_event_handler = {
-		.release = event_wl_buffer_release};
-static const struct wl_surface_interface wl_surface_request_handler = {
-		.attach = request_wl_surface_attach,
-		.commit = request_wl_surface_commit,
-		.damage = request_wl_surface_damage,
-		.damage_buffer = request_wl_surface_damage_buffer,
-		.set_buffer_scale = request_wl_surface_set_buffer_scale,
-		.set_buffer_transform = request_wl_surface_set_buffer_transform,
+/* Q: embed this section and what follows into 'symgen'? */
+static const struct evt_map_wl_display wl_display_event_handler = {
+		.error = call_wl_display_evt_error,
+		.delete_id = call_wl_display_evt_delete_id};
+static const struct req_map_wl_display wl_display_request_handler = {
+		.get_registry = call_wl_display_req_get_registry,
+		.sync = call_wl_display_req_sync};
+static const struct evt_map_wl_registry wl_registry_event_handler = {
+		.global = call_wl_registry_evt_global,
+		.global_remove = call_wl_registry_evt_global_remove};
+static const struct req_map_wl_registry wl_registry_request_handler = {
+		.bind = call_wl_registry_req_bind};
+static const struct evt_map_wl_buffer wl_buffer_event_handler = {
+		.release = call_wl_buffer_evt_release};
+static const struct req_map_wl_surface wl_surface_request_handler = {
+		.attach = call_wl_surface_req_attach,
+		.commit = call_wl_surface_req_commit,
+		.damage = call_wl_surface_req_damage,
+		.damage_buffer = call_wl_surface_req_damage_buffer,
+		.set_buffer_scale = call_wl_surface_req_set_buffer_scale,
+		.set_buffer_transform =
+				call_wl_surface_req_set_buffer_transform,
 };
-static const struct wl_keyboard_listener wl_keyboard_event_handler = {
-		.keymap = event_wl_keyboard_keymap};
-static const struct wl_shm_interface wl_shm_request_handler = {
-		.create_pool = request_wl_shm_create_pool,
+static const struct evt_map_wl_keyboard wl_keyboard_event_handler = {
+		.keymap = call_wl_keyboard_evt_keymap};
+static const struct req_map_wl_shm wl_shm_request_handler = {
+		.create_pool = call_wl_shm_req_create_pool,
 };
-static const struct wl_shm_pool_interface wl_shm_pool_request_handler = {
-		.resize = request_wl_shm_pool_resize,
-		.create_buffer = request_wl_shm_pool_create_buffer,
+static const struct req_map_wl_shm_pool wl_shm_pool_request_handler = {
+		.resize = call_wl_shm_pool_req_resize,
+		.create_buffer = call_wl_shm_pool_req_create_buffer,
 };
-static const struct zwlr_screencopy_frame_v1_listener
+static const struct evt_map_zwlr_screencopy_frame_v1
 		zwlr_screencopy_frame_v1_event_handler = {
-				.ready = event_zwlr_screencopy_frame_v1_ready};
-static const struct zwlr_screencopy_frame_v1_interface
+				.ready = call_zwlr_screencopy_frame_v1_evt_ready};
+static const struct req_map_zwlr_screencopy_frame_v1
 		zwlr_screencopy_frame_v1_request_handler = {
-				.copy = request_zwlr_screencopy_frame_v1_copy};
-static const struct wp_presentation_listener wp_presentation_event_handler = {
-		.clock_id = event_wp_presentation_clock_id};
-static const struct wp_presentation_interface wp_presentation_request_handler =
-		{.feedback = request_wp_presentation_feedback};
-static const struct wp_presentation_feedback_listener
-		wp_presentation_feedback_event_handler = {
-				.presented = event_wp_presentation_feedback_presented};
-static const struct wl_drm_listener wl_drm_event_handler = {
-		.device = event_wl_drm_device};
-static const struct wl_drm_interface wl_drm_request_handler = {
-		/* the other 'create_buffer' methods require an authenticated
-		 * drm node, which we do never advertise */
-		.create_prime_buffer = request_wl_drm_create_prime_buffer};
-static const struct zwp_linux_dmabuf_v1_listener
-		zwp_linux_dmabuf_v1_event_handler = {
-				.modifier = event_zwp_linux_dmabuf_v1_modifier};
-static const struct zwp_linux_buffer_params_v1_listener
+				.copy = call_zwlr_screencopy_frame_v1_req_copy};
+static const struct evt_map_wp_presentation wp_presentation_event_handler = {
+		.clock_id = call_wp_presentation_evt_clock_id};
+static const struct req_map_wp_presentation wp_presentation_request_handler = {
+		.feedback = call_wp_presentation_req_feedback};
+static const struct evt_map_wp_presentation_feedback wp_presentation_feedback_event_handler =
+		{.presented = call_wp_presentation_feedback_evt_presented};
+static const struct evt_map_wl_drm wl_drm_event_handler = {
+		.device = call_wl_drm_evt_device};
+static const struct req_map_wl_drm wl_drm_request_handler = {
+		/* the other 'create_buffer' methods require an
+		 * authenticated drm node, which we do never advertise
+		 */
+		.create_prime_buffer = call_wl_drm_req_create_prime_buffer};
+static const struct evt_map_zwp_linux_dmabuf_v1 zwp_linux_dmabuf_v1_event_handler =
+		{.modifier = call_zwp_linux_dmabuf_v1_evt_modifier};
+static const struct evt_map_zwp_linux_buffer_params_v1
 		zwp_linux_buffer_params_v1_event_handler = {
-				.created = event_zwp_linux_buffer_params_v1_created};
-static const struct zwp_linux_buffer_params_v1_interface
+				.created = call_zwp_linux_buffer_params_v1_evt_created};
+static const struct req_map_zwp_linux_buffer_params_v1
 		zwp_linux_buffer_params_v1_request_handler = {
-				.add = request_zwp_linux_buffer_params_v1_add,
-				.create = request_zwp_linux_buffer_params_v1_create,
-				.create_immed = request_zwp_linux_buffer_params_v1_create_immed,
+				.add = call_zwp_linux_buffer_params_v1_req_add,
+				.create = call_zwp_linux_buffer_params_v1_req_create,
+				.create_immed = call_zwp_linux_buffer_params_v1_req_create_immed,
 };
-static const struct zwlr_export_dmabuf_frame_v1_listener
+static const struct evt_map_zwlr_export_dmabuf_frame_v1
 		zwlr_export_dmabuf_frame_v1_event_handler = {
-				.frame = zwlr_export_dmabuf_frame_v1_frame,
-				.object = zwlr_export_dmabuf_frame_v1_object,
-				.ready = zwlr_export_dmabuf_frame_v1_ready,
+				.frame = call_zwlr_export_dmabuf_frame_v1_evt_frame,
+				.object = call_zwlr_export_dmabuf_frame_v1_evt_object,
+				.ready = call_zwlr_export_dmabuf_frame_v1_evt_ready,
 };
-typedef void (*zwlr_data_control_source_v1_send_t)(void *,
-		struct zwlr_data_control_source_v1 *, const char *, int32_t);
-static const struct zwlr_data_control_source_v1_listener
+static const struct evt_map_zwlr_data_control_source_v1
 		zwlr_data_control_source_v1_event_handler = {
-				.send = (zwlr_data_control_source_v1_send_t)
-						data_source_send};
-typedef void (*gtk_primary_selection_source_send_t)(void *,
-		struct gtk_primary_selection_source *, const char *, int32_t);
-static const struct gtk_primary_selection_source_listener
+				.send = call_zwlr_data_control_source_v1_evt_send};
+static const struct evt_map_gtk_primary_selection_source
 		gtk_primary_selection_source_event_handler = {
-				.send = (gtk_primary_selection_source_send_t)
-						data_source_send};
-typedef void (*wl_data_source_send_t)(
-		void *, struct wl_data_source *, const char *, int32_t);
-static const struct wl_data_source_listener wl_data_source_event_handler = {
-		.send = (wl_data_source_send_t)data_source_send};
-static const struct zwlr_data_control_offer_v1_interface
+				.send = call_gtk_primary_selection_source_evt_send};
+static const struct evt_map_wl_data_source wl_data_source_event_handler = {
+		.send = call_wl_data_source_evt_send};
+static const struct req_map_zwlr_data_control_offer_v1
 		zwlr_data_control_offer_v1_request_handler = {
-				.receive = data_offer_receive};
-static const struct gtk_primary_selection_offer_interface
+				.receive = call_zwlr_data_control_offer_v1_req_receive};
+static const struct req_map_gtk_primary_selection_offer
 		gtk_primary_selection_offer_request_handler = {
-				.receive = data_offer_receive};
-static const struct wl_data_offer_interface wl_data_offer_request_handler = {
-		.receive = data_offer_receive};
+				.receive = call_gtk_primary_selection_offer_req_receive};
+static const struct req_map_wl_data_offer wl_data_offer_request_handler = {
+		.receive = call_wl_data_offer_req_receive};
 
 const struct msg_handler handlers[] = {
-		{&wl_display_interface, &wl_display_event_handler,
+		{&intf_wl_display, &wl_display_event_handler,
 				&wl_display_request_handler},
-		{&wl_registry_interface, &wl_registry_event_handler,
+		{&intf_wl_registry, &wl_registry_event_handler,
 				&wl_registry_request_handler},
-		{&wl_buffer_interface, &wl_buffer_event_handler, NULL},
-		{&wl_surface_interface, NULL, &wl_surface_request_handler},
-		{&wl_keyboard_interface, &wl_keyboard_event_handler, NULL},
-		{&zwlr_screencopy_frame_v1_interface,
+		{&intf_wl_buffer, &wl_buffer_event_handler, NULL},
+		{&intf_wl_surface, NULL, &wl_surface_request_handler},
+		{&intf_wl_keyboard, &wl_keyboard_event_handler, NULL},
+		{&intf_zwlr_screencopy_frame_v1,
 				&zwlr_screencopy_frame_v1_event_handler,
 				&zwlr_screencopy_frame_v1_request_handler},
-		{&wp_presentation_feedback_interface,
+		{&intf_wp_presentation_feedback,
 				&wp_presentation_feedback_event_handler, NULL},
-		{&zwp_linux_buffer_params_v1_interface,
+		{&intf_zwp_linux_buffer_params_v1,
 				&zwp_linux_buffer_params_v1_event_handler,
 				&zwp_linux_buffer_params_v1_request_handler},
-		{&zwlr_export_dmabuf_frame_v1_interface,
+		{&intf_zwlr_export_dmabuf_frame_v1,
 				&zwlr_export_dmabuf_frame_v1_event_handler,
 				NULL},
 
-		/* Copy-paste protocol handlers, handled near identically */
-		{&zwlr_data_control_offer_v1_interface, NULL,
+		/* Copy-paste protocol handlers, handled near
+		   identically */
+		{&intf_zwlr_data_control_offer_v1, NULL,
 				&zwlr_data_control_offer_v1_request_handler},
-		{&gtk_primary_selection_offer_interface, NULL,
+		{&intf_gtk_primary_selection_offer, NULL,
 				&gtk_primary_selection_offer_request_handler},
-		{&wl_data_offer_interface, NULL,
-				&wl_data_offer_request_handler},
+		{&intf_wl_data_offer, NULL, &wl_data_offer_request_handler},
 
-		{&zwlr_data_control_source_v1_interface,
+		{&intf_zwlr_data_control_source_v1,
 				&zwlr_data_control_source_v1_event_handler,
 				NULL},
-		{&gtk_primary_selection_source_interface,
+		{&intf_gtk_primary_selection_source,
 				&gtk_primary_selection_source_event_handler,
 				NULL},
-		{&wl_data_source_interface, &wl_data_source_event_handler,
-				NULL},
+		{&intf_wl_data_source, &wl_data_source_event_handler, NULL},
 
-		/* List all other known global object interface types, so
-		 * that the parsing code can identify all fd usages */
+		/* List all other known global object interface types,
+		 * so that the parsing code can identify all fd usages
+		 */
 		// wayland
-		{&wl_compositor_interface, NULL, NULL},
-		{&wl_subcompositor_interface, NULL, NULL},
-		{&wl_data_device_manager_interface, NULL, NULL},
-		{&wl_shm_interface, NULL, &wl_shm_request_handler},
-		{&wl_shm_pool_interface, NULL, &wl_shm_pool_request_handler},
-		{&wl_seat_interface, NULL, NULL},
-		{&wl_output_interface, NULL, NULL},
+		{&intf_wl_compositor, NULL, NULL},
+		{&intf_wl_subcompositor, NULL, NULL},
+		{&intf_wl_data_device_manager, NULL, NULL},
+		{&intf_wl_shm, NULL, &wl_shm_request_handler},
+		{&intf_wl_shm_pool, NULL, &wl_shm_pool_request_handler},
+		{&intf_wl_seat, NULL, NULL}, {&intf_wl_output, NULL, NULL},
 		// xdg-shell
-		{&xdg_wm_base_interface, NULL, NULL},
+		{&intf_xdg_wm_base, NULL, NULL},
 		// presentation-time
-		{&wp_presentation_interface, &wp_presentation_event_handler,
+		{&intf_wp_presentation, &wp_presentation_event_handler,
 				&wp_presentation_request_handler},
 		// gtk-primary-selection
-		{&gtk_primary_selection_device_manager_interface, NULL, NULL},
+		{&intf_gtk_primary_selection_device_manager, NULL, NULL},
 		// virtual-keyboard
-		{&zwp_virtual_keyboard_manager_v1_interface, NULL, NULL},
+		{&intf_zwp_virtual_keyboard_manager_v1, NULL, NULL},
 		// input-method
-		{&zwp_input_method_manager_v2_interface, NULL, NULL},
+		{&intf_zwp_input_method_manager_v2, NULL, NULL},
 		// linux-dmabuf
-		{&zwp_linux_dmabuf_v1_interface,
-				&zwp_linux_dmabuf_v1_event_handler, NULL},
+		{&intf_zwp_linux_dmabuf_v1, &zwp_linux_dmabuf_v1_event_handler,
+				NULL},
 		// screencopy-manager
-		{&zwlr_screencopy_manager_v1_interface, NULL, NULL},
+		{&intf_zwlr_screencopy_manager_v1, NULL, NULL},
 		// wayland-drm
-		{&wl_drm_interface, &wl_drm_event_handler,
-				&wl_drm_request_handler},
+		{&intf_wl_drm, &wl_drm_event_handler, &wl_drm_request_handler},
 		// wlr-export-dmabuf
-		{&zwlr_export_dmabuf_manager_v1_interface, NULL, NULL},
+		{&intf_zwlr_export_dmabuf_manager_v1, NULL, NULL},
 		// wlr-export-dmabuf
-		{&zwlr_data_control_manager_v1_interface, NULL, NULL},
+		{&intf_zwlr_data_control_manager_v1, NULL, NULL},
 
 		{NULL, NULL, NULL}};
-const struct wl_interface *the_display_interface = &wl_display_interface;
+const struct wp_interface *the_display_interface = &intf_wl_display;

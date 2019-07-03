@@ -353,8 +353,9 @@ struct transfer {
 	struct bytebuf *subtransfers;
 };
 
+struct wp_interface;
 struct msg_handler {
-	const struct wl_interface *interface;
+	const struct wp_interface *interface;
 	// these are structs packed densely with function pointers
 	const void *event_handlers;
 	const void *request_handlers;
@@ -362,7 +363,7 @@ struct msg_handler {
 struct wp_object {
 	/* An object used by the wayland protocol. Specific types may extend
 	 * this struct, using the following data as a header */
-	const struct wl_interface *type; // Use to lookup the message handler
+	const struct wp_interface *type; // Use to lookup the message handler
 	uint32_t obj_id;
 	bool is_zombie; // object deleted but not yet acknowledged remotely
 };
@@ -377,14 +378,6 @@ struct message_tracker {
 	// creating a new type <-> binding it in the 'interface' list, via
 	// registry. each type produces 'callbacks'
 	struct obj_list objects;
-
-	// Precomputed signatures for active functions. The arg table contains
-	// a concatenated list of all argument type signature vectors. The
-	// request/event cache elements are vectors of ffi_cif types
-	void *cif_arg_table;
-	void *cif_table;
-	void **event_cif_cache;
-	void **request_cif_cache;
 };
 struct context {
 	struct globals *const g;
@@ -542,13 +535,12 @@ enum parse_state handle_message(struct globals *g, bool on_display_side,
 		struct int_window *fds);
 
 // handlers.c
-struct wl_interface;
 struct wp_object *create_wp_object(
-		uint32_t it, const struct wl_interface *type);
+		uint32_t it, const struct wp_interface *type);
 void destroy_wp_object(
 		struct fd_translation_map *map, struct wp_object *object);
 extern const struct msg_handler handlers[];
-extern const struct wl_interface *the_display_interface;
+extern const struct wp_interface *the_display_interface;
 
 // dmabuf.c
 

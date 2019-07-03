@@ -25,9 +25,7 @@
 
 #include "util.h"
 
-#include <ffi.h>
-#include <wayland-util.h>
-
+#include <protocols/symgen_types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,111 +107,11 @@ struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
 	}
 	return NULL;
 }
-
-static int count_num_args(const struct wl_message *msg)
+struct wp_object *get_object(struct message_tracker *mt, uint32_t id,
+		const struct wp_interface *intf)
 {
-	int n = 0;
-	for (const char *c = msg->signature; *c; c++) {
-		n += (strchr("afhionsu", *c) != NULL);
-	}
-	return n;
-}
-static int count_subhandler_call_types(
-		int n, const void *fns, const struct wl_message *msgs)
-{
-	int m = 0;
-	for (int k = 0; k < n; k++) {
-		void (*fn)(void) = ((void (*const *)(void))fns)[k];
-		if (!fn) {
-			continue;
-		}
-		m += count_num_args(&msgs[k]) + 2;
-	}
-	return m;
-}
-static int compute_num_call_types(int *nhandlers, int *nfunctions)
-{
-	int num_call_types = 0;
-	int i = 0;
-	int nfuncs = 0;
-	for (; handlers[i].interface; i++) {
-		// todo: modify generator produce symmetric tables with no
-		// event/req distinction
-		const struct msg_handler *handler = &handlers[i];
-		if (handler->event_handlers) {
-			num_call_types += count_subhandler_call_types(
-					handler->interface->event_count,
-					handler->event_handlers,
-					handler->interface->events);
-			nfuncs += handler->interface->event_count;
-		}
-		if (handler->request_handlers) {
-			num_call_types += count_subhandler_call_types(
-					handler->interface->method_count,
-					handler->request_handlers,
-					handler->interface->methods);
-			nfuncs += handler->interface->method_count;
-		}
-	}
-	*nhandlers = i;
-	*nfunctions = nfuncs;
-	return num_call_types;
-}
-static int setup_subhandler_cif(int n, const void *fns,
-		const struct wl_message *msgs, int *i_types, ffi_type **types,
-		ffi_cif *cifs, bool is_event)
-{
-	int nused = 0;
-	for (int k = 0; k < n; k++) {
-		void (*fn)(void) = ((void (*const *)(void))fns)[k];
-		if (!fn) {
-			continue;
-		}
-		ffi_type **type_offset = &types[*i_types];
-
-		/* The first two types are reserved here for &context,NULL */
-		types[(*i_types)++] = &ffi_type_pointer;
-		types[(*i_types)++] = &ffi_type_pointer;
-
-		int nargs = count_num_args(&msgs[k]);
-		for (const char *c = msgs[k].signature; *c; c++) {
-			switch (*c) {
-			case 'a':
-				types[(*i_types)++] = &ffi_type_pointer;
-				break;
-			case 'f':
-				types[(*i_types)++] = &ffi_type_sint32;
-				break;
-			case 'h':
-				types[(*i_types)++] = &ffi_type_sint32;
-				break;
-			case 'i':
-				types[(*i_types)++] = &ffi_type_sint32;
-				break;
-			case 'o':
-				types[(*i_types)++] = &ffi_type_pointer;
-				break;
-			case 'n':
-				types[(*i_types)++] =
-						is_event ? &ffi_type_pointer
-							 : &ffi_type_uint32;
-				break;
-			case 's':
-				types[(*i_types)++] = &ffi_type_pointer;
-				break;
-			case 'u':
-				types[(*i_types)++] = &ffi_type_uint32;
-				break;
-			default:
-				break;
-			}
-		}
-		ffi_prep_cif(&cifs[k], FFI_DEFAULT_ABI,
-				(unsigned int)(nargs + 2), &ffi_type_void,
-				type_offset);
-		nused++;
-	}
-	return nused;
+	(void)intf;
+	return listset_get(&mt->objects, id);
 }
 
 void init_message_tracker(struct message_tracker *mt)
@@ -222,50 +120,6 @@ void init_message_tracker(struct message_tracker *mt)
 
 	listset_insert(NULL, &mt->objects,
 			create_wp_object(1, the_display_interface));
-
-	/* Precompute the ffi_cif structures, as ffi_prep_cif takes about as
-	 * much time as ffi_call_cif,
-	 * and for dense (i.e, damage heavy) message streams both are called
-	 * /very/ often */
-	int nhandlers = 0;
-	int nfunctions = 0;
-	int num_call_types = compute_num_call_types(&nhandlers, &nfunctions);
-	mt->cif_arg_table = calloc((size_t)num_call_types, sizeof(ffi_type *));
-	mt->cif_table = calloc((size_t)nfunctions, sizeof(ffi_cif));
-	mt->event_cif_cache = calloc((size_t)nhandlers, sizeof(ffi_cif *));
-	mt->request_cif_cache = calloc((size_t)nhandlers, sizeof(ffi_cif *));
-
-	ffi_cif *cif_table = mt->cif_table;
-	int i_calltypes = 0;
-	int i_functions = 0;
-	int k = 0;
-	for (int i_handler = 0; handlers[i_handler].interface; i_handler++) {
-		const struct msg_handler *handler = &handlers[i_handler];
-		if (handler->event_handlers) {
-			ffi_cif **cache = (ffi_cif **)mt->event_cif_cache;
-			k += setup_subhandler_cif(
-					handler->interface->event_count,
-					handler->event_handlers,
-					handler->interface->events,
-					&i_calltypes, mt->cif_arg_table,
-					&cif_table[i_functions], true);
-			cache[i_handler] = &cif_table[i_functions];
-			i_functions += handler->interface->event_count;
-		}
-		if (handler->request_handlers) {
-			ffi_cif **cache = (ffi_cif **)mt->request_cif_cache;
-			k += setup_subhandler_cif(
-					handler->interface->method_count,
-					handler->request_handlers,
-					handler->interface->methods,
-					&i_calltypes, mt->cif_arg_table,
-					&cif_table[i_functions], false);
-			cache[i_handler] = &cif_table[i_functions];
-			i_functions += handler->interface->method_count;
-		}
-	}
-	wp_log(WP_DEBUG, "Set up %d ffi functions, with %d types total", k,
-			i_calltypes);
 }
 void cleanup_message_tracker(
 		struct fd_translation_map *map, struct message_tracker *mt)
@@ -274,13 +128,9 @@ void cleanup_message_tracker(
 		destroy_wp_object(map, mt->objects.objs[i]);
 	}
 	free(mt->objects.objs);
-	free(mt->cif_table);
-	free(mt->cif_arg_table);
-	free(mt->event_cif_cache);
-	free(mt->request_cif_cache);
 }
 
-static int get_handler_idx_for_interface(const struct wl_interface *intf)
+static int get_handler_idx_for_interface(const struct wp_interface *intf)
 {
 	for (int i = 0; handlers[i].interface; i++) {
 		if (handlers[i].interface == intf) {
@@ -290,221 +140,74 @@ static int get_handler_idx_for_interface(const struct wl_interface *intf)
 	return -1;
 }
 
-struct uarg {
-	union {
-		uint32_t ui;
-		int32_t si;
-		const char *str;
-		struct wp_object *obj;
-		wl_fixed_t fxd; // from wayland-util.h
-		struct {
-			struct wl_array *arrptr;
-			struct wl_array arr; // from wayland-util.h
-		};
-	};
-};
-
-/* Parse the message payload and apply it to a function, creating new objects
- * and consuming fds */
-void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
-		const struct wl_message *msg, bool is_event,
-		const uint32_t *const payload, const int paylen,
-		const int *const fd_list, const int fdlen, int *fds_used,
-		void (*const func)(void), struct context *ctx,
-		struct message_tracker *mt, struct fd_translation_map *map)
+static bool word_has_empty_bytes(uint32_t v)
 {
-	/* The types to match these arguments are set up once in
-	 * `setup_subhandler_cif` */
-	void *call_args_ptr[30];
-	if (strlen(msg->signature) > 30) {
-		wp_log(WP_ERROR, "Overly long signature for %s.%s: %s",
-				intf->name, msg->name, msg->signature);
+	return ((v & 0xFF) == 0) || ((v & 0xFF00) == 0) ||
+	       ((v & 0xFF0000) == 0) || ((v & 0xFF000000) == 0);
+}
+
+static bool size_check(const struct msg_data *data, const uint32_t *payload,
+		int true_length, int fd_length)
+{
+	if (data->n_fds > fd_length) {
+		wp_log(WP_ERROR, "Msg overflow, not enough fds %d > %d",
+				data->n_fds, fd_length);
+		return false;
 	}
-	struct uarg call_args_val[30];
-	void *nullptr = NULL;
-	void *addr_of_ctx = ctx;
-	call_args_ptr[0] = &addr_of_ctx;
-	call_args_ptr[1] = &nullptr;
-	int nargs = 2;
 
-	int i = 0;                      // index in message
-	int k = 0;                      // current argument index
-	const char *c = msg->signature; // current argument value
+	int len = data->base_gap;
+	if (len > true_length) {
+		wp_log(WP_ERROR, "Msg overflow, not enough words %d > %d", len,
+				true_length);
+		return false;
+	}
 
-	for (; *c; c++, k++) {
-		// Skip over version specifications, and over null object
-		// permission flags
-		while ((*c >= '0' && *c <= '9') || *c == '?') {
-			c++;
+	for (int i = 0; i < data->n_stretch; i++) {
+		int x_words = (payload[len - 1] + 3) / 4;
+		/* string termination validation */
+		if (data->stretch_is_string[i] && x_words) {
+			if (len <= true_length &&
+					!word_has_empty_bytes(
+							payload[len + x_words -
+									1])) {
+				wp_log(WP_ERROR,
+						"Msg overflow, string termination %d < %d, %d, %x %d",
+						len, true_length, x_words,
+						payload[len + x_words - 1],
+						word_has_empty_bytes(payload[len +
+									     x_words -
+									     1]));
+				return false;
+			}
 		}
-		if (!*c) {
-			break;
+		len += x_words;
+		len += data->trail_gap[i];
+		if (len > true_length) {
+			wp_log(WP_ERROR, "Msg overflow, post string %d %d > %d",
+					i, len, true_length);
+			return false;
 		}
-		switch (*c) {
-		case 'a': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			uint32_t len = payload[i++];
-			int reqd_len = i + ((int)len + 3) / 4;
-			if (reqd_len > paylen) {
-				goto len_overflow;
-			}
+	}
+	return true;
+}
 
-			// pass in pointer
-			call_args_val[nargs].arr.data = (void *)&payload[i];
-			call_args_val[nargs].arr.size = len;
-			// fixed allocation. waypipe won't reallocate anyway
-			call_args_val[nargs].arr.alloc = (size_t)-1;
-			call_args_ptr[nargs] = &call_args_val[nargs].arr;
-			i += ((len + 3) / 4);
-		} break;
-		case 'h': {
-			if (*fds_used >= fdlen) {
-				goto fd_overflow;
-			}
-			call_args_val[nargs].si = fd_list[(*fds_used)++];
-			call_args_ptr[nargs] = &call_args_val[nargs].si;
-			nargs++;
-		} break;
-		case 'f': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			wl_fixed_t v = *((const wl_fixed_t *)&payload[i++]);
-			call_args_val[nargs].fxd = v;
-			call_args_ptr[nargs] = &call_args_val[nargs].fxd;
-			nargs++;
-		} break;
-		case 'i': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			int32_t v = (int32_t)payload[i++];
-			call_args_val[nargs].si = v;
-			call_args_ptr[nargs] = &call_args_val[nargs].si;
-			nargs++;
-		} break;
-		case 'o': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			uint32_t id = payload[i++];
-			struct wp_object *lo = listset_get(&mt->objects, id);
-			// May always be null, in case client messes up
-			call_args_val[nargs].obj = lo;
-			call_args_ptr[nargs] = &call_args_val[nargs].obj;
-			nargs++;
-
-		} break;
-		case 'n': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			uint32_t v = payload[i++];
-			/* We create the object unconditionally, although
-			 * while server requests are handled with the object id,
-			 * the client's events are fed the object pointer. */
-			struct wp_object *new_obj =
-					create_wp_object(v, msg->types[k]);
+static void build_new_objects(const struct msg_data *data,
+		const uint32_t *payload, struct fd_translation_map *map,
+		struct message_tracker *mt)
+{
+	int pos = 0;
+	int gap_no = 0;
+	for (int k = 0; k < data->new_vec_len; k++) {
+		if (data->new_obj_idxs[k] == -1) {
+			pos += gap_no == 0 ? data->base_gap
+					   : data->trail_gap[gap_no - 1];
+			pos += (payload[pos - 1] + 3) / 4;
+		} else {
+			struct wp_object *new_obj = create_wp_object(
+					payload[pos + data->new_obj_idxs[k]],
+					data->new_obj_types[k]);
 			listset_insert(map, &mt->objects, new_obj);
-
-			if (ctx->obj->is_zombie) {
-				/* todo: handle misc data ? */
-				new_obj->is_zombie = true;
-			}
-
-			if (is_event) {
-				call_args_val[nargs].obj = new_obj;
-				call_args_ptr[nargs] =
-						&call_args_val[nargs].obj;
-				nargs++;
-			} else {
-				call_args_val[nargs].ui = new_obj->obj_id;
-				call_args_ptr[nargs] = &call_args_val[nargs].ui;
-				nargs++;
-			}
-		} break;
-		case 's': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			uint32_t len = payload[i++];
-			int reqd_len = i + ((int)len + 3) / 4;
-			if (reqd_len > paylen) {
-				goto len_overflow;
-			}
-			const char *str = (const char *)&payload[i];
-			call_args_val[nargs].str = str;
-			call_args_ptr[nargs] = &call_args_val[nargs].str;
-			nargs++;
-
-			i += ((len + 3) / 4);
-		} break;
-		case 'u': {
-			if (i >= paylen) {
-				goto len_overflow;
-			}
-			uint32_t v = payload[i++];
-			call_args_val[nargs].ui = v;
-			call_args_ptr[nargs] = &call_args_val[nargs].ui;
-			nargs++;
-		} break;
-
-		default:
-			wp_log(WP_DEBUG,
-					"For %s@%u.%s, unidentified argument type %c",
-					intf->name, ctx->obj->obj_id, msg->name,
-					*c);
-			break;
 		}
-
-		continue;
-		const char *overflow_type = NULL;
-	len_overflow:
-		overflow_type = "byte";
-		goto overflow;
-	fd_overflow:
-		overflow_type = "fd";
-	overflow:
-		wp_log(WP_ERROR,
-				"Message %x %s@%u.%s parse length overflow (for %ss), bytes=%d/%d, fds=%d/%d, c=%c",
-				payload, intf->name, ctx->obj->obj_id,
-				msg->name, overflow_type, 4 * i, 4 * paylen,
-				*fds_used, fdlen, *c);
-		return;
-	}
-	if (i != paylen) {
-		wp_log(WP_ERROR,
-				"Parse error length mismatch for %s.%s: used %d expected %d",
-				intf->name, msg->name, i * 4, paylen * 4);
-	}
-
-	if (func) {
-		ffi_call(cif, func, NULL, call_args_ptr);
-	}
-
-	if (ctx->obj->obj_id >= 0xff000000 && !strcmp(msg->name, "destroy")) {
-		/* Unfortunately, the wayland server library does not explicitly
-		 * acknowledge the client requested deletion of objects that the
-		 * wayland server has created; the client assumes success,
-		 * except by creating a new object that overrides the existing
-		 * id.
-		 *
-		 * To correctly vanish all events in flight, we mark the element
-		 * as having been zombified; it will only be destroyed when a
-		 * new element is created to take its place, since there could
-		 * still be e.g. data transfers in the channel, and it's best
-		 * that those only vanish when needed.
-		 *
-		 * TODO: early struct shadow_fd closure for all deletion
-		 * requests, with a matching zombie flag to vanish transfers;
-		 *
-		 * TODO: avert the zombie apocalypse, where the compositor
-		 * sends creation notices for a full hierarchy of objects
-		 * before it receives the root's .destroy request.
-		 */
-		ctx->obj->is_zombie = true;
 	}
 }
 
@@ -536,24 +239,15 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		return PARSE_UNKNOWN;
 	}
 
-	const struct wl_interface *intf = objh->type;
-	const struct wl_message *msg = NULL;
-	if (from_client) {
-		if (meth < intf->method_count && meth >= 0) {
-			msg = &intf->methods[meth];
-		} else {
-			wp_log(WP_DEBUG,
-					"Unidentified request #%d (of %d) on interface %s",
-					meth, intf->method_count, intf->name);
-		}
+	const struct wp_interface *intf = objh->type;
+	int type_idx = from_client ? 0 : 1;
+	const struct msg_data *msg = NULL;
+	if (meth < intf->nfuncs[type_idx] && meth >= 0) {
+		msg = &intf->funcs[type_idx][meth];
 	} else {
-		if (meth < intf->event_count && meth >= 0) {
-			msg = &intf->events[meth];
-		} else {
-			wp_log(WP_ERROR,
-					"Unidentified event #%d on interface %s",
-					meth, intf->name);
-		}
+		wp_log(WP_DEBUG,
+				"Unidentified request #%d (of %d) on interface %s",
+				meth, intf->nfuncs[type_idx], intf->name);
 	}
 	if (!msg) {
 		wp_log(WP_DEBUG, "Unidentified %s from known object",
@@ -562,25 +256,25 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	const int handler_idx = get_handler_idx_for_interface(objh->type);
-	void (*fn)(void) = NULL;
-	ffi_cif *cif = NULL;
+	wp_callfn_t call_fn = NULL;
 	if (handler_idx >= 0) {
 		const struct msg_handler *handler = &handlers[handler_idx];
-		if (from_client && handler->request_handlers) {
-			fn = ((void (*const *)(
-					void))handler->request_handlers)[meth];
-			ffi_cif *cif_list = g->tracker.request_cif_cache
-							    [handler_idx];
-			cif = &cif_list[meth];
-		}
-		if (!from_client && handler->event_handlers) {
-			fn = ((void (*const *)(
-					void))handler->event_handlers)[meth];
-			ffi_cif *cif_list =
-					g->tracker.event_cif_cache[handler_idx];
-			cif = &cif_list[meth];
+		const void *funcs = from_client ? handler->request_handlers
+						: handler->event_handlers;
+		if (funcs) {
+			call_fn = ((const wp_callfn_t *)funcs)[meth];
 		}
 	}
+
+	const uint32_t *payload = header + 2;
+	if (!size_check(msg, payload, len / 4 - 2,
+			    fds->zone_end - fds->zone_start)) {
+		wp_log(WP_ERROR, "Message %x %s@%u.%s parse length overflow",
+				payload, intf->name, objh->obj_id, msg->name);
+		return PARSE_UNKNOWN;
+	}
+
+	build_new_objects(msg, payload, &g->map, &g->tracker);
 
 	int fds_used = 0;
 	struct context ctx = {
@@ -596,11 +290,38 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 			.fds = fds,
 			.fds_changed = false,
 	};
-	const uint32_t *payload = ctx.message + 2;
-	invoke_msg_handler(cif, intf, msg, !from_client, payload, len / 4 - 2,
-			&fds->data[fds->zone_start],
-			fds->zone_end - fds->zone_start, &fds_used, fn, &ctx,
-			&g->tracker, &g->map);
+	if (call_fn) {
+		(*call_fn)(&ctx, payload, &fds->data[fds->zone_start],
+				&g->tracker);
+	}
+	fds_used += msg->n_fds;
+
+	if (objh->obj_id >= 0xff000000 && !strcmp(msg->name, "destroy")) {
+		/* Unfortunately, the wayland server library does not explicitly
+		 * acknowledge the client requested deletion of objects that the
+		 * wayland server has created; the client assumes success,
+		 * except by creating a new object that overrides the existing
+		 * id.
+		 *
+		 * To correctly vanish all events in flight, we mark the element
+		 * as having been zombified; it will only be destroyed when a
+		 * new element is created to take its place, since there could
+		 * still be e.g. data transfers in the channel, and it's best
+		 * that those only vanish when needed.
+		 *
+		 * Fortunately, wl_registry::bind objects are all client
+		 * produced.
+		 *
+		 * TODO: early struct shadow_fd closure for all deletion
+		 * requests, with a matching zombie flag to vanish transfers;
+		 *
+		 * TODO: avert the zombie apocalypse, where the compositor
+		 * sends creation notices for a full hierarchy of objects
+		 * before it receives the root's .destroy request.
+		 */
+		objh->is_zombie = true;
+	}
+
 	if (ctx.drop_this_msg) {
 		wp_log(WP_DEBUG, "Dropping %s.%s, with %d fds", intf->name,
 				msg->name, fds_used);

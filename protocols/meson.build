@@ -1,7 +1,16 @@
-wl_protocol_dir = wayland_protos.get_pkgconfig_variable('pkgdatadir')
-wayland_dir = wayland_client.get_pkgconfig_variable('pkgdatadir')
 
-wayland_scanner_prog = find_program(wayland_scanner.get_pkgconfig_variable('wayland_scanner'))
+# todo: make function list dependency explicit
+
+gen_path = join_paths(meson.current_source_dir(), 'symgen.py')
+fn_list = join_paths(meson.current_source_dir(), 'function_list.txt')
+
+wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
+wayland_dep = dependency('wayland-client', required: false)
+if not wayland_dep.found()
+	wayland_dep = dependency('wayland-server', required: true)
+endif
+wayland_dir = wayland_dep.get_pkgconfig_variable('pkgdatadir')
+wl_protocol_dir = wayland_protos.get_pkgconfig_variable('pkgdatadir')
 
 protocols = [
 	wayland_dir + '/wayland.xml',
@@ -19,24 +28,19 @@ protocols = [
 
 protocols_src = []
 protocols_headers = []
+protocols_headers += configure_file(input: 'symgen_types.h', copy: true, output: 'symgen_types.h')
 foreach xml : protocols
 	protocols_src += custom_target(
 		'@0@ code'.format(xml.underscorify()),
 		output: '@BASENAME@-data.c',
 		input: xml,
-		command: [wayland_scanner_prog, 'private-code', '@INPUT@', '@OUTPUT@'],
+		command: [python3, gen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 	protocols_headers += custom_target(
 		'@0@ client-header'.format(xml.underscorify()),
-		output: '@BASENAME@-client-defs.h',
+		output: '@BASENAME@-defs.h',
 		input: xml,
-		command: [wayland_scanner_prog, 'client-header', '@INPUT@', '@OUTPUT@'],
-	)
-	protocols_headers += custom_target(
-		'@0@ server-header'.format(xml.underscorify()),
-		output: '@BASENAME@-server-defs.h',
-		input: xml,
-		command: [wayland_scanner_prog, 'server-header', '@INPUT@', '@OUTPUT@'],
+		command: [python3, gen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 endforeach
 
@@ -44,7 +48,6 @@ endforeach
 lib_protocols = static_library(
 	'protocols',
 	protocols_src,
-	dependencies: wayland_client.partial_dependency(compile_args: true),
 )
 protos = declare_dependency(
 	link_with: lib_protocols,
