@@ -359,6 +359,8 @@ struct msg_handler {
 	// these are structs packed densely with function pointers
 	const void *event_handlers;
 	const void *request_handlers;
+	// can the type be produced via wl_registry::bind ?
+	bool is_global;
 };
 struct wp_object {
 	/* An object used by the wayland protocol. Specific types may extend

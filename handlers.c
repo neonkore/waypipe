@@ -372,6 +372,14 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	uint32_t obj_id = the_object->obj_id;
 	for (int i = 0; handlers[i].interface; i++) {
 		if (!strcmp(interface, handlers[i].interface->name)) {
+			if (!handlers[i].is_global) {
+				wp_log(WP_ERROR,
+						"Interface %s does not support binding globals",
+						handlers[i].interface->name);
+				/* exit search, discard unbound object */
+				break;
+			}
+
 			// Set the object type
 			the_object->type = handlers[i].interface;
 			if (handlers[i].interface == &intf_wp_presentation) {
@@ -1528,72 +1536,80 @@ static const struct req_map_wl_data_offer wl_data_offer_request_handler = {
 
 const struct msg_handler handlers[] = {
 		{&intf_wl_display, &wl_display_event_handler,
-				&wl_display_request_handler},
+				&wl_display_request_handler, false},
 		{&intf_wl_registry, &wl_registry_event_handler,
-				&wl_registry_request_handler},
-		{&intf_wl_buffer, &wl_buffer_event_handler, NULL},
-		{&intf_wl_surface, NULL, &wl_surface_request_handler},
-		{&intf_wl_keyboard, &wl_keyboard_event_handler, NULL},
+				&wl_registry_request_handler, false},
+		{&intf_wl_shm_pool, NULL, &wl_shm_pool_request_handler, false},
+		{&intf_wl_buffer, &wl_buffer_event_handler, NULL, false},
+		{&intf_wl_surface, NULL, &wl_surface_request_handler, false},
+		{&intf_wl_keyboard, &wl_keyboard_event_handler, NULL, false},
 		{&intf_zwlr_screencopy_frame_v1,
 				&zwlr_screencopy_frame_v1_event_handler,
-				&zwlr_screencopy_frame_v1_request_handler},
+				&zwlr_screencopy_frame_v1_request_handler,
+				false},
 		{&intf_wp_presentation_feedback,
-				&wp_presentation_feedback_event_handler, NULL},
+				&wp_presentation_feedback_event_handler, NULL,
+				false},
 		{&intf_zwp_linux_buffer_params_v1,
 				&zwp_linux_buffer_params_v1_event_handler,
-				&zwp_linux_buffer_params_v1_request_handler},
+				&zwp_linux_buffer_params_v1_request_handler,
+				false},
 		{&intf_zwlr_export_dmabuf_frame_v1,
 				&zwlr_export_dmabuf_frame_v1_event_handler,
-				NULL},
+				NULL, false},
 
-		/* Copy-paste protocol handlers, handled near
-		   identically */
+		/* Copy-paste protocol handlers, handled near identically */
 		{&intf_zwlr_data_control_offer_v1, NULL,
-				&zwlr_data_control_offer_v1_request_handler},
+				&zwlr_data_control_offer_v1_request_handler,
+				false},
 		{&intf_gtk_primary_selection_offer, NULL,
-				&gtk_primary_selection_offer_request_handler},
-		{&intf_wl_data_offer, NULL, &wl_data_offer_request_handler},
+				&gtk_primary_selection_offer_request_handler,
+				false},
+		{&intf_wl_data_offer, NULL, &wl_data_offer_request_handler,
+				false},
 
 		{&intf_zwlr_data_control_source_v1,
 				&zwlr_data_control_source_v1_event_handler,
-				NULL},
+				NULL, false},
 		{&intf_gtk_primary_selection_source,
 				&gtk_primary_selection_source_event_handler,
-				NULL},
-		{&intf_wl_data_source, &wl_data_source_event_handler, NULL},
+				NULL, false},
+		{&intf_wl_data_source, &wl_data_source_event_handler, NULL,
+				false},
 
 		/* List all other known global object interface types,
 		 * so that the parsing code can identify all fd usages
 		 */
 		// wayland
-		{&intf_wl_compositor, NULL, NULL},
-		{&intf_wl_subcompositor, NULL, NULL},
-		{&intf_wl_data_device_manager, NULL, NULL},
-		{&intf_wl_shm, NULL, &wl_shm_request_handler},
-		{&intf_wl_shm_pool, NULL, &wl_shm_pool_request_handler},
-		{&intf_wl_seat, NULL, NULL}, {&intf_wl_output, NULL, NULL},
+		{&intf_wl_compositor, NULL, NULL, true},
+		{&intf_wl_subcompositor, NULL, NULL, true},
+		{&intf_wl_data_device_manager, NULL, NULL, true},
+		{&intf_wl_shm, NULL, &wl_shm_request_handler, true},
+		{&intf_wl_seat, NULL, NULL, true},
+		{&intf_wl_output, NULL, NULL, true},
 		// xdg-shell
-		{&intf_xdg_wm_base, NULL, NULL},
+		{&intf_xdg_wm_base, NULL, NULL, true},
 		// presentation-time
 		{&intf_wp_presentation, &wp_presentation_event_handler,
-				&wp_presentation_request_handler},
+				&wp_presentation_request_handler, true},
 		// gtk-primary-selection
-		{&intf_gtk_primary_selection_device_manager, NULL, NULL},
+		{&intf_gtk_primary_selection_device_manager, NULL, NULL, true},
 		// virtual-keyboard
-		{&intf_zwp_virtual_keyboard_manager_v1, NULL, NULL},
+		{&intf_zwp_virtual_keyboard_manager_v1, NULL, NULL, true},
 		// input-method
-		{&intf_zwp_input_method_manager_v2, NULL, NULL},
+		{&intf_zwp_input_method_manager_v2, NULL, NULL, true},
 		// linux-dmabuf
 		{&intf_zwp_linux_dmabuf_v1, &zwp_linux_dmabuf_v1_event_handler,
-				NULL},
+				NULL, true},
 		// screencopy-manager
-		{&intf_zwlr_screencopy_manager_v1, NULL, NULL},
+		{&intf_zwlr_screencopy_manager_v1, NULL, NULL, true},
 		// wayland-drm
-		{&intf_wl_drm, &wl_drm_event_handler, &wl_drm_request_handler},
+		{&intf_wl_drm, &wl_drm_event_handler, &wl_drm_request_handler,
+				true},
 		// wlr-export-dmabuf
-		{&intf_zwlr_export_dmabuf_manager_v1, NULL, NULL},
+		{&intf_zwlr_export_dmabuf_manager_v1, NULL, NULL, true},
 		// wlr-export-dmabuf
-		{&intf_zwlr_data_control_manager_v1, NULL, NULL},
+		{&intf_zwlr_data_control_manager_v1, NULL, NULL, true},
 
-		{NULL, NULL, NULL}};
+		{NULL, NULL, NULL, false}};
 const struct wp_interface *the_display_interface = &intf_wl_display;
