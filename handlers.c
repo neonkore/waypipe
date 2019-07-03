@@ -287,10 +287,13 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 void do_wl_display_evt_error(struct context *ctx, struct wp_object *object_id,
 		uint32_t code, const char *message)
 {
+	const char *type_name =
+			object_id ? (object_id->type ? object_id->type->name
+						     : "<no type>")
+				  : "<no object>";
+	wp_log(WP_ERROR, "Display sent fatal error message %s, code %u: %s",
+			type_name, code, message ? message : "<no message>");
 	(void)ctx;
-	(void)object_id;
-	(void)code;
-	(void)message;
 }
 void do_wl_display_evt_delete_id(struct context *ctx, uint32_t id)
 {
@@ -315,6 +318,11 @@ void do_wl_display_req_sync(struct context *ctx, struct wp_object *callback)
 void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 		const char *interface, uint32_t version)
 {
+	if (!interface) {
+		wp_log(WP_DEBUG,
+				"Interface name provided via wl_registry::global was NULL");
+		return;
+	}
 	bool requires_rnode = false;
 	requires_rnode |= !strcmp(interface, "wl_drm");
 	requires_rnode |= !strcmp(interface, "zwp_linux_dmabuf_v1");
@@ -354,6 +362,11 @@ void do_wl_registry_evt_global_remove(struct context *ctx, uint32_t name)
 void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 		const char *interface, uint32_t version, struct wp_object *id)
 {
+	if (!interface) {
+		wp_log(WP_DEBUG,
+				"Interface name provided to wl_registry::bind was NULL");
+		return;
+	}
 	/* The object has already been created, but its type is NULL */
 	struct wp_object *the_object = (struct wp_object *)id;
 	uint32_t obj_id = the_object->obj_id;
@@ -965,6 +978,11 @@ void do_wl_drm_evt_device(struct context *ctx, const char *name)
 		/* Replacing the (remote) DRM device path with a local
 		 * render node path only is useful on the application
 		 * side */
+		return;
+	}
+	if (!name) {
+		wp_log(WP_DEBUG,
+				"Device name provided via wl_drm::device was NULL");
 		return;
 	}
 	/* The render node was already initialized in
