@@ -200,6 +200,9 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 	scan_bytes.zone_end = dest_bytes->zone_start;
 	scan_bytes.size = dest_bytes->size;
 
+	DTRACE_PROBE1(waypipe, parse_enter,
+			source_bytes->zone_end - source_bytes->zone_start);
+
 	for (; source_bytes->zone_start < source_bytes->zone_end;) {
 		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
 			// Not enough remaining bytes to parse the header
@@ -251,6 +254,7 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 			}
 		}
 	}
+	DTRACE_PROBE(waypipe, parse_exit);
 	return;
 }
 
