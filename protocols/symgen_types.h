@@ -9,12 +9,12 @@ typedef void (*wp_callfn_t)(struct context *ctx, const uint32_t *payload, const 
 struct msg_data {
 	const char *name;
 	const int n_stretch;
-	const int base_gap;
-	const int *trail_gap;
+	const unsigned int base_gap;
+	const unsigned int *trail_gap;
 	const bool *stretch_is_string;
 	const int n_fds;
 	const int new_vec_len;
-	const int *new_obj_idxs;/* there are special 'spacer' fields at each string/arr, =-1*/
+	const unsigned int *new_obj_idxs;/* there are special 'spacer' fields at each string/arr, =-1*/
 	const struct wp_interface **new_obj_types;
 };
 struct wp_interface {

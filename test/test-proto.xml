@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="test_proto">
+
+  <copyright>
+    Copyright © 2019 Manuel Stoeckl
+
+    Permission to use, copy, modify, distribute, and sell this
+    software and its documentation for any purpose is hereby granted
+    without fee, provided that\n the above copyright notice appear in
+    all copies and that both that copyright notice and this permission
+    notice appear in supporting documentation, and that the name of
+    the copyright holders not be used in advertising or publicity
+    pertaining to distribution of the software without specific,
+    written prior permission.  The copyright holders make no
+    representations about the suitability of this software for any
+    purpose.  It is provided "as is" without express or implied
+    warranty.
+
+    THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+    SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+    FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+    AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+    ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+    THIS SOFTWARE.
+  </copyright>
+
+  <interface name="xtype" version="1">
+    <request name="blue">
+      <arg name="a" type="new_id"/><!-- no type specified -->
+      <arg name="b" type="fd"/>
+      <arg name="c" type="int"/>
+      <arg name="d" type="uint"/>
+      <arg name="e" type="object"/>
+      <arg name="f" type="string"/>
+      <arg name="g" type="uint"/>
+    </request>
+
+    <event name="yellow">
+      <arg name="c" type="fixed"/>
+    </event>
+  </interface>
+
+  <interface name="ytype" version="9">
+    <request name="green">
+      <arg name="a" type="uint"/>
+      <arg name="b" type="string"/>
+      <arg name="c" type="string"/>
+      <arg name="d" type="fd"/>
+      <arg name="e" type="string"/>
+      <arg name="f" type="new_id" interface="xtype"/>
+      <arg name="g" type="array"/>
+    </request>
+
+    <event name="red">
+      <arg name="a" type="new_id" interface="xtype"/>
+      <arg name="b" type="int"/>
+      <arg name="c" type="fd"/>
+      <arg name="d" type="new_id" interface="ytype"/>
+      <arg name="e" type="int"/>
+      <arg name="f" type="int"/>
+      <arg name="g" type="new_id" interface="xtype"/>
+      <arg name="h" type="int"/>
+      <arg name="i" type="uint"/>
+      <arg name="j" type="string"/>
+      <arg name="k" type="fd"/>
+      <arg name="l" type="array"/>
+      <arg name="n" type="fixed"/>
+      <arg name="m" type="string"/>
+      <arg name="o" type="object" interface="ytype"/>
+      <arg name="p" type="fd"/>
+      <arg name="q" type="object" interface="xtype"/>
+    </event>
+  </interface>
+
+</protocol>

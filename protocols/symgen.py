@@ -75,6 +75,7 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
             num_obj_args += 1
             num_new_args += 1
             num_reg_args += 3
+            num_stretch_args += 1
             continue
 
         if arg_type == "array":
@@ -108,9 +109,9 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
         # Write function definition
         W(handle_signature + " {")
         if num_reg_args > 0:
-            W("\tint i = 0;")
+            W("\tunsigned int i = 0;")
         if num_fd_args > 0:
-            W("\tint k = 0;")
+            W("\tunsigned int k = 0;")
 
         tmp_names = ["ctx"]
         n_fds_left = num_fd_args
@@ -123,7 +124,7 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
                         i
                     )
                 )
-                W("\tint arg{}_a = (int)payload[i];".format(i))
+                W("\tuint32_t arg{}_a = (uint32_t)payload[i];".format(i))
                 if n_reg_left > 0:
                     W("\ti += 1 + ((arg{}_a + 0x3) >> 2);".format(i))
 
@@ -209,12 +210,12 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
             W("static const bool sis_" + func_name + "[] = {")
             W("\t" + ", ".join(nta))
             W("};")
-            W("static const int gap_" + func_name + "[] = {")
+            W("static const unsigned int gap_" + func_name + "[] = {")
             W("\t" + ", ".join(nts))
             W("};")
 
         if num_new_args > 0:
-            W("static const int noi_" + func_name + "[] = {")
+            W("static const unsigned int noi_" + func_name + "[] = {")
             W("\t" + ", ".join(newvec_idxs))
             W("};")
             W("static const struct wp_interface *not_" + func_name + "[] = {")

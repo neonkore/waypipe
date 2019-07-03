@@ -137,11 +137,25 @@ test_mirror = executable(
 )
 # disable leak checking, because library code is often responsible
 test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'])
+gen_path = join_paths(meson.current_source_dir(), 'protocols/symgen.py')
+test_fnlist = files('test/test_fnlist.txt')
+testproto_src = custom_target(
+	'test-proto code',
+	output: '@BASENAME@-data.c',
+	input: 'test/test-proto.xml',
+	command: [python3, gen_path, 'data', test_fnlist, '@INPUT@', '@OUTPUT@'],
+)
+testproto_header = custom_target(
+	'test-proto client-header',
+	output: '@BASENAME@-defs.h',
+	input: 'test/test-proto.xml',
+	command: [python3, gen_path, 'header', test_fnlist, '@INPUT@', '@OUTPUT@'],
+)
 test_parse = executable(
 	'wire_parse',
-	['test/wire_parse.c'],
+	['test/wire_parse.c', testproto_src, testproto_header],
 	link_with: lib_waypipe_src,
-	dependencies: []
+	dependencies: [protos]
 )
 test('That protocol parsing fails cleanly', test_parse)
 weston_prog = find_program('weston', required: false)

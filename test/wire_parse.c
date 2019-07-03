@@ -29,74 +29,79 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-#if 0
-#include <sys/mman.h>
+#include "test-proto-defs.h"
+#include "util.h"
 
-#include <ffi.h>
-#include <wayland-util.h>
+/* from parsing.c */
+bool size_check(const struct msg_data *data, const uint32_t *payload,
+		unsigned int true_length, int fd_length);
 
-void invoke_msg_handler(ffi_cif *cif, const struct wl_interface *intf,
-		const struct wl_message *msg, bool is_event,
-		const uint32_t *const payload, const int paylen,
-		const int *const fd_list, const int fdlen, int *fds_used,
-		void (*const func)(void), struct context *ctx,
-		struct message_tracker *mt, struct fd_translation_map *map);
-
-static bool called = false;
-static void testfn_client(struct context *ctx, void *noop, struct wp_object *a0,
-		int a1, int32_t a2, uint32_t a3, struct wp_object *a4,
-		const char *a5, uint32_t a6)
+void do_xtype_req_blue(struct context *ctx, const char *interface,
+		uint32_t version, struct wp_object *id, int b, int32_t c,
+		uint32_t d, struct wp_object *e, const char *f, uint32_t g)
 {
-	called = true;
-	printf("%d called with: a0=%u, a1=%d, a2=%d, a3=%u, a4=%u, a5=\"%s\", a6=%u\n",
-			ctx->obj->obj_id, a0->obj_id, a1, a2, a3, a4->obj_id,
-			a5, a6);
-	(void)noop;
+	char buf[256];
+	sprintf(buf, "%s %u %u %d %d %d %u %s %d", interface, version,
+			id ? id->obj_id : 0, b, c, d, e ? e->obj_id : 0, f, g);
+	printf("%s\n", buf);
+	ctx->drop_this_msg =
+			strcmp(buf, "babacba 4441 992 7771 3331 4442 991 (null) 4443") !=
+			0;
 }
-static void testfn_server(struct context *ctx, void *noop, uint32_t a0, int a1,
-		int32_t a2, uint32_t a3, struct wp_object *a4, const char *a5,
-		uint32_t a6)
+void do_xtype_evt_yellow(struct context *ctx, uint32_t c)
 {
-	called = true;
-	printf("%d called with: a0=%u, a1=%d, a2=%d, a3=%u, a4=%u, a5=\"%s\", a6=%u\n",
-			ctx->obj->obj_id, a0, a1, a2, a3, a4->obj_id, a5, a6);
-	(void)noop;
+	char buf[256];
+	sprintf(buf, "%u", c);
+	printf("%s\n", buf);
+	ctx->drop_this_msg = strcmp(buf, "4441") != 0;
 }
+void do_ytype_req_green(struct context *ctx, uint32_t a, const char *b,
+		const char *c, int d, const char *e, struct wp_object *f,
+		int g_count, const uint8_t *g_val)
+{
+	char buf[256];
+	sprintf(buf, "%u %s %s %d %s %u %d %x|%x|%x|%x|%x|%x|%x|%x", a, b, c, d,
+			e, f ? f->obj_id : 0, g_count, g_val[0], g_val[1],
+			g_val[2], g_val[3], g_val[4], g_val[5], g_val[6],
+			g_val[7]);
+	printf("%s\n", buf);
+	ctx->drop_this_msg =
+			strcmp(buf, "4441 bea (null) 7771 cbbc 991 8 81|80|81|80|90|99|99|99") !=
+			0;
+}
+void do_ytype_evt_red(struct context *ctx, struct wp_object *a, int32_t b,
+		int c, struct wp_object *d, int32_t e, int32_t f,
+		struct wp_object *g, int32_t h, uint32_t i, const char *j,
+		int k, int l_count, const uint8_t *l_val, uint32_t n,
+		const char *m, struct wp_object *o, int p, struct wp_object *q)
+{
+	char buf[256];
+	sprintf(buf, "%u %d %d %u %d %d %u %d %u %s %d %d %x|%x|%x %u %s %u %d %u",
+			a ? a->obj_id : 0, b, c, d ? d->obj_id : 0, e, f,
+			g ? g->obj_id : 0, h, i, j, k, l_count, l_val[0],
+			l_val[1], l_val[2], n, m, o ? o->obj_id : 0, p,
+			q ? q->obj_id : 0);
+	printf("%s\n", buf);
+	ctx->drop_this_msg =
+			strcmp(buf, "0 33330 8881 0 33331 33332 0 33333 44440 bcaba 8882 3 80|80|80 99990 (null) 992 8883 991") !=
+			0;
+}
+
+struct wire_test {
+	const wp_callfn_t func;
+	const struct msg_data *data;
+	int fds[4];
+	uint32_t words[50];
+	int nfds;
+	int nwords;
+};
 
 log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
 int main(int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
-
-	struct wl_interface dummy_intf = {0};
-	dummy_intf.name = "test";
-
-	struct wl_interface result_intf = {0};
-	result_intf.name = "result";
-
-	struct wl_message msg;
-	msg.name = "test";
-	msg.signature = "2nhiu?osu";
-	const struct wl_interface *typevec[] = {&result_intf, NULL, NULL, NULL,
-			&result_intf, NULL, NULL};
-	msg.types = typevec;
-	ffi_type *types_client[] = {&ffi_type_pointer, &ffi_type_pointer,
-			&ffi_type_pointer, &ffi_type_sint, &ffi_type_sint32,
-			&ffi_type_uint32, &ffi_type_pointer, &ffi_type_pointer,
-			&ffi_type_uint32};
-	ffi_type *types_server[] = {&ffi_type_pointer, &ffi_type_pointer,
-			&ffi_type_uint32, &ffi_type_sint, &ffi_type_sint32,
-			&ffi_type_uint32, &ffi_type_pointer, &ffi_type_pointer,
-			&ffi_type_uint32};
-	ffi_cif cif_client;
-	ffi_cif cif_server;
-	ffi_prep_cif(&cif_client, FFI_DEFAULT_ABI, 8, &ffi_type_void,
-			types_client);
-	ffi_prep_cif(&cif_server, FFI_DEFAULT_ABI, 8, &ffi_type_void,
-			types_server);
 
 	struct message_tracker mt;
 	init_message_tracker(&mt);
@@ -106,91 +111,91 @@ int main(int argc, char **argv)
 
 	struct fd_translation_map map;
 	setup_translation_map(&map, false, COMP_NONE, 1);
-	struct wp_object arg_obj;
-	arg_obj.type = &dummy_intf;
-	arg_obj.is_zombie = false;
-	arg_obj.obj_id = 1;
-	listset_insert(&map, &mt.objects, &arg_obj);
 
-	struct wp_object obj;
-	obj.type = &dummy_intf;
-	obj.is_zombie = false;
-	obj.obj_id = 0;
+	struct wp_object xobj;
+	xobj.type = &intf_xtype;
+	xobj.is_zombie = false;
+	xobj.obj_id = 991;
+	listset_insert(&map, &mt.objects, &xobj);
 
-	struct context ctx = {.obj = &obj, .g = NULL};
+	struct wp_object yobj;
+	yobj.type = &intf_ytype;
+	yobj.is_zombie = false;
+	yobj.obj_id = 992;
+	listset_insert(&map, &mt.objects, &yobj);
 
-	int actual_fdlen = 1;
-	int fds[1] = {99};
-	uint32_t new_id = 51;
-	uint32_t payload[] = {new_id, 11, (uint32_t)-1, arg_obj.obj_id, 13,
-			0x61626162, 0x61626162, 0x61626162, 0x00000061, 777};
-	int actual_length = (int)(sizeof(payload) / sizeof(uint32_t));
+	struct context ctx = {.obj = &xobj, .g = NULL};
+
+	struct wire_test tests[] = {
+			{call_xtype_req_blue, &intf_xtype.funcs[0][0], {7771},
+					{8, 0x61626162, 0x00616263, 4441,
+							yobj.obj_id, 3331, 4442,
+							xobj.obj_id, 0, 4443},
+					1, 10},
+			{call_xtype_evt_yellow, &intf_xtype.funcs[1][0], {0},
+					{4441}, 0, 1},
+			{call_ytype_req_green, &intf_ytype.funcs[0][0], {7771},
+					{4441, 4, 0x00616562, 0, 5, 0x63626263,
+							0x99999900, xobj.obj_id,
+							8, 0x80818081,
+							0x99999990},
+					1, 11},
+			{call_ytype_evt_red, &intf_ytype.funcs[1][0],
+					{8881, 8882, 8883},
+					{7770, 33330, 7771, 33331, 33332, 7773,
+							33333, 44440, 6,
+							0x62616362, 0x99990061,
+							3, 0x11808080, 99990, 0,
+							yobj.obj_id,
+							xobj.obj_id},
+					3, 17}};
 
 	bool all_success = true;
-	int fds_used;
-	for (int fdlen = actual_fdlen; fdlen >= 0; fdlen--) {
-		for (int length = actual_length; length >= 0; length--) {
-			bool expect_success = fdlen == actual_fdlen &&
-					      length == actual_length;
-			printf("Trying: %d/%d %d/%d\n", length, actual_length,
-					fdlen, actual_fdlen);
+	for (size_t t = 0; t < sizeof(tests) / sizeof(tests[0]); t++) {
+		struct wire_test *wt = &tests[t];
 
-			called = false;
-			fds_used = 0;
-			invoke_msg_handler(&cif_client, &dummy_intf, &msg, true,
-					payload, length, fds, fdlen, &fds_used,
-					(void (*)(void))testfn_client, &ctx,
-					&mt, &map);
-			all_success &= called == expect_success;
-			if (called != expect_success) {
-				wp_log(WP_ERROR,
-						"client FAIL at %d/%d chars, %d/%d fds",
-						length, actual_length, fdlen,
-						actual_fdlen);
-			}
+		ctx.drop_this_msg = false;
+		(*wt->func)(&ctx, wt->words, wt->fds, &mt);
+		if (ctx.drop_this_msg) {
+			all_success = false;
+		}
+		printf("Function call %s, %s\n", wt->data->name,
+				ctx.drop_this_msg ? "FAIL" : "pass");
 
-			struct wp_object *new_obj =
-					listset_get(&mt.objects, new_id);
-			if (new_obj) {
-				listset_remove(&mt.objects, new_obj);
-				destroy_wp_object(&map, new_obj);
-			}
+		for (int fdlen = wt->nfds; fdlen >= 0; fdlen--) {
+			for (int length = wt->nwords; length >= 0; length--) {
+				if (fdlen != wt->nfds && length < wt->nwords) {
+					/* the fd check is really trivial */
+					continue;
+				}
 
-			called = false;
-			fds_used = 0;
-			invoke_msg_handler(&cif_server, &dummy_intf, &msg,
-					false, payload, length, fds, fdlen,
-					&fds_used,
-					(void (*)(void))testfn_server, &ctx,
-					&mt, &map);
-			all_success &= called == expect_success;
-			if (called != expect_success) {
-				wp_log(WP_ERROR,
-						"server FAIL at %d/%d chars, %d/%d fds",
-						length, actual_length, fdlen,
-						actual_fdlen);
-			}
-			new_obj = listset_get(&mt.objects, new_id);
-			if (new_obj) {
-				listset_remove(&mt.objects, new_obj);
-				destroy_wp_object(&map, new_obj);
+				bool expect_success = (wt->nwords == length) &&
+						      (fdlen == wt->nfds);
+				printf("Trying: %d/%d words, %d/%d fds\n",
+						length, wt->nwords, fdlen,
+						wt->nfds);
+
+				bool sp = size_check(wt->data, wt->words,
+						length, fdlen);
+				if (sp != expect_success) {
+					wp_log(WP_ERROR,
+							"size check FAIL (%c, expected %c) at %d/%d chars, %d/%d fds",
+							sp ? 'Y' : 'n',
+							expect_success ? 'Y'
+								       : 'n',
+							length, wt->nwords,
+							fdlen, wt->nfds);
+				}
+				all_success &= (sp == expect_success);
 			}
 		}
 	}
-	listset_remove(&mt.objects, &arg_obj);
+
+	listset_remove(&mt.objects, &xobj);
+	listset_remove(&mt.objects, &yobj);
 	cleanup_message_tracker(&map, &mt);
 	cleanup_translation_map(&map);
 
 	printf("Net result: %s\n", all_success ? "pass" : "FAIL");
 	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-#else
-
-log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
-int main(int argc, char **argv)
-{
-	(void)argc;
-	(void)argv;
-	return EXIT_SUCCESS;
-}
-#endif

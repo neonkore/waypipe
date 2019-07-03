@@ -146,8 +146,8 @@ static bool word_has_empty_bytes(uint32_t v)
 	       ((v & 0xFF0000) == 0) || ((v & 0xFF000000) == 0);
 }
 
-static bool size_check(const struct msg_data *data, const uint32_t *payload,
-		int true_length, int fd_length)
+bool size_check(const struct msg_data *data, const uint32_t *payload,
+		unsigned int true_length, int fd_length)
 {
 	if (data->n_fds > fd_length) {
 		wp_log(WP_ERROR, "Msg overflow, not enough fds %d > %d",
@@ -155,7 +155,7 @@ static bool size_check(const struct msg_data *data, const uint32_t *payload,
 		return false;
 	}
 
-	int len = data->base_gap;
+	unsigned int len = data->base_gap;
 	if (len > true_length) {
 		wp_log(WP_ERROR, "Msg overflow, not enough words %d > %d", len,
 				true_length);
@@ -163,7 +163,9 @@ static bool size_check(const struct msg_data *data, const uint32_t *payload,
 	}
 
 	for (int i = 0; i < data->n_stretch; i++) {
-		int x_words = (payload[len - 1] + 3) / 4;
+		/* For strings, the string length /includes/ the null terminator
+		 */
+		uint32_t x_words = (payload[len - 1] + 3) / 4;
 		/* string termination validation */
 		if (data->stretch_is_string[i] && x_words) {
 			if (len <= true_length &&
@@ -195,10 +197,10 @@ static void build_new_objects(const struct msg_data *data,
 		const uint32_t *payload, struct fd_translation_map *map,
 		struct message_tracker *mt)
 {
-	int pos = 0;
+	unsigned int pos = 0;
 	int gap_no = 0;
 	for (int k = 0; k < data->new_vec_len; k++) {
-		if (data->new_obj_idxs[k] == -1) {
+		if (data->new_obj_idxs[k] == (unsigned int)-1) {
 			pos += gap_no == 0 ? data->base_gap
 					   : data->trail_gap[gap_no - 1];
 			pos += (payload[pos - 1] + 3) / 4;
