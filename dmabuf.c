@@ -169,7 +169,7 @@ static long get_dmabuf_fd_size(int fd)
 				strerror(errno));
 		return -1;
 	}
-	if (lseek(fd, SEEK_SET, 0) == -1) {
+	if (lseek(fd, 0, SEEK_SET) == -1) {
 		wp_log(WP_ERROR, "Failed to reset dmabuf offset with lseek: %s",
 				strerror(errno));
 		return -1;

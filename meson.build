@@ -174,6 +174,11 @@ if weston_prog.found() and weston_shm_prog.found() and weston_egl_prog.found()
 	test_headless = join_paths(meson.current_source_dir(), 'test/headless.py')
 	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: modenv)
 endif
-
 test_startup = join_paths(meson.current_source_dir(), 'test/startup_failure.py')
 test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist)
+fuzz_hook = executable(
+	'fuzz_hook',
+	['test/fuzz_hook.c'],
+	link_with: lib_waypipe_src,
+	dependencies: [pthreads]
+)
