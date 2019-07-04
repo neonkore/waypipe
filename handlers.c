@@ -993,9 +993,14 @@ void do_wl_drm_evt_device(struct context *ctx, const char *name)
 				"Device name provided via wl_drm::device was NULL");
 		return;
 	}
-	/* The render node was already initialized in
-	 * wl_registry.global, so the render node path is provides has
-	 * been checked */
+	if (!ctx->g->render.drm_node_path) {
+		/* While the render node should have been initialized in
+		 * wl_registry.global, setting this path, we still don't want
+		 * to crash even if this gets called by accident */
+		wp_log(WP_DEBUG,
+				"wl_drm::device, local render node not set up");
+		return;
+	}
 	int path_len = (int)strlen(ctx->g->render.drm_node_path);
 	int message_bytes = 8 + 4 + 4 * ((path_len + 1 + 3) / 4);
 	if (message_bytes > ctx->message_available_space) {

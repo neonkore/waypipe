@@ -168,17 +168,16 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
 		uint32_t x_words = (payload[len - 1] + 3) / 4;
 		/* string termination validation */
 		if (data->stretch_is_string[i] && x_words) {
-			if (len <= true_length &&
+			unsigned int end_idx = len + x_words - 1;
+			if (end_idx < true_length &&
 					!word_has_empty_bytes(
-							payload[len + x_words -
-									1])) {
+							payload[end_idx])) {
 				wp_log(WP_ERROR,
 						"Msg overflow, string termination %d < %d, %d, %x %d",
 						len, true_length, x_words,
-						payload[len + x_words - 1],
-						word_has_empty_bytes(payload[len +
-									     x_words -
-									     1]));
+						payload[end_idx],
+						word_has_empty_bytes(
+								payload[end_idx]));
 				return false;
 			}
 		}
