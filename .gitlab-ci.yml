@@ -1,33 +1,39 @@
 
 variables:
   UPSTREAM_REPO: mstoeckl/waypipe
-  DEBIAN_TAG: '2019-06-25.1'
 
+  DEBIAN_TAG: '2019-06-25.1'
   DEBIAN_VERSION: buster
   DEBIAN_EXEC: 'bash .gitlab-ci/debian-install.sh'
   DEBIAN_CONTAINER_IMAGE: $CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_TAG
+
+  DEBIAN32_TAG: 'deb32-2019-07-04.2'
+  DEBIAN32_VERSION: buster
+  DEBIAN32_EXEC: 'bash .gitlab-ci/debian32-install.sh'
+  DEBIAN32_CONTAINER_IMAGE: $CI_REGISTRY_IMAGE/debian/$DEBIAN32_VERSION:$DEBIAN32_TAG
+
 include:
   - project: 'wayland/ci-templates'
     ref: 96912c7331cbc6da41fbf22c4217aa541176f063
     file: '/templates/debian.yml'
+  - project: 'mstoeckl/waypipe'
+    file: '/.gitlab-ci/debian32.yml'
+    ref: master
 
 stages:
   - container_prep
   - build
 
-container_prep:
+debian_container_prep:
   extends: .debian@container-ifnot-exists
   stage: container_prep
 
-build:
+debian32_container_prep:
+  extends: .debian32@container-ifnot-exists
+  stage: container_prep
+
+.build-debian-all:
   stage: build
-  image: $DEBIAN_CONTAINER_IMAGE
-  before_script:
-  - export XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)"
-  - export BUILD_ID="$CI_COMMIT_SHA-$CI_JOB_ID"
-  - export PREFIX="$(pwd)/p-$BUILD_ID"
-  - export BUILDDIR="$(pwd)/b-$BUILD_ID"
-  - mkdir "$BUILDDIR" "$PREFIX"
   script:
   - export PATH=~/.local/bin:$PATH
   - cd "$BUILDDIR"
@@ -42,3 +48,27 @@ build:
     paths:
     - b-*/meson-logs
     - p-*
+  
+debian-build:
+  before_script:
+  - export XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)"
+  - export BUILD_ID="$CI_COMMIT_SHA-$CI_JOB_ID"
+  - export PREFIX="$(pwd)/p-$BUILD_ID"
+  - export BUILDDIR="$(pwd)/b-$BUILD_ID"
+  - mkdir "$BUILDDIR" "$PREFIX"
+  - export CC=gcc
+  extends: .build-debian-all
+  image: $DEBIAN_CONTAINER_IMAGE
+  
+debian32-build:
+  before_script:
+  - export XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)"
+  - export BUILD_ID="$CI_COMMIT_SHA-$CI_JOB_ID"
+  - export PREFIX="$(pwd)/p-$BUILD_ID"
+  - export BUILDDIR="$(pwd)/b-$BUILD_ID"
+  - mkdir "$BUILDDIR" "$PREFIX"
+  - export CC=/usr/bin/gcc-8
+  - export PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig/
+  extends: .build-debian-all
+  image: $DEBIAN32_CONTAINER_IMAGE
+  

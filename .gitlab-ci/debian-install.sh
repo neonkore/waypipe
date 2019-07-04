@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -o xtrace
+set -e -o xtrace
 
 apt-get update
 apt-get -y --no-install-recommends install \

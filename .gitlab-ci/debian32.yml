@@ -1,0 +1,141 @@
+# vim: set expandtab shiftwidth=2 tabstop=8 textwidth=0:
+
+# This template will create a debian image based on the following variables:
+#
+#  - DEBIAN_VERSION: the debian version (stretch, sid, etc...)
+#  - DEBIAN_DEBS:    if set, list of packages that needs to be installed
+#  - DEBIAN_EXEC:    if set, this command will be run once the packages have
+#                    been installed
+#  - UPSTREAM_REPO:  the upstream project on this gitlab instance where we might
+#                    find the given tag (for example: `wayland/weston`)
+#  - DEBIAN_TAG:     tag to copy the image from the upstream registry. If the
+#                    tag does not exist, create a new build and tag it
+#
+# The resulting image will be pushed in the local registry, under:
+#     $CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_TAG
+#
+# Two flavors of templates are available:
+#   - `.debian32@container-build`: this will force rebuild a new container
+#     and tag it with $DEBIAN_TAG without checks
+#   - `.debian32@container-ifnot-exists`: this will rebuild a new container
+#     only if $DEBIAN_TAG is not available in the local registry or
+#     in the $UPSTREAM_REPO registry
+
+# we can not reuse exported variables in after_script,
+# so have a common definition
+.debian32_vars: &distro_vars |
+        # exporting templates variables
+        # https://gitlab.com/gitlab-com/support-forum/issues/4349
+        export BUILDAH_FORMAT=docker
+        # The '32' version should run multilib
+        export DISTRO=debian
+        export DISTRO_TAG=$DEBIAN32_TAG
+        export DISTRO_VERSION=$DEBIAN32_VERSION
+        export DISTRO_EXEC=$DEBIAN32_EXEC
+
+
+# Do not use this template directly, you can not reuse the produced image
+# as it is tagged with $CI_JOB_ID
+..debian32@container-template:
+  image: $CI_REGISTRY/wayland/ci-templates/buildah:latest
+  stage: build
+  before_script:
+    # log in to the registry
+    - podman login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+    - *distro_vars
+
+  script:
+  - *distro_vars
+  - echo Building $DISTRO/$DISTRO_VERSION:$DISTRO_TAG from $DISTRO:$DISTRO_VERSION
+    # initial set up: take the base image, update it and install the packages
+  - buildcntr=$(buildah from $DISTRO:$DISTRO_VERSION)
+  - buildmnt=$(buildah mount $buildcntr)
+  - buildah run $buildcntr cat /etc/apt/sources.list
+  - echo 'path-exclude=/usr/share/doc/*' > $buildmnt/etc/dpkg/dpkg.cfg.d/99-exclude-cruft
+  - echo 'path-exclude=/usr/share/locale/*' >> $buildmnt/etc/dpkg/dpkg.cfg.d/99-exclude-cruft
+  - echo 'path-exclude=/usr/share/man/*' >> $buildmnt/etc/dpkg/dpkg.cfg.d/99-exclude-cruft
+  - echo 'APT::Install-Recommends "false";' > $buildmnt/etc/apt/apt.conf
+  - echo '#!/bin/sh' > $buildmnt/usr/sbin/policy-rc.d
+  - echo 'exit 101' >> $buildmnt/usr/sbin/policy-rc.d
+  - chmod +x $buildmnt/usr/sbin/policy-rc.d
+
+  - buildah run $buildcntr env DEBIAN_FRONTEND=noninteractive apt-get update
+  - buildah run $buildcntr env DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade
+  - if [[ x"$DEBIAN_DEBS" != x"" ]] ;
+    then
+      buildah run $buildcntr env DEBIAN_FRONTEND=noninteractive apt-get -y install $DEBIAN_DEBS ;
+    fi
+
+    # check if there is an optional post install script and run it
+  - if [[ x"$DISTRO_EXEC" != x"" ]] ;
+    then
+      echo Running $DISTRO_EXEC ;
+      set -x ;
+      mkdir $buildmnt/tmp/clone ;
+      pushd $buildmnt/tmp/clone ;
+      git init ;
+      git remote add origin $CI_REPOSITORY_URL ;
+      git fetch --depth 1 origin $CI_COMMIT_SHA ;
+      git checkout FETCH_HEAD  > /dev/null;
+      buildah config --workingdir /tmp/clone $buildcntr ;
+      buildah run $buildcntr bash -c "set -x ; $DISTRO_EXEC" ;
+      popd ;
+      rm -rf $buildmnt/tmp/clone ;
+      set +x ;
+    fi
+
+    # do not store the packages database, it's pointless
+  - buildah run $buildcntr env DEBIAN_FRONTEND=noninteractive apt-get clean
+  - rm -f $buildmnt/var/lib/apt/lists/*.lz4
+
+    # set up the working directory
+  - buildah config --workingdir /app $buildcntr
+    # umount the container, not required, but, heh
+  - buildah unmount $buildcntr
+    # tag the current container
+  - buildah commit $buildcntr $CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$CI_JOB_ID
+    # clean up the working container
+  - buildah rm $buildcntr
+
+    # push the container image to the registry
+    # There is a bug when pushing 2 tags in the same repo with the same base:
+    # this may fail. Just retry it after.
+  - podman push $CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$CI_JOB_ID || true
+  - sleep 2
+  - podman push $CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$CI_JOB_ID
+
+    # mark the current stage as successed, to get the result in after_script
+  - touch .success
+
+
+.debian32@container-build:
+  extends: ..debian32@container-template
+  after_script:
+  # if we did not build, or if there was a failure, exit
+  # (the exit status does not matter here)
+  - if [[ ! -e .success ]] ;
+    then
+      exit 0;
+    fi
+
+  - *distro_vars
+
+  - skopeo copy docker://$CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$CI_JOB_ID
+                docker://$CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$DISTRO_TAG
+
+
+.debian32@container-ifnot-exists:
+  extends: .debian32@container-build
+  before_script:
+  # log in to the registry
+  - podman login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+  - *distro_vars
+
+  # check if our image is already in the current registry
+  - skopeo inspect docker://$CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$DISTRO_TAG > /dev/null && exit 0 || true
+
+  # copy the original image into the current project registry namespace
+  - skopeo copy docker://$CI_REGISTRY/$UPSTREAM_REPO/$DISTRO/$DISTRO_VERSION:$DISTRO_TAG
+                docker://$CI_REGISTRY_IMAGE/$DISTRO/$DISTRO_VERSION:$DISTRO_TAG && exit 0 || true
