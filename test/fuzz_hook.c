@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -71,7 +72,7 @@ static void atomic_logger(const char *file, int line, enum log_level level,
 	msg[nwri++] = '\n';
 	msg[nwri] = 0;
 
-	write(STDERR_FILENO, msg, (size_t)nwri);
+	write(STDOUT_FILENO, msg, (size_t)nwri);
 	(void)level;
 }
 
@@ -144,17 +145,55 @@ int main(int argc, char **argv)
 	long file_nwords = len / 4;
 	long cursor = 0;
 	uint32_t *data = (uint32_t *)buf;
+	char template[256];
 	while (cursor < file_nwords) {
 		uint32_t header = data[cursor++];
-		uint32_t packet_size = header >> 1;
-		if (packet_size > file_nwords - cursor) {
-			packet_size = file_nwords - cursor;
+		bool to_server = header & 0x1;
+		bool add_file = header & 0x2;
+		int new_fileno = -1;
+
+		if (add_file && cursor < file_nwords) {
+			uint32_t fsize = data[cursor++];
+			if (fsize == 0) {
+				/* 'copy' sink */
+				new_fileno = open("/dev/null", O_WRONLY);
+				if (new_fileno == -1) {
+					wp_log(WP_ERROR,
+							"Failed to open /dev/null");
+				}
+			} else {
+				/* avoid buffer overflow */
+				fsize = fsize > 1000000 ? 1000000 : fsize;
+				/* This should be a tmpfs */
+#if defined(__linux__)
+				sprintf(template, "%x:%x", (uint32_t)cursor,
+						fsize);
+				new_fileno = memfd_create(template, 0);
+#else
+				/* WARNING: this can be rather file-system
+				 * intensive */
+				strcpy(template, "/tmp/fuzz_hook_XXXXXX");
+				new_fileno = mkstemp(template);
+				unlink(template);
+#endif
+				if (new_fileno == -1) {
+					wp_log(WP_ERROR, "Failed to mkstemp");
+				} else if (ftruncate(new_fileno, fsize) == -1) {
+					wp_log(WP_ERROR,
+							"Failed to resize tempfile");
+					close(new_fileno);
+					new_fileno = -1;
+				}
+			}
+		}
+
+		uint32_t packet_size = header >> 2;
+		if ((long)packet_size > file_nwords - cursor) {
+			packet_size = (uint32_t)(file_nwords - cursor);
 		}
 		if (packet_size > 8192) {
 			packet_size = 8192;
 		}
-
-		bool to_server = header & 0x1;
 
 		struct pollfd pfds[2];
 		pfds[0].fd = srv_fds[0];
@@ -165,11 +204,18 @@ int main(int argc, char **argv)
 		/* if it takes too long, we skip the packet */
 		int np = poll(pfds, 2, 5);
 		if (np == -1) {
+			if (new_fileno != -1) {
+				close(new_fileno);
+			}
+
 			if (errno == EINTR) {
 				continue;
 			}
 			printf("Poll error\n");
 			break;
+		}
+		if (np == 0) {
+			wp_log(WP_ERROR, "Timing out main poll loop");
 		}
 		for (int i = 0; i < 2; i++) {
 			if (pfds[i].revents & POLLIN) {
@@ -187,7 +233,7 @@ int main(int argc, char **argv)
 				msg.msg_flags = 0;
 				ssize_t ret = recvmsg(pfds[i].fd, &msg, 0);
 				if (ret == -1) {
-					printf("Error in recvmsg\n");
+					wp_log(WP_ERROR, "Error in recvmsg");
 				}
 			}
 		}
@@ -204,14 +250,36 @@ int main(int argc, char **argv)
 			msg.msg_control = NULL;
 			msg.msg_controllen = 0;
 			msg.msg_flags = 0;
+
+			union {
+				char buf[CMSG_SPACE(sizeof(int))];
+				struct cmsghdr align;
+			} uc;
+			memset(uc.buf, 0, sizeof(uc.buf));
+
+			if (new_fileno != -1) {
+				msg.msg_control = uc.buf;
+				msg.msg_controllen = sizeof(uc.buf);
+				struct cmsghdr *frst = CMSG_FIRSTHDR(&msg);
+				frst->cmsg_level = SOL_SOCKET;
+				frst->cmsg_type = SCM_RIGHTS;
+				memcpy(CMSG_DATA(frst), &new_fileno,
+						sizeof(int));
+				frst->cmsg_len = CMSG_LEN(sizeof(int));
+				msg.msg_controllen = CMSG_SPACE(sizeof(int));
+			}
+
 			int target_fd = to_server ? srv_fds[0] : cli_fds[0];
 			ssize_t ret = sendmsg(target_fd, &msg, 0);
 			if (ret == -1) {
-				printf("Error in sendmsg\n");
+				wp_log(WP_ERROR, "Error in sendmsg");
 				break;
 			}
 		}
 
+		if (new_fileno != -1) {
+			close(new_fileno);
+		}
 		cursor += packet_size;
 	}
 	close(srv_fds[0]);
