@@ -298,7 +298,8 @@ void do_wl_display_evt_error(struct context *ctx, struct wp_object *object_id,
 void do_wl_display_evt_delete_id(struct context *ctx, uint32_t id)
 {
 	struct wp_object *obj = listset_get(ctx->obj_list, id);
-	if (obj) {
+	/* ensure this isn't miscalled to have wl_display delete itself */
+	if (obj && obj != ctx->obj) {
 		listset_remove(ctx->obj_list, obj);
 		destroy_wp_object(&ctx->g->map, obj);
 	}

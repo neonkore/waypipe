@@ -53,20 +53,22 @@ void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 	}
 	for (int i = 0; i < lst->nobj; i++) {
 		if (lst->objs[i]->obj_id == obj->obj_id) {
-			if (lst->objs[i]->is_zombie) {
-				/* Zombie objects (server allocated, client
-				 * deleted) are only acknowledged destroyed by
-				 * the server when they are replaced */
-				destroy_wp_object(map, lst->objs[i]);
-				lst->objs[i] = obj;
-				return;
+			/* We /always/ replace the object, to ensure that map
+			 * elements are never duplicated and make the deletion
+			 * process cause crashes */
+			if (!lst->objs[i]->is_zombie) {
+				wp_log(WP_ERROR,
+						"Replacing object @%u that already exists: old type %s, new type %s",
+						obj->obj_id,
+						get_type_name(lst->objs[i]),
+						get_type_name(obj));
 			}
-
-			wp_log(WP_ERROR,
-					"Inserting object @%u that already exists: old type %s, new type %s",
-					obj->obj_id,
-					get_type_name(lst->objs[i]),
-					get_type_name(obj));
+			/* Zombie objects (server allocated, client deleted) are
+			 * only acknowledged destroyed by the server when they
+			 * are replaced. */
+			destroy_wp_object(map, lst->objs[i]);
+			lst->objs[i] = obj;
+			return;
 		}
 		if (lst->objs[i]->obj_id > obj->obj_id) {
 			memmove(lst->objs + i + 1, lst->objs + i,
@@ -192,9 +194,16 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
 	return true;
 }
 
-static void build_new_objects(const struct msg_data *data,
+/* Given a size-checked request, try to construct all the new objects
+ * that the request requires. Return true if successful, false otherwise.
+ *
+ * The argument `caller_obj` should be the object on which the request was
+ * invoked; this function checks to make sure that object is not
+ * overwritten by accident/corrupt input.
+ */
+static bool build_new_objects(const struct msg_data *data,
 		const uint32_t *payload, struct fd_translation_map *map,
-		struct message_tracker *mt)
+		struct message_tracker *mt, const struct wp_object *caller_obj)
 {
 	unsigned int pos = 0;
 	int gap_no = 0;
@@ -204,12 +213,21 @@ static void build_new_objects(const struct msg_data *data,
 					   : data->trail_gap[gap_no - 1];
 			pos += (payload[pos - 1] + 3) / 4;
 		} else {
+			uint32_t new_id = payload[pos + data->new_obj_idxs[k]];
+			if (new_id == caller_obj->obj_id) {
+				wp_log(WP_ERROR,
+						"In %s.%s, tried to create object id=%u conflicting with object being called, also id=%u",
+						caller_obj->type->name,
+						data->name, new_id,
+						caller_obj->obj_id);
+				return false;
+			}
 			struct wp_object *new_obj = create_wp_object(
-					payload[pos + data->new_obj_idxs[k]],
-					data->new_obj_types[k]);
+					new_id, data->new_obj_types[k]);
 			listset_insert(map, &mt->objects, new_obj);
 		}
 	}
+	return true;
 }
 
 int peek_message_size(const void *data)
@@ -275,7 +293,9 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		return PARSE_UNKNOWN;
 	}
 
-	build_new_objects(msg, payload, &g->map, &g->tracker);
+	if (!build_new_objects(msg, payload, &g->map, &g->tracker, objh)) {
+		return PARSE_UNKNOWN;
+	}
 
 	int fds_used = 0;
 	struct context ctx = {

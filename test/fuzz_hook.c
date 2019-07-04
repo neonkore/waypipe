@@ -28,6 +28,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,13 +55,39 @@ void *start_looper(void *data)
 	return NULL;
 }
 
-log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
+static void atomic_logger(const char *file, int line, enum log_level level,
+		const char *fmt, ...)
+{
+	pthread_t tid = pthread_self();
+	char msg[1024];
+	int nwri = 0;
+	nwri += sprintf(msg + nwri, "%lx [%s:%3d] ", (long)tid, file, line);
+
+	va_list args;
+	va_start(args, fmt);
+	nwri += vsnprintf(msg + nwri, (size_t)(1022 - nwri), fmt, args);
+	va_end(args);
+
+	msg[nwri++] = '\n';
+	msg[nwri] = 0;
+
+	write(STDERR_FILENO, msg, (size_t)nwri);
+	(void)level;
+}
+
+log_handler_func_t log_funcs[2] = {NULL, NULL};
 int main(int argc, char **argv)
 {
 	if (argc == 1 || !strcmp(argv[1], "--help")) {
-		printf("Usage: ./fuzz_hook {input_file}\n");
+		printf("Usage: ./fuzz_hook [--log] {input_file}\n");
 		printf("A program to run and control inputs for a linked client/server pair, from a file.\n");
 		return EXIT_FAILURE;
+	}
+	if (argc > 1 && !strcmp(argv[1], "--log")) {
+		log_funcs[0] = atomic_logger;
+		log_funcs[1] = atomic_logger;
+		argc--;
+		argv++;
 	}
 
 	int fd = open(argv[1], O_RDONLY);
