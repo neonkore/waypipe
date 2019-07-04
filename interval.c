@@ -128,7 +128,7 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 
 	for (int jn = 0; jn < new_count; jn++) {
 		struct ext_interval e = new_list[jn];
-		if (e.width == 0 || e.rep == 0) {
+		if (e.width <= 0 || e.rep <= 0) {
 			continue;
 		}
 		/* To limit CPU time, if it is very likely that an interval
