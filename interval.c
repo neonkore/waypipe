@@ -128,7 +128,9 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 
 	for (int jn = 0; jn < new_count; jn++) {
 		struct ext_interval e = new_list[jn];
-		if (e.width <= 0 || e.rep <= 0) {
+		/* ignore invalid intervals -- also, if e.start is close to
+		 * INT32_MIN, the stream merge breaks */
+		if (e.width <= 0 || e.rep <= 0 || e.start < 0) {
 			continue;
 		}
 		/* To limit CPU time, if it is very likely that an interval
@@ -138,6 +140,12 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		bool force_combine = (absorbed > 10000) ||
 				     10 * remaining < src_count;
 
+		long end = e.start + e.stride * (long)(e.rep - 1) + e.width;
+		if (end >= INT32_MAX) {
+			/* overflow protection */
+			e.width = INT32_MAX - 1 - e.start;
+			e.rep = 1;
+		}
 		/* Remove internal gaps are smaller than the margin and hence
 		 * would need to be merged away anyway. */
 		if (e.width > e.stride - merge_margin || force_combine) {
