@@ -202,10 +202,6 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
         base_g = str(gaps[0])
         nts = [str(x) for x in gaps[1:]]
 
-        if "geometry" in func_name:
-            print(w_args)
-            print(base_g, nts)
-
         if len(nts) > 0:
             W("static const bool sis_" + func_name + "[] = {")
             W("\t" + ", ".join(nta))
@@ -294,7 +290,6 @@ if __name__ == "__main__":
 
     export_list = open(req_file).read().split("\n")
 
-    print("Mode: {} Source: {} Dest: {}".format(mode, source, dest))
     is_header = {"data": False, "header": True}[mode]
 
     tree = ET.parse(source)
@@ -350,13 +345,10 @@ if __name__ == "__main__":
                 elif item.tag == "description":
                     pass
                 else:
-                    print(item)
-                    quit()
+                    raise Exception(item.tag)
 
             write_interface(is_header, ostream, iface_name, func_data)
 
         if is_header:
             W()
             W("#endif /* {} */".format(header_guard))
-
-    print("Done writing {}!".format(dest))
