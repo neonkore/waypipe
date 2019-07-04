@@ -41,9 +41,8 @@ Build with meson[0]. A typical incantation is
 
 Requirements:
 
-* libffi
 * meson (build, >= 0.47. and its dependencies `ninja` and `pkg-config`)
-* wayland (build, >= 1.15, to support absolute paths in WAYLAND_DISPLAY)
+* wayland (build; clients need >= 1.15 to handle absolute paths in WAYLAND_DISPLAY)
 * wayland-protocols (build, >= 1.12, for the xdg-shell protocol, and others)
 * libzstd (optional)
 * liblz4 (optional)
