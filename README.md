@@ -41,11 +41,11 @@ Build with meson[0]. A typical incantation is
 
 Requirements:
 
-* meson (build, >= 0.47. and its dependencies `ninja` and `pkg-config`)
-* wayland (build; clients need >= 1.15 to handle absolute paths in WAYLAND_DISPLAY)
+* meson (build, >= 0.47. with dependencies `ninja`, `pkg-config`, `python3`)
+* wayland (build, >= 1.10 for the `wl_surface::damage_buffer` request)
 * wayland-protocols (build, >= 1.12, for the xdg-shell protocol, and others)
-* libzstd (optional)
 * liblz4 (optional)
+* libzstd (optional, >= 1.4.0)
 * libgbm (optional, to support programs using OpenGL via DMABUFs)
 * libdrm (optional, same as for libgbm)
 * ffmpeg (optional, >=3.1, needs avcodec/avutil/swscale for lossy video encoding)

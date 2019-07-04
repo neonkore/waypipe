@@ -16,7 +16,6 @@ wl_registry_req_bind
 wl_shm_req_create_pool
 wl_shm_pool_req_create_buffer
 wl_shm_pool_req_resize
-wl_surface_req_amage_buffer
 wl_surface_req_attach
 wl_surface_req_commit
 wl_surface_req_damage

@@ -39,8 +39,9 @@
 #include <time.h>
 #include <unistd.h>
 
-int run_server(const char *socket_path, const struct main_config *config,
-		bool oneshot, bool unlink_at_end, const char *application,
+int run_server(const char *socket_path, const char *display_path,
+		const struct main_config *config, bool oneshot,
+		bool unlink_at_end, const char *application,
 		char *const app_argv[]);
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool via_socket, pid_t eol_pid);
@@ -77,13 +78,14 @@ static const char usage_string[] =
 		"                         client default: /tmp/waypipe-client.sock\n"
 		"                         ssh mode: sets the prefix for the socket path\n"
 		"  -v, --version        print waypipe version and exit\n"
+		"      --display D      server,ssh mode: set the Wayland display name or path\n"
 		"      --drm-node R     set the local render node. default: /dev/dri/renderD128\n"
 		"      --remote-node R  ssh mode: set the remote render node path\n"
-		"      --login-shell    server mode: if server CMD is empty, run a login shell\n"
-		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
 		"      --linear-dmabuf  only permit gpu buffers without modifier flags\n"
-		"      --video          compress certain linear dmabufs only with a video codec\n"
+		"      --login-shell    server mode: if server CMD is empty, run a login shell\n"
 		"      --threads T      set thread pool size, default=hardware threads/2\n"
+		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
+		"      --video          compress certain linear dmabufs only with a video codec\n"
 		"\n";
 
 static int usage(int retcode)
@@ -250,13 +252,14 @@ static void setup_login_shell_command(char shell[static 256],
 
 void handle_noop(int sig) { (void)sig; }
 
-#define ARG_UNLINK 1001
+#define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
-#define ARG_REMOTENODE 1003
+#define ARG_LINEAR_DMABUF 1003
 #define ARG_LOGIN_SHELL 1004
-#define ARG_LINEAR_DMABUF 1005
-#define ARG_VIDEO 1006
-#define ARG_THREADS 1007
+#define ARG_REMOTENODE 1005
+#define ARG_THREADS 1006
+#define ARG_UNLINK 1007
+#define ARG_VIDEO 1008
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -273,6 +276,7 @@ static const struct option options[] = {
 		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
 		{"video", no_argument, NULL, ARG_VIDEO},
 		{"threads", required_argument, NULL, ARG_THREADS},
+		{"display", required_argument, NULL, ARG_DISPLAY},
 		{0, 0, NULL, 0}};
 
 int main(int argc, char **argv)
@@ -287,6 +291,7 @@ int main(int argc, char **argv)
 	char *remote_drm_node = NULL;
 	char *comp_string = NULL;
 	char *nthread_string = NULL;
+	char *wayland_display = NULL;
 	const char *socketpath = NULL;
 
 	struct main_config config = {
@@ -367,6 +372,12 @@ int main(int argc, char **argv)
 			break;
 		case 'v':
 			version = true;
+			break;
+		case ARG_DISPLAY:
+			if (mode == MODE_CLIENT) {
+				fail = true;
+			}
+			wayland_display = optarg;
 			break;
 		case ARG_UNLINK:
 			if (mode != MODE_SERVER) {
@@ -487,8 +498,16 @@ int main(int argc, char **argv)
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-server.sock";
 		}
-		return run_server(socketpath, &config, oneshot, unlink_at_end,
-				application, app_argv);
+		char display_path[20];
+		if (!wayland_display) {
+			char rbytes[9];
+			fill_rand_token(rbytes);
+			rbytes[8] = 0;
+			sprintf(display_path, "wayland-%s", rbytes);
+			wayland_display = display_path;
+		}
+		return run_server(socketpath, wayland_display, &config, oneshot,
+				unlink_at_end, application, app_argv);
 	} else {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe";
@@ -510,9 +529,14 @@ int main(int argc, char **argv)
 		char linkage[256];
 		char serversock[110];
 		char clientsock[110];
+		char remote_display[20];
 		sprintf(serversock, "%s-server-%s.sock", socketpath, rbytes);
 		sprintf(clientsock, "%s-client-%s.sock", socketpath, rbytes);
 		sprintf(linkage, "%s:%s", serversock, clientsock);
+		sprintf(remote_display, "wayland-%s", rbytes);
+		if (!wayland_display) {
+			wayland_display = remote_display;
+		}
 
 		bool allocates_pty = false;
 		int dstidx = locate_openssh_cmd_hostname(
@@ -532,13 +556,14 @@ int main(int argc, char **argv)
 			wp_log(WP_ERROR, "Fork failure");
 			return EXIT_FAILURE;
 		} else if (conn_pid == 0) {
-			int nextra = 10 + debug + oneshot +
+			int nextra = 12 + debug + oneshot +
 				     2 * (remote_drm_node != NULL) +
 				     2 * (config.compression != COMP_NONE) +
 				     config.video_if_possible +
 				     2 * needs_login_shell +
 				     2 * (config.n_worker_threads != 0);
-			char **arglist = calloc(argc + nextra, sizeof(char *));
+			char **arglist = calloc((size_t)(argc + nextra),
+					sizeof(char *));
 
 			int offset = 0;
 			arglist[offset++] = "/usr/bin/ssh";
@@ -589,6 +614,8 @@ int main(int argc, char **argv)
 			arglist[dstidx + 1 + offset++] = "--unlink-socket";
 			arglist[dstidx + 1 + offset++] = "-s";
 			arglist[dstidx + 1 + offset++] = serversock;
+			arglist[dstidx + 1 + offset++] = "--display";
+			arglist[dstidx + 1 + offset++] = wayland_display;
 			arglist[dstidx + 1 + offset++] = "server";
 			for (int i = dstidx + 1; i < argc; i++) {
 				arglist[offset + i] = argv[i];

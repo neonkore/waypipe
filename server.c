@@ -38,8 +38,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-int run_server(const char *socket_path, const struct main_config *config,
-		bool oneshot, bool unlink_at_end, const char *application,
+int run_server(const char *socket_path, const char *wayland_display,
+		const struct main_config *config, bool oneshot,
+		bool unlink_at_end, const char *application,
 		char *const app_argv[])
 {
 	wp_log(WP_DEBUG, "I'm a server on %s, running: %s", socket_path,
@@ -52,10 +53,24 @@ int run_server(const char *socket_path, const struct main_config *config,
 				socket_path);
 		return EXIT_FAILURE;
 	}
+	char display_path[256];
+	if (!oneshot) {
+		if (wayland_display[0] == '/') {
+			snprintf(display_path, 256, "%s", wayland_display);
+		} else {
+			const char *xdg_dir = getenv("XDG_RUNTIME_DIR");
+			if (!xdg_dir) {
+				wp_log(WP_ERROR,
+						"Env. var XDG_RUNTIME_DIR not available, cannot place display socket for WAYLAND_DISPLAY=\"%s\"",
+						wayland_display);
+				return EXIT_FAILURE;
+			}
+			snprintf(display_path, 256, "%s/%s", xdg_dir,
+					wayland_display);
+		}
+	}
 
 	// Setup connection to program
-	char displaypath[256];
-	sprintf(displaypath, "%s.disp.sock", socket_path);
 	int wayland_socket = -1, server_link = -1, wdisplay_socket = -1;
 	if (oneshot) {
 		int csockpair[2];
@@ -69,7 +84,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 	} else {
 		// Bind a socket for WAYLAND_DISPLAY, and listen
 		int nmaxclients = 128;
-		wdisplay_socket = setup_nb_socket(displaypath, nmaxclients);
+		wdisplay_socket = setup_nb_socket(display_path, nmaxclients);
 		if (wdisplay_socket == -1) {
 			// Error messages already made
 			return EXIT_FAILURE;
@@ -81,7 +96,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 	if (pid == -1) {
 		wp_log(WP_ERROR, "Fork failed");
 		if (!oneshot) {
-			unlink(displaypath);
+			unlink(display_path);
 		}
 		return EXIT_FAILURE;
 	} else if (pid == 0) {
@@ -98,7 +113,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 			// Since Wayland 1.15, absolute paths are supported in
 			// WAYLAND_DISPLAY
 			unsetenv("WAYLAND_SOCKET");
-			setenv("WAYLAND_DISPLAY", displaypath, 1);
+			setenv("WAYLAND_DISPLAY", wayland_display, 1);
 			close(wdisplay_socket);
 		}
 
@@ -205,7 +220,7 @@ int run_server(const char *socket_path, const struct main_config *config,
 		if (unlink_at_end) {
 			unlink(socket_path);
 		}
-		unlink(displaypath);
+		unlink(display_path);
 		close(wdisplay_socket);
 
 		// Wait for child processes to exit

@@ -60,11 +60,11 @@ will be displayed locally.
 *-v, --version*
 	Print the version number and quit.
 
-*--unlink-socket*
-	Only for server mode; on shutdown, unlink the Unix socket that waypipe connects to.
-
-*--login-shell*
-	Only for server mode; if no command is being run, open a login shell.
+*--display D*
+	For server or ssh mode, provide _WAYLAND_DISPLAY_ and let waypipe configure
+	its Wayland display socket to have a matching path. (If *D* is not an
+	absolute path, the socket will be created in the folder given by the
+	environment variable _XDG_RUNTIME_DIR_.)
 
 *--drm-node R*
 	Specify the path *R* to the drm device that this instance of waypipe should
@@ -80,15 +80,21 @@ will be displayed locally.
 	DMABUF image layout modifiers which are very slow for waypipe to copy
 	and update; this flag can ensure that they fall back to friendlier formats.
 
-*--video*
-	Compress specific DMABUF formats using a lossy video codec. Opaque, 10-bit, and
-	multiplanar formats, among others, are not supported.
+*--login-shell*
+	Only for server mode; if no command is being run, open a login shell.
 
 *--threads T*
 	Set the number of total threads (including the main thread) which a *waypipe*
 	instance will create. These threads will be used to parallelize compression
 	operations. This flag is passed on to *waypipe server* when given to *waypipe
 	ssh*.
+
+*--unlink-socket*
+	Only for server mode; on shutdown, unlink the Unix socket that waypipe connects to.
+
+*--video*
+	Compress specific DMABUF formats using a lossy video codec. Opaque, 10-bit, and
+	multiplanar formats, among others, are not supported.
 
 # EXAMPLE 
 
@@ -103,7 +109,7 @@ One can obtain similar behavior by explictly running waypipe and ssh:
 
 ```
 	waypipe --socket /tmp/socket-client client  &
-	ssh -R/tmp/socket-server:/tmp/socket-client -t user@exserv \
+	ssh -R/tmp/socket-server:/tmp/socket-client user@exserv \
 		waypipe --socket /tmp/socket-server server -- weston-flower
 	kill %1
 ```

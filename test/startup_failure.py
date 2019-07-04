@@ -163,12 +163,19 @@ run_test(
     False,
     False,
 )
+run_test(
+    "b_server_no_env",
+    [waypipe_path, "-s", server_socket_path, "server", "sleep", "0.26"],
+    base_env,
+    False,
+    False,
+)
 
 # Configurations that should succeed
 run_test(
-    "g_server_no_env",
+    "g_server_std_env",
     [waypipe_path, "-s", server_socket_path, "server", "sleep", "0.26"],
-    base_env,
+    standard_env,
     False,
     True,
 )
