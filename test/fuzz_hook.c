@@ -191,54 +191,34 @@ int main(int argc, char **argv)
 		if ((long)packet_size > file_nwords - cursor) {
 			packet_size = (uint32_t)(file_nwords - cursor);
 		}
-		if (packet_size > 8192) {
-			packet_size = 8192;
+		if (packet_size > 2048) {
+			packet_size = 2048;
 		}
+		/* 2 msec max delay for 8KB of data, assuming no system
+		 * interference, should be easily attainable */
+		int max_write_delay_ms = 1;
+		int max_read_delay_ms = 2;
 
-		struct pollfd pfds[2];
-		pfds[0].fd = srv_fds[0];
-		pfds[1].fd = cli_fds[0];
-		pfds[0].events = POLLIN | (to_server ? POLLOUT : 0);
-		pfds[1].events = POLLIN | (!to_server ? POLLOUT : 0);
-
-		/* if it takes too long, we skip the packet */
-		int np = poll(pfds, 2, 5);
-		if (np == -1) {
+		int send_fd = to_server ? srv_fds[0] : cli_fds[0];
+		/* Write packet to stream */
+		struct pollfd write_pfd;
+		write_pfd.fd = send_fd;
+		write_pfd.events = POLLOUT;
+		int nw;
+	retry_poll:
+		nw = poll(&write_pfd, 1, max_write_delay_ms);
+		if (nw == -1) {
 			if (new_fileno != -1) {
 				close(new_fileno);
 			}
 
 			if (errno == EINTR) {
-				continue;
+				goto retry_poll;
 			}
 			printf("Poll error\n");
 			break;
-		}
-		if (np == 0) {
-			wp_log(WP_ERROR, "Timing out main poll loop");
-		}
-		for (int i = 0; i < 2; i++) {
-			if (pfds[i].revents & POLLIN) {
-				char cmsgdata[(CMSG_LEN(28 * sizeof(int32_t)))];
-				struct iovec the_iovec;
-				the_iovec.iov_len = 65536;
-				the_iovec.iov_base = ignore_buf;
-				struct msghdr msg;
-				msg.msg_name = NULL;
-				msg.msg_namelen = 0;
-				msg.msg_iov = &the_iovec;
-				msg.msg_iovlen = 1;
-				msg.msg_control = &cmsgdata;
-				msg.msg_controllen = sizeof(cmsgdata);
-				msg.msg_flags = 0;
-				ssize_t ret = recvmsg(pfds[i].fd, &msg, 0);
-				if (ret == -1) {
-					wp_log(WP_ERROR, "Error in recvmsg");
-				}
-			}
-		}
-
-		if (pfds[0].revents & POLLOUT || pfds[1].revents & POLLOUT) {
+		} else if (nw == 1) {
+			/* Send message */
 			struct iovec the_iovec;
 			the_iovec.iov_len = packet_size * 4;
 			the_iovec.iov_base = (char *)&data[cursor];
@@ -275,11 +255,55 @@ int main(int argc, char **argv)
 				wp_log(WP_ERROR, "Error in sendmsg");
 				break;
 			}
+		} else {
+			wp_log(WP_ERROR,
+					"Failed to send message before timeout");
 		}
-
 		if (new_fileno != -1) {
 			close(new_fileno);
 		}
+
+		/* Wait up to max_delay for a response. Almost all packets
+		 * should be passed on unmodified; a very small fraction
+		 * are dropped */
+		struct pollfd read_pfds[2];
+		read_pfds[0].fd = srv_fds[0];
+		read_pfds[1].fd = cli_fds[0];
+		read_pfds[0].events = POLLIN;
+		read_pfds[1].events = POLLIN;
+		int nr = poll(read_pfds, 2,
+				packet_size > 0 ? max_read_delay_ms : 0);
+		if (nr == -1) {
+			if (errno == EINTR) {
+				continue;
+			}
+			printf("Poll error\n");
+			break;
+		} else if (nr == 0) {
+			wp_log(WP_DEBUG, "No reply to sent packet %d",
+					packet_size);
+		}
+		for (int i = 0; i < 2; i++) {
+			if (read_pfds[i].revents & POLLIN) {
+				char cmsgdata[(CMSG_LEN(28 * sizeof(int32_t)))];
+				struct iovec the_iovec;
+				the_iovec.iov_len = 65536;
+				the_iovec.iov_base = ignore_buf;
+				struct msghdr msg;
+				msg.msg_name = NULL;
+				msg.msg_namelen = 0;
+				msg.msg_iov = &the_iovec;
+				msg.msg_iovlen = 1;
+				msg.msg_control = &cmsgdata;
+				msg.msg_controllen = sizeof(cmsgdata);
+				msg.msg_flags = 0;
+				ssize_t ret = recvmsg(read_pfds[i].fd, &msg, 0);
+				if (ret == -1) {
+					wp_log(WP_ERROR, "Error in recvmsg");
+				}
+			}
+		}
+
 		cursor += packet_size;
 	}
 	close(srv_fds[0]);
