@@ -283,6 +283,11 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		/* Set modifiers to linear, the most likely/portable format */
 		bo = gbm_bo_create(rd->dev, width, height, format,
 				GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+		if (!bo) {
+			wp_log(WP_ERROR, "Failed to make dmabuf: %s",
+					strerror(errno));
+			return NULL;
+		}
 	} else {
 		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
 		// assuming the format is a very standard one which can be
@@ -304,6 +309,12 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		 */
 		bo = gbm_bo_create_with_modifiers(rd->dev, info->width,
 				info->height, info->format, modifiers, 2);
+		if (!bo) {
+			wp_log(WP_ERROR,
+					"Failed to make dmabuf (with modifier %lx): %s",
+					info->modifier, strerror(errno));
+			return NULL;
+		}
 		int tfd = gbm_bo_get_fd(bo);
 		long csize = get_dmabuf_fd_size(tfd);
 		close(tfd);
@@ -336,10 +347,6 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 				}
 			}
 		}
-	}
-	if (!bo) {
-		wp_log(WP_ERROR, "Failed to make dmabuf: %s", strerror(errno));
-		return NULL;
 	}
 
 	void *handle = NULL;
