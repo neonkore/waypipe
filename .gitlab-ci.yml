@@ -47,6 +47,7 @@ debian32_container_prep:
     when: always
     paths:
     - b-*/meson-logs
+    - b-*/test
     - p-*
   
 debian-build:
