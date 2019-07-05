@@ -799,7 +799,11 @@ void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)
 		// this protocol message was received
 		return;
 	}
-	wp_log(WP_ERROR, "Pool resize to %d, TODO", size);
+	/* The display side will be updated already via buffer update msg */
+	if (!ctx->on_display_side) {
+		extend_shm_shadow(
+				&ctx->g->map, the_shm_pool->owned_buffer, size);
+	}
 }
 void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
 		int32_t offset, int32_t width, int32_t height, int32_t stride,

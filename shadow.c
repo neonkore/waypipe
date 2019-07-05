@@ -1058,6 +1058,17 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 					transfers, nblocks, blocks);
 		}
 
+		if (sfd->has_been_extended) {
+			sfd->has_been_extended = false;
+			struct transfer *tf = &transfers[(*ntransfers)++];
+			tf->type = sfd->type;
+			tf->obj_id = sfd->remote_id;
+			tf->nblocks = 0;
+			tf->subtransfers = NULL;
+			tf->special.block_meta = FILE_SIZE_EXTEND_FLAG |
+						 (uint32_t)sfd->buffer_size;
+		}
+
 		int total_area = get_damage_area(&sfd->damage);
 		total_area = min(total_area, (int)sfd->buffer_size);
 		if (total_area == 0) {
@@ -1224,7 +1235,7 @@ void create_from_update(struct fd_translation_map *map,
 	if (sfd->type == FDC_FILE) {
 		sfd->mem_local = NULL;
 		sfd->buffer_size = (size_t)(transf->special.block_meta &
-					    ~FILE_SIZE_VIDEO_FLAG);
+					    FILE_SIZE_SIZE_MASK);
 		sfd->mem_mirror = calloc(
 				(size_t)align((int)sfd->buffer_size, 8), 1);
 
@@ -1326,7 +1337,7 @@ void create_from_update(struct fd_translation_map *map,
 		bool use_video = transf->special.block_meta &
 				 FILE_SIZE_VIDEO_FLAG;
 		sfd->buffer_size = (size_t)(transf->special.block_meta &
-					    ~FILE_SIZE_VIDEO_FLAG);
+					    FILE_SIZE_SIZE_MASK);
 		size_t diff_space = 0;
 		get_max_diff_space_usage(map, sfd->buffer_size, &diff_space,
 				&sfd->compress_space);
@@ -1401,6 +1412,37 @@ void create_from_update(struct fd_translation_map *map,
 	}
 }
 
+static void increase_buffer_sizes(struct fd_translation_map *map,
+		struct shadow_fd *sfd, size_t new_size)
+{
+	size_t old_size = sfd->buffer_size;
+	munmap(sfd->mem_local, old_size);
+	sfd->buffer_size = new_size;
+	sfd->mem_local = mmap(NULL, sfd->buffer_size, PROT_READ | PROT_WRITE,
+			MAP_SHARED, sfd->fd_local, 0);
+	if (!sfd->mem_local) {
+		wp_log(WP_ERROR, "Mmap failed!");
+		return;
+	}
+	// todo: handle allocation failures
+	sfd->mem_mirror = realloc(sfd->mem_mirror, align(sfd->buffer_size, 8));
+	/* set extension bytes to zero so that the standard diff procedure has
+	 * a known state to work against */
+	memset(sfd->mem_mirror + old_size, 0,
+			align(sfd->buffer_size, 8) - old_size);
+
+	size_t diff_space = 0;
+	get_max_diff_space_usage(map, sfd->buffer_size, &diff_space,
+			&sfd->compress_space);
+	if (sfd->diff_buffer) {
+		sfd->diff_buffer = realloc(sfd->diff_buffer, diff_space);
+	}
+	if (sfd->compress_buffer && sfd->compress_space) {
+		sfd->compress_buffer =
+				realloc(sfd->compress_buffer, diff_space);
+	}
+}
+
 void apply_update(struct fd_translation_map *map, struct render_data *render,
 		const struct transfer *transf)
 {
@@ -1416,10 +1458,23 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			wp_log(WP_ERROR, "Transfer type mismatch %d %d",
 					transf->type, sfd->type);
 		}
+		uint32_t m_size = transf->special.block_meta &
+				  FILE_SIZE_SIZE_MASK;
+		if (transf->special.block_meta & FILE_SIZE_EXTEND_FLAG) {
+			/* Zero-extend the buffer to have the new size */
+			if (ftruncate(sfd->fd_local, m_size) == -1) {
+				wp_log(WP_ERROR,
+						"Failed to resize file buffer: %s",
+						strerror(errno));
+			}
+			increase_buffer_sizes(map, sfd, m_size);
+
+			return;
+		}
+
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		uncompress_buffer(map, block.size, block.data,
-				transf->special.block_meta,
+		uncompress_buffer(map, block.size, block.data, m_size,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff
@@ -1743,6 +1798,42 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 			cur->pipe_lclosed = true;
 		}
 	}
+}
+
+void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
+		size_t new_size)
+{
+	if (sfd->buffer_size >= new_size) {
+		return;
+	}
+
+	// Verify that the file size actually increased
+	struct stat st;
+	int fs = fstat(sfd->fd_local, &st);
+	if (fs == -1) {
+		wp_log(WP_ERROR, "Checking file size failed: %s",
+				strerror(errno));
+		return;
+	}
+	if ((size_t)st.st_size > new_size) {
+		wp_log(WP_ERROR,
+				"Trying to resize file larger (%d) than the actual file size (%d), ignoring",
+				(int)new_size, (int)st.st_size);
+		return;
+	}
+
+	size_t old_size = sfd->buffer_size;
+	increase_buffer_sizes(map, sfd, new_size);
+
+	sfd->has_been_extended = true;
+	sfd->is_dirty = true;
+	struct ext_interval fresh = {
+			.start = (int)old_size,
+			.width = (int)(new_size - old_size),
+			.rep = 1,
+			.stride = 0,
+	};
+	merge_damage_records(&sfd->damage, 1, &fresh);
 }
 
 static void *worker_thread_main(void *arg)

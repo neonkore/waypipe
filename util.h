@@ -307,6 +307,7 @@ struct shadow_fd {
 	size_t compress_space;
 
 	// File data
+	bool has_been_extended;
 	char file_shm_buf_name[256];
 
 	// Pipe data
@@ -335,14 +336,17 @@ struct shadow_fd {
 };
 
 #define FILE_SIZE_VIDEO_FLAG (1u << 31)
+#define FILE_SIZE_EXTEND_FLAG (1u << 30)
+#define FILE_SIZE_SIZE_MASK ((1u << 30) - 1)
 struct transfer {
 	fdcat_t type;
 	int obj_id;
 	// type-specific extra data
 	union {
 		int pipeclose;
-		/* top bit: file size video flag; lower 31, the size of
-		 * the transfer when uncompressed */
+		/* top bit: file size video flag;
+		 * next bit: is this an 'extend' message for shared memory bufs
+		 * lower 30, the size of the transfer when uncompressed */
 		uint32_t block_meta;
 		int raw; // < for obviously type-independent cases
 	} special;
@@ -501,6 +505,11 @@ void decref_transferred_rids(
 struct transfer *setup_single_block_transfer(int *ntransfers,
 		struct transfer transfers[], int *nblocks,
 		struct bytebuf blocks[], size_t size, const char *data);
+
+/** If sfd->type == FDC_FILE, increase the size of the backing data to support
+ * at least new_size, and mark the new part of underlying file as dirty */
+void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
+		size_t new_size);
 
 // parsing.c
 
