@@ -1836,7 +1836,7 @@ void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
 				strerror(errno));
 		return;
 	}
-	if ((size_t)st.st_size > new_size) {
+	if ((size_t)st.st_size < new_size) {
 		wp_log(WP_ERROR,
 				"Trying to resize file larger (%d) than the actual file size (%d), ignoring",
 				(int)new_size, (int)st.st_size);
