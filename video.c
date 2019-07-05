@@ -70,14 +70,12 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	(void)stride;
 	(void)drm_format;
 }
-void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[], bool first)
+void collect_video_from_mirror(struct shadow_fd *sfd,
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
+		bool first)
 {
 	(void)sfd;
-	(void)ntransfers;
 	(void)transfers;
-	(void)nblocks;
 	(void)blocks;
 	(void)first;
 }
@@ -462,9 +460,9 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	sfd->video_color_context = sws;
 }
 
-void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[], bool first)
+void collect_video_from_mirror(struct shadow_fd *sfd,
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
+		bool first)
 {
 
 	sfd->video_reg_frame->data[0] = (uint8_t *)sfd->mem_mirror;
@@ -530,17 +528,15 @@ void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
 		}
 		av_packet_unref(pkt);
 
-		struct transfer *tf = setup_single_block_transfer(ntransfers,
-				transfers, nblocks, blocks, tsize,
-				sfd->video_buffer);
+		struct transfer *tf = setup_single_block_transfer(
+				transfers, blocks, tsize, sfd->video_buffer);
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
 		tf->special.block_meta = (uint32_t)sfd->buffer_size |
 					 FILE_SIZE_VIDEO_FLAG;
 	} else if (first) {
-		struct transfer *tf = setup_single_block_transfer(ntransfers,
-				transfers, nblocks, blocks,
-				sizeof(struct dmabuf_slice_data),
+		struct transfer *tf = setup_single_block_transfer(transfers,
+				blocks, sizeof(struct dmabuf_slice_data),
 				(const char *)&sfd->dmabuf_info);
 		// Q: use a subtype 'FDC_VIDEODMABUF ?'
 		tf->type = sfd->type;

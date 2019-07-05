@@ -73,6 +73,13 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
 
+/** A useful helper routine for lists and stacks. `count` is the number of
+ * objects that will be needed; `obj_size` their side; `size_t` the number
+ * of objects that the malloc'd data can contain, and `data` the list buffer
+ * itself. If count < space, resize the list and update space. Returns -1 on
+ * allocation failure */
+int buf_ensure_size(int count, size_t obj_size, int *space, void **data);
+
 enum log_level { WP_DEBUG = 0, WP_ERROR = 1 };
 typedef void (*log_handler_func_t)(const char *file, int line,
 		enum log_level level, const char *fmt, ...);
@@ -104,6 +111,11 @@ bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options);
 struct bytebuf {
 	size_t size;
 	char *data;
+};
+
+struct bytebuf_stack {
+	struct bytebuf *data;
+	int size, count;
 };
 
 struct render_data {
@@ -353,8 +365,13 @@ struct transfer {
 
 	int nblocks;
 	// each subtransfer must include space up to the next 8-byte boundary.
-	// they will all be concatenated by the writev call
-	struct bytebuf *subtransfers;
+	// this is an index into the array of blocks
+	int subtransfer_idx;
+};
+
+struct transfer_stack {
+	struct transfer *data;
+	int size, count;
 };
 
 struct wp_interface;
@@ -456,12 +473,11 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
-		int *ntransfers, struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[]);
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks);
 /** Apply a file update to the translation map, creating an entry when there is
  * none */
 void apply_update(struct fd_translation_map *map, struct render_data *render,
-		const struct transfer *transf);
+		const struct transfer *transf, const struct bytebuf *block);
 /** Get the shadow structure associated to a remote id, or NULL if it dne */
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 
@@ -502,9 +518,8 @@ void decref_transferred_fds(
 		struct fd_translation_map *map, int nfds, int fds[]);
 void decref_transferred_rids(
 		struct fd_translation_map *map, int nids, int ids[]);
-struct transfer *setup_single_block_transfer(int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[], size_t size, const char *data);
+struct transfer *setup_single_block_transfer(struct transfer_stack *transfers,
+		struct bytebuf_stack *blocks, size_t size, const char *data);
 
 /** If sfd->type == FDC_FILE, increase the size of the backing data to support
  * at least new_size, and mark the new part of underlying file as dirty */
@@ -587,9 +602,9 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 		int stride, uint32_t drm_format);
 /** the video frame to be transferred should already have been transferred into
  * `sfd->mem_mirror`. */
-void collect_video_from_mirror(struct shadow_fd *sfd, int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[], bool first);
+void collect_video_from_mirror(struct shadow_fd *sfd,
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
+		bool first);
 void apply_video_packet_to_mirror(
 		struct shadow_fd *sfd, size_t size, const char *data);
 /** All return pointers can be NULL. Determines how much extra space or

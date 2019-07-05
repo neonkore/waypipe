@@ -78,7 +78,7 @@ static int update_file(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 	memset((char *)data + start, seqno, end - start);
 
 	munmap(data, sz);
-	return end - start;
+	return (int)(end - start);
 }
 
 static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
@@ -105,25 +105,26 @@ static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 	memset((char *)data + start, seqno, end - start);
 
 	unmap_dmabuf(bo, map_handle);
-	return end - start;
+	return (int)(end - start);
 }
 
-static void combine_transfer_blocks(struct transfer *transfer,
-		struct bytebuf *ret_block, int nblocks, struct bytebuf *blocks)
+static void combine_transfer_blocks(struct bytebuf_stack *blocks)
 {
 	size_t net_size = 0;
-	for (int i = 0; i < nblocks; i++) {
-		net_size += blocks[i].size;
+	for (int i = 0; i < blocks->count; i++) {
+		net_size += blocks->data[i].size;
 	}
-	ret_block->size = net_size;
-	ret_block->data = malloc(net_size);
+	struct bytebuf ret_block;
+	ret_block.size = net_size;
+	ret_block.data = malloc(net_size);
 	size_t pos = 0;
-	for (int i = 0; i < nblocks; i++) {
-		memcpy(ret_block->data + pos, blocks[i].data, blocks[i].size);
-		pos += blocks[i].size;
+	for (int i = 0; i < blocks->count; i++) {
+		memcpy(ret_block.data + pos, blocks->data[i].data,
+				blocks->data[i].size);
+		pos += blocks->data[i].size;
 	}
-	transfer->subtransfers = ret_block;
-	transfer->nblocks = 1;
+	blocks->data[0] = ret_block;
+	blocks->count = 1;
 }
 
 static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
@@ -184,35 +185,44 @@ static bool test_transfer(struct fd_translation_map *src_map,
 		struct fd_translation_map *dst_map, int rid, int ndiff,
 		struct render_data *render_data)
 {
-	int ntransfers = 0, nblocks = 0;
-	struct transfer transfers[10];
-	struct bytebuf blocks[20];
+
+	struct transfer_stack transfers;
+	transfers.size = 1;
+	transfers.count = 0;
+	transfers.data = calloc(1, sizeof(struct transfer));
+	struct bytebuf_stack blocks;
+	blocks.size = 1;
+	blocks.count = 0;
+	blocks.data = calloc(1, sizeof(struct bytebuf));
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
-	collect_update(src_map, src_shadow, &ntransfers, transfers, &nblocks,
-			blocks);
+	collect_update(src_map, src_shadow, &transfers, &blocks);
 
 	if (ndiff == 0) {
-		if (ntransfers > 0) {
+		free(transfers.data);
+		free(blocks.data);
+		if (transfers.count > 0) {
 			wp_log(WP_ERROR,
 					"Collecting updates gave a transfer when none was expected",
-					ntransfers);
+					transfers.count);
 			return false;
 		}
 		return true;
 	}
-	if (ntransfers != 1) {
+	if (transfers.count != 1) {
 		wp_log(WP_ERROR,
 				"Collecting updates gave a unexpected number (%d) of transfers",
-				ntransfers);
+				transfers.count);
+		free(transfers.data);
+		free(blocks.data);
 		return false;
 	}
 
-	struct transfer res_transfer = transfers[0];
-	struct bytebuf ret_block;
-	combine_transfer_blocks(&res_transfer, &ret_block, nblocks, blocks);
-	apply_update(dst_map, render_data, &res_transfer);
-	free(ret_block.data);
+	combine_transfer_blocks(&blocks);
+	apply_update(dst_map, render_data, &transfers.data[0], &blocks.data[0]);
+	free(blocks.data[0].data);
+	free(transfers.data);
+	free(blocks.data);
 
 	/* first round, this only exists after the transfer */
 	struct shadow_fd *dst_shadow = get_shadow_for_rid(dst_map, rid);

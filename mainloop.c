@@ -39,10 +39,12 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-static ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds,
-		int *numfds, int maxfds)
+// The maximum number of fds libwayland can recvmsg at once
+#define MAX_LIBWAY_FDS 28
+static ssize_t iovec_read(
+		int conn, char *buf, size_t buflen, struct int_window *fds)
 {
-	char cmsgdata[(CMSG_LEN(28 * sizeof(int32_t)))];
+	char cmsgdata[(CMSG_LEN(MAX_LIBWAY_FDS * sizeof(int32_t)))];
 	struct iovec the_iovec;
 	the_iovec.iov_len = buflen;
 	the_iovec.iov_base = buf;
@@ -56,37 +58,30 @@ static ssize_t iovec_read(int conn, char *buf, size_t buflen, int *fds,
 	msg.msg_flags = 0;
 	ssize_t ret = recvmsg(conn, &msg, 0);
 
-	if (fds && numfds) {
-		// Read cmsg
-		struct cmsghdr *header = CMSG_FIRSTHDR(&msg);
-		while (header) {
-			struct cmsghdr *nxt_hdr = CMSG_NXTHDR(&msg, header);
-			if (header->cmsg_level != SOL_SOCKET ||
-					header->cmsg_type != SCM_RIGHTS) {
-				header = nxt_hdr;
-				continue;
-			}
-
-			int *data = (int *)CMSG_DATA(header);
-			int nf = (int)((header->cmsg_len - CMSG_LEN(0)) /
-					sizeof(int));
-			for (int i = 0; i < nf; i++) {
-				if (*numfds < maxfds) {
-					fds[(*numfds)++] = data[i];
-				} else {
-					wp_log(WP_ERROR,
-							"Closing fd %d, internal buffer ran out of space");
-					close(data[i]);
-				}
-			}
-
+	// Read cmsg
+	struct cmsghdr *header = CMSG_FIRSTHDR(&msg);
+	while (header) {
+		struct cmsghdr *nxt_hdr = CMSG_NXTHDR(&msg, header);
+		if (header->cmsg_level != SOL_SOCKET ||
+				header->cmsg_type != SCM_RIGHTS) {
 			header = nxt_hdr;
+			continue;
 		}
+
+		int *data = (int *)CMSG_DATA(header);
+		int nf = (int)((header->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+
+		for (int i = 0; i < nf; i++) {
+			buf_ensure_size(fds->zone_end + 1, sizeof(int),
+					&fds->size, (void **)&fds->data);
+			fds->data[fds->zone_end++] = data[i];
+		}
+
+		header = nxt_hdr;
 	}
 	return ret;
 }
-// The maximum number of fds libwayland can recvmsg at once
-#define MAX_LIBWAY_FDS 28
+
 static ssize_t iovec_write(int conn, const char *buf, size_t buflen,
 		const int *fds, int numfds, int *nfds_written)
 {
@@ -169,25 +164,25 @@ static void untranslate_ids(struct fd_translation_map *map, int nids,
 	}
 }
 
-static void collect_updates(struct fd_translation_map *map, int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[])
+static void collect_updates(struct fd_translation_map *map,
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		collect_update(map, cur, ntransfers, transfers, nblocks,
-				blocks);
+		collect_update(map, cur, transfers, blocks);
 	}
 }
 
 /**
- * Given a set of messages and fds, parse the messages, and if indicated by
- * parsing logic, compact the message buffer by removing selected messages.
+ * Given a set of messages and fds, parse the messages, and if indicated
+ * by parsing logic, compact the message buffer by removing selected
+ * messages.
  *
  * Messages with file descriptors should not be compacted.
  *
  * The amount of the message buffer read is written to `data_used`
- * The new size of the message buffer, after compaction, is `data_newsize`
- * The number of file descriptors read by the protocol is `fds_used`.
+ * The new size of the message buffer, after compaction, is
+ * `data_newsize` The number of file descriptors read by the protocol is
+ * `fds_used`.
  */
 static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		bool from_client, struct char_window *source_bytes,
@@ -205,7 +200,8 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 
 	for (; source_bytes->zone_start < source_bytes->zone_end;) {
 		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
-			// Not enough remaining bytes to parse the header
+			// Not enough remaining bytes to parse the
+			// header
 			wp_log(WP_DEBUG, "Insufficient bytes for header: %d %d",
 					source_bytes->zone_start,
 					source_bytes->zone_end);
@@ -215,18 +211,21 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 				&source_bytes->data[source_bytes->zone_start]);
 		if (source_bytes->zone_start + msgsz > source_bytes->zone_end) {
 			wp_log(WP_DEBUG, "Insufficient bytes");
-			// Not enough remaining bytes to contain the message
+			// Not enough remaining bytes to contain the
+			// message
 			break;
 		}
 		if (msgsz < 8) {
 			wp_log(WP_DEBUG, "Degenerate message, claimed len=%d",
 					msgsz);
-			// Not enough remaining bytes to contain the message
+			// Not enough remaining bytes to contain the
+			// message
 			break;
 		}
 
-		/* We copy the message to the trailing end of the in-progress
-		 * buffer; the parser may elect to modify the message's size */
+		/* We copy the message to the trailing end of the
+		 * in-progress buffer; the parser may elect to modify
+		 * the message's size */
 		memcpy(&scan_bytes.data[scan_bytes.zone_start],
 				&source_bytes->data[source_bytes->zone_start],
 				(size_t)msgsz);
@@ -244,9 +243,9 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 
 	if (anything_unknown) {
 		// All-un-owned buffers are assumed to have changed.
-		// (Note that in some cases, a new protocol could imply a change
-		// for an existing buffer; it may make sense to mark everything
-		// dirty, then.)
+		// (Note that in some cases, a new protocol could imply
+		// a change for an existing buffer; it may make sense to
+		// mark everything dirty, then.)
 		for (struct shadow_fd *cur = g->map.list; cur;
 				cur = cur->next) {
 			if (!cur->has_owner) {
@@ -265,9 +264,10 @@ struct pipe_elem_header {
 	int32_t special;
 };
 
-/* The data transfers from an application to the channel consist of a length
- * prefix, followed by a series of transfer blocks. This structure maintains
- * the transfer block state, with the end goal of transport using 'writev' */
+/* The data transfers from an application to the channel consist of a
+ * length prefix, followed by a series of transfer blocks. This
+ * structure maintains the transfer block state, with the end goal of
+ * transport using 'writev' */
 struct block_transfer {
 	int total_size;
 
@@ -283,19 +283,19 @@ struct block_transfer {
 
 /** Set up metadata and headers for the data transfer to the channel. */
 static void pack_pipe_message(struct block_transfer *bt, int nids,
-		const int ids[], int ntransfers,
-		const struct transfer transfers[])
+		const int ids[], const struct transfer_stack *transfers,
+		const struct bytebuf_stack *blocks)
 {
-	// TODO: network byte order everything, content aware, somewhere in the
-	// chain!
+	// TODO: network byte order everything, content aware, somewhere
+	// in the chain!
 
 	bt->nblocks = 1;
-	for (int i = 0; i < ntransfers; i++) {
+	for (int i = 0; i < transfers->count; i++) {
 		// header + data blocks
-		bt->nblocks += 1 + transfers[i].nblocks;
+		bt->nblocks += 1 + transfers->data[i].nblocks;
 	}
 
-	bt->ntransfers = ntransfers;
+	bt->ntransfers = transfers->count;
 	bt->transfer_block_headers = calloc((size_t)bt->ntransfers,
 			sizeof(struct pipe_elem_header));
 	bt->blocks = calloc((size_t)bt->nblocks, sizeof(struct iovec));
@@ -305,36 +305,36 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 	size_t total_size = header_size;
 
 	int i_block = 1;
-	for (int i = 0; i < ntransfers; i++) {
+	for (int i = 0; i < transfers->count; i++) {
 		struct pipe_elem_header *sd = &bt->transfer_block_headers[i];
-		sd->id = transfers[i].obj_id;
-		sd->type = (int)transfers[i].type;
+		struct transfer *transfer = &transfers->data[i];
+		sd->id = transfer->obj_id;
+		sd->type = (int)transfer->type;
 		sd->size = 0;
-		for (int k = 0; k < transfers[i].nblocks; k++) {
-			sd->size += transfers[i].subtransfers[k].size;
+		struct bytebuf *subseq =
+				&blocks->data[transfer->subtransfer_idx];
+		for (int k = 0; k < transfer->nblocks; k++) {
+			sd->size += subseq[k].size;
 		}
-		sd->special = transfers[i].special.raw;
+		sd->special = transfer->special.raw;
 
 		bt->blocks[i_block].iov_len = sizeof(struct pipe_elem_header);
 		bt->blocks[i_block].iov_base = sd;
 
-		for (int k = 0; k < transfers[i].nblocks; k++) {
-			bt->blocks[i_block + 1 + k].iov_len =
-					transfers[i].subtransfers[k].size;
-			bt->blocks[i_block + 1 + k].iov_base =
-					transfers[i].subtransfers[k].data;
+		for (int k = 0; k < transfer->nblocks; k++) {
+			bt->blocks[i_block + 1 + k].iov_len = subseq[k].size;
+			bt->blocks[i_block + 1 + k].iov_base = subseq[k].data;
 		}
 		size_t num_longs = (size_t)ceildiv(sd->size, sizeof(uint64_t));
 		size_t extrabytes =
 				num_longs * sizeof(uint64_t) - (size_t)sd->size;
 		// each block should space for <=8 trailing bytes anyway
-		bt->blocks[i_block + transfers[i].nblocks].iov_len +=
-				extrabytes;
+		bt->blocks[i_block + transfer->nblocks].iov_len += extrabytes;
 
 		total_size += sizeof(struct pipe_elem_header) +
 			      sizeof(uint64_t) * num_longs;
 
-		i_block += 1 + transfers[i].nblocks;
+		i_block += 1 + transfer->nblocks;
 	}
 
 	uint64_t *cursor = calloc(header_size, 1);
@@ -353,22 +353,22 @@ static void pack_pipe_message(struct block_transfer *bt, int nids,
 	bt->total_size = (int)total_size;
 }
 
-/** Unpack the buffer containing message data, the id list, and file updates.
- * All returned pointers refer to positions in the source buffer.
- * Each transfer structure will point to the single block containing its
- * concatenated data */
+/** Unpack the buffer containing message data, the id list, and file
+ * updates. All returned pointers refer to positions in the source
+ * buffer. Each transfer structure will point to the single block
+ * containing its concatenated data */
 static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
-		char **waymsg, int *nids, int ids[], int *ntransfers,
-		struct transfer transfers[], struct bytebuf blocks[])
+		char **waymsg, int *nids, int ids[],
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks)
 {
 	if (msglen % 8 != 0) {
 		wp_log(WP_ERROR, "Unpacking uneven message, size %ld=%ld mod 8",
 				msglen, msglen % 8);
 		*nids = 0;
-		*ntransfers = 0;
+		transfers->count = 0;
 		return;
 	}
-	int ni = 0, nt = 0;
+	int ni = 0;
 	const uint64_t *cursor = (const uint64_t *)msg;
 	const uint64_t *end = (const uint64_t *)(msg + msglen);
 	while (cursor < end) {
@@ -380,15 +380,24 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 				*waylen = sd->size;
 				*waymsg = (char *)data;
 			} else {
+				int nt = transfers->count++;
+				int nb = blocks->count++;
+				buf_ensure_size(transfers->count,
+						sizeof(struct transfer),
+						&transfers->size,
+						(void **)&transfers->data);
+				buf_ensure_size(blocks->count,
+						sizeof(struct bytebuf),
+						&blocks->size,
+						(void **)&blocks->data);
 				// Add to list of data transfers
-				transfers[nt].obj_id = sd->id;
-				transfers[nt].type = (fdcat_t)sd->type;
-				transfers[nt].special.raw = sd->special;
-				blocks[nt].data = (char *)data;
-				blocks[nt].size = (size_t)sd->size;
-				transfers[nt].nblocks = 1;
-				transfers[nt].subtransfers = &blocks[nt];
-				nt++;
+				transfers->data[nt].obj_id = sd->id;
+				transfers->data[nt].type = (fdcat_t)sd->type;
+				transfers->data[nt].special.raw = sd->special;
+				blocks->data[nb].data = (char *)data;
+				blocks->data[nb].size = (size_t)sd->size;
+				transfers->data[nt].nblocks = 1;
+				transfers->data[nt].subtransfer_idx = nb;
 			}
 			size_t nlongs = ((size_t)sd->size + 7) / 8;
 			if (nlongs > msglen / 8) {
@@ -402,6 +411,7 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 				  nlongs;
 		} else {
 			// Add to list of file descriptors passed along
+
 			ids[ni++] = sd->id;
 
 			cursor += (sizeof(struct pipe_elem_header) /
@@ -409,7 +419,6 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 		}
 	}
 	*nids = ni;
-	*ntransfers = nt;
 }
 
 /* This state corresponds to the in-progress transfer from the program
@@ -430,6 +439,10 @@ struct way_msg_state {
 	char *dbuffer_edited; // messages are copied to here
 	int *rbuffer;         // rids
 	struct int_window fds;
+
+	/* Individual transfer chunks and headers */
+	struct transfer_stack transfers;
+	struct bytebuf_stack blocks;
 
 	/* Buffer data to be writev'd */
 	struct block_transfer cmsg;
@@ -457,6 +470,9 @@ struct chan_msg_state {
 	char *dbuffer;        // pointer to message block
 	char *dbuffer_edited; // messages are copied to here
 	char *cmsg_buffer;
+
+	struct transfer_stack transfers;
+	struct bytebuf_stack blocks;
 };
 
 static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
@@ -472,21 +488,26 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 
 	wp_log(WP_DEBUG, "Read %d byte msg, unpacking", cmsg->cmsg_size);
 
-	int ntransfers = 0;
-	struct transfer transfers[50];
-	struct bytebuf blocks[50];
+	cmsg->transfers.count = 0;
+	cmsg->blocks.count = 0;
 	unpack_pipe_message((size_t)cmsg->cmsg_size, cmsg->cmsg_buffer,
 			&cmsg->dbuffer_end, &cmsg->dbuffer,
-			&cmsg->rbuffer_count, cmsg->rbuffer, &ntransfers,
-			transfers, blocks);
+			&cmsg->rbuffer_count, cmsg->rbuffer, &cmsg->transfers,
+			&cmsg->blocks);
 
 	wp_log(WP_DEBUG,
 			"Read %d byte msg, %d fds, %d transfers. Data buffer has %d bytes",
-			cmsg->cmsg_size, cmsg->rbuffer_count, ntransfers,
-			cmsg->dbuffer_end);
+			cmsg->cmsg_size, cmsg->rbuffer_count,
+			cmsg->transfers.count, cmsg->dbuffer_end);
 
-	for (int i = 0; i < ntransfers; i++) {
-		apply_update(&g->map, &g->render, &transfers[i]);
+	for (int i = 0; i < cmsg->transfers.count; i++) {
+		const struct transfer *transfer = &cmsg->transfers.data[i];
+		const struct bytebuf *block =
+				transfer->nblocks
+						? &cmsg->blocks.data
+								   [transfer->subtransfer_idx]
+						: NULL;
+		apply_update(&g->map, &g->render, transfer, block);
 	}
 
 	untranslate_ids(&g->map, cmsg->rbuffer_count, cmsg->rbuffer,
@@ -570,6 +591,9 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 			wp_log(WP_ERROR, "Invalid transfer block size %ld",
 					size);
 			return -1;
+		} else if (size == 0) {
+			wp_log(WP_ERROR, "Meaningless zero-byte transfer");
+			return -1;
 		} else {
 			DTRACE_PROBE1(waypipe, channel_read_start, size);
 			cmsg->cmsg_buffer = malloc(size);
@@ -636,7 +660,8 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 					"Wrote, have done %d/%d bytes in chunk %ld, %d/%d fds",
 					cmsg->dbuffer_start, cmsg->dbuffer_end,
 					wc, nfds_written, cmsg->tfbuffer_count);
-			// We send as many fds as we can with the first batch
+			// We send as many fds as we can with the first
+			// batch
 			decref_transferred_fds(
 					&g->map, nfds_written, cmsg->tfbuffer);
 			memmove(cmsg->tfbuffer, cmsg->tfbuffer + nfds_written,
@@ -742,9 +767,6 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// We have data to read from programs/pipes
-	int ntransfers = 0, nblocks = 0;
-	struct transfer transfers[50];
-	struct bytebuf blocks[100];
 	ssize_t rc = -1;
 	int old_fbuffer_end = wmsg->fds.zone_end;
 	if (progsock_readable) {
@@ -752,8 +774,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		rc = iovec_read(progfd, wmsg->dbuffer + wmsg->dbuffer_end,
 				(size_t)(wmsg->dbuffer_maxsize -
 						wmsg->dbuffer_end),
-				wmsg->fds.data, &wmsg->fds.zone_end,
-				wmsg->fds.size);
+				&wmsg->fds);
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
 		} else if (rc == -1) {
@@ -768,6 +789,9 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			rc += wmsg->dbuffer_end;
 		}
 	}
+
+	wmsg->transfers.count = 0;
+	wmsg->blocks.count = 0;
 
 	if (rc > 0) {
 		wp_log(WP_DEBUG,
@@ -790,8 +814,8 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 				&dst, &wmsg->fds);
 
 		/* Translate all fds in the zone read by the protocol,
-		 * creating shadow structures if needed. The window-queue
-		 * is then reset */
+		 * creating shadow structures if needed. The
+		 * window-queue is then reset */
 		wmsg->rbuffer_count = wmsg->fds.zone_start;
 		translate_fds(&g->map, &g->render, wmsg->fds.zone_start,
 				wmsg->fds.data, wmsg->rbuffer);
@@ -814,28 +838,30 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			wp_log(WP_DEBUG,
 					"We are transferring a data buffer with %ld bytes",
 					dst.zone_end);
-			transfers[0].obj_id = 0;
-			transfers[0].nblocks = 1;
-			transfers[0].subtransfers = &blocks[0];
-			blocks[0].size = dst.zone_end;
-			blocks[0].data = wmsg->dbuffer_edited;
-			transfers[0].type = FDC_UNKNOWN;
-			ntransfers = 1;
-			nblocks = 1;
+			wmsg->transfers.data[0].obj_id = 0;
+			wmsg->transfers.data[0].nblocks = 1;
+			wmsg->transfers.data[0].subtransfer_idx = 0;
+			wmsg->blocks.data[0].size = dst.zone_end;
+			wmsg->blocks.data[0].data = wmsg->dbuffer_edited;
+			wmsg->transfers.data[0].type = FDC_UNKNOWN;
+			wmsg->transfers.count = 1;
+			wmsg->blocks.count = 1;
 		}
 	}
 
 	read_readable_pipes(&g->map);
-	collect_updates(&g->map, &ntransfers, transfers, &nblocks, blocks);
-	if (ntransfers > 0) {
+	collect_updates(&g->map, &wmsg->transfers, &wmsg->blocks);
+	if (wmsg->transfers.count > 0) {
 		pack_pipe_message(&wmsg->cmsg, wmsg->rbuffer_count,
-				wmsg->rbuffer, ntransfers, transfers);
+				wmsg->rbuffer, &wmsg->transfers, &wmsg->blocks);
+		wmsg->transfers.count = 0;
+		wmsg->blocks.count = 0;
 
 		decref_transferred_rids(
 				&g->map, wmsg->rbuffer_count, wmsg->rbuffer);
 		wp_log(WP_DEBUG,
 				"Packed message size (%d fds, %d blobs, %d blocks): %d",
-				wmsg->rbuffer_count, ntransfers,
+				wmsg->rbuffer_count, wmsg->transfers.count,
 				wmsg->cmsg.nblocks, wmsg->cmsg.total_size);
 
 		// Introduce carryover data
@@ -892,10 +918,10 @@ int main_interface_loop(int chanfd, int progfd,
 
 	struct way_msg_state way_msg;
 	way_msg.state = WM_WAITING_FOR_PROGRAM;
-	/* AFAIK, there is not documented upper bound for the size of a Wayland
-	 * protocol message, but libwayland (in wl_buffer_put) effectively
-	 * limits message sizes to 4096 bytes. We must therefore adopt a limit
-	 * as least as large. */
+	/* AFAIK, there is not documented upper bound for the size of a
+	 * Wayland protocol message, but libwayland (in wl_buffer_put)
+	 * effectively limits message sizes to 4096 bytes. We must
+	 * therefore adopt a limit as least as large. */
 	way_msg.dbuffer_maxsize = 4096;
 	way_msg.dbuffer_carryover_end = 0;
 	way_msg.dbuffer_carryover_start = 0;
@@ -915,6 +941,14 @@ int main_interface_loop(int chanfd, int progfd,
 	way_msg.cmsg.ntransfers = 0;
 	way_msg.cmsg.meta_header = NULL;
 	way_msg.cmsg.blocks_written = 0;
+	way_msg.transfers.size = 8;
+	way_msg.transfers.count = 0;
+	way_msg.transfers.data = malloc((size_t)way_msg.transfers.size *
+					sizeof(struct transfer));
+	way_msg.blocks.size = 16;
+	way_msg.blocks.count = 0;
+	way_msg.blocks.data = malloc(
+			(size_t)way_msg.blocks.size * sizeof(struct bytebuf));
 
 	struct chan_msg_state chan_msg;
 	chan_msg.state = CM_WAITING_FOR_CHANNEL;
@@ -937,6 +971,14 @@ int main_interface_loop(int chanfd, int progfd,
 	chan_msg.dbuffer_edited_maxsize = way_msg.dbuffer_maxsize * 2;
 	chan_msg.dbuffer_edited =
 			malloc((size_t)chan_msg.dbuffer_edited_maxsize);
+	chan_msg.transfers.size = 8;
+	chan_msg.transfers.count = 0;
+	chan_msg.transfers.data = malloc((size_t)chan_msg.transfers.size *
+					 sizeof(struct transfer));
+	chan_msg.blocks.size = 8;
+	chan_msg.blocks.count = 0;
+	chan_msg.blocks.data = malloc(
+			(size_t)chan_msg.blocks.size * sizeof(struct bytebuf));
 
 	struct globals g;
 	g.config = config;
@@ -998,8 +1040,8 @@ int main_interface_loop(int chanfd, int progfd,
 			break;
 		}
 
-		// Q: randomize the order of these?, to highlight accidental
-		// dependencies?
+		// Q: randomize the order of these?, to highlight
+		// accidental dependencies?
 		if (advance_chanmsg_transfer(&g, chanfd, progfd, display_side,
 				    &chan_msg, chanmsg_active) == -1) {
 			break;
@@ -1023,12 +1065,17 @@ int main_interface_loop(int chanfd, int progfd,
 	free(way_msg.cmsg.blocks);
 	free(way_msg.cmsg.transfer_block_headers);
 	free(way_msg.dbuffer_edited);
-	// We do not free chan_msg.dbuffer, as it is a subset of cmsg_buffer
+	free(way_msg.transfers.data);
+	free(way_msg.blocks.data);
+	// We do not free chan_msg.dbuffer, as it is a subset of
+	// cmsg_buffer
 	free(chan_msg.tfbuffer);
 	free(chan_msg.fbuffer);
 	free(chan_msg.rbuffer);
 	free(chan_msg.cmsg_buffer);
 	free(chan_msg.dbuffer_edited);
+	free(chan_msg.transfers.data);
+	free(chan_msg.blocks.data);
 	close(chanfd);
 	close(progfd);
 	return EXIT_SUCCESS;

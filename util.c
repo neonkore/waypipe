@@ -176,3 +176,22 @@ bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options)
 		return found;
 	}
 }
+
+int buf_ensure_size(int count, size_t obj_size, int *space, void **data)
+{
+	if (count <= *space) {
+		return 0;
+	}
+	if (count >= INT32_MAX / 2 || count <= 0) {
+		return -1;
+	}
+	while (*space < count) {
+		*space *= 2;
+	}
+	void *new_data = realloc(*data, (size_t)(*space) * obj_size);
+	if (new_data) {
+		*data = new_data;
+		return 0;
+	}
+	return -1;
+}

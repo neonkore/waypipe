@@ -51,8 +51,8 @@ sub_tests = {
     "EGL": ["TEST_WESTON_EGL_PATH", "-o"],
     "DMABUF": ["TEST_WESTON_DMA_PATH"],
     "TERM": ["TEST_WESTON_TERM_PATH"],
-    "PRES": ['TEST_WESTON_PRES_PATH'],
-    "SUBSURF": ['TEST_WESTON_SUBSURF_PATH'],
+    "PRES": ["TEST_WESTON_PRES_PATH"],
+    "SUBSURF": ["TEST_WESTON_SUBSURF_PATH"],
 }
 for k, v in list(sub_tests.items()):
     if v[0] in os.environ:

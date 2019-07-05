@@ -796,20 +796,24 @@ void apply_diff(size_t size, char *__restrict__ target1,
 	}
 }
 
-struct transfer *setup_single_block_transfer(int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[], size_t size, const char *data)
+struct transfer *setup_single_block_transfer(struct transfer_stack *transfers,
+		struct bytebuf_stack *blocks, size_t size, const char *data)
 {
-	int nt = (*ntransfers)++;
-	int nb = (*nblocks)++;
-	transfers[nt].type = FDC_UNKNOWN;
-	transfers[nt].obj_id = 0;
-	transfers[nt].special.raw = 0;
-	transfers[nt].nblocks = 1;
-	transfers[nt].subtransfers = &blocks[nb];
-	blocks[nb].size = size;
-	blocks[nb].data = (char *)data;
-	return &transfers[nt];
+	buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
+			&transfers->size, (void **)&transfers->data);
+	buf_ensure_size(blocks->count + 1, sizeof(struct bytebuf),
+			&blocks->size, (void **)&blocks->data);
+
+	struct transfer *tf = &transfers->data[transfers->count++];
+	tf->type = FDC_UNKNOWN;
+	tf->obj_id = 0;
+	tf->special.raw = 0;
+	tf->nblocks = 1;
+	tf->subtransfer_idx = blocks->count;
+	struct bytebuf *bl = &blocks->data[blocks->count++];
+	bl->size = size;
+	bl->data = (char *)data;
+	return tf;
 }
 
 /* Construct and optionally compress a diff between sfd->mem_mirror and
@@ -901,9 +905,8 @@ static void wait_thread_task(struct fd_translation_map *map)
 /* Optionally compress the data in mem_mirror, and set up the initial
  * transfer blocks */
 static void add_initial_compressed_block(struct fd_translation_map *map,
-		struct shadow_fd *sfd, int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[])
+		struct shadow_fd *sfd, struct transfer_stack *transfers,
+		struct bytebuf_stack *blocks)
 {
 	// new transfer, we send file contents verbatim
 	bool use_threads =
@@ -923,11 +926,17 @@ static void add_initial_compressed_block(struct fd_translation_map *map,
 		wait_thread_task(map);
 	}
 
-	struct transfer *tf = &transfers[(*ntransfers)++];
+	buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
+			&transfers->size, (void **)&transfers->data);
+	buf_ensure_size(blocks->count + map->nthreads + 1,
+			sizeof(struct bytebuf), &blocks->size,
+			(void **)&blocks->data);
+
+	struct transfer *tf = &transfers->data[transfers->count++];
 	tf->type = sfd->type;
 	tf->obj_id = sfd->remote_id;
 	tf->nblocks = 0;
-	tf->subtransfers = &blocks[*nblocks];
+	tf->subtransfer_idx = blocks->count;
 	tf->special.block_meta = 0;
 	if (sfd->type == FDC_DMABUF) {
 		/* Add metadata section to ensure proper remote
@@ -935,12 +944,12 @@ static void add_initial_compressed_block(struct fd_translation_map *map,
 		 */
 		struct bytebuf meta = {.data = (char *)&sfd->dmabuf_info,
 				.size = sizeof(struct dmabuf_slice_data)};
-		blocks[(*nblocks)++] = meta;
+		blocks->data[blocks->count++] = meta;
 		tf->nblocks++;
 	}
 	if (cd_actual_size0) {
 		tf->special.block_meta += cd_actual_size0;
-		blocks[(*nblocks)++] = cd_dst0;
+		blocks->data[blocks->count++] = cd_dst0;
 		tf->nblocks++;
 	}
 	if (use_threads) {
@@ -948,16 +957,16 @@ static void add_initial_compressed_block(struct fd_translation_map *map,
 			if (map->threads[i].cd_actual_size) {
 				tf->special.block_meta +=
 						map->threads[i].cd_actual_size;
-				blocks[(*nblocks)++] = map->threads[i].cd_dst;
+				blocks->data[blocks->count++] =
+						map->threads[i].cd_dst;
 				tf->nblocks++;
 			}
 		}
 	}
 }
 static void add_updated_diff_block(struct fd_translation_map *map,
-		struct shadow_fd *sfd, int *ntransfers,
-		struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[], int total_damaged_area)
+		struct shadow_fd *sfd, struct transfer_stack *transfers,
+		struct bytebuf_stack *blocks, int total_damaged_area)
 {
 	DTRACE_PROBE2(waypipe, diffcomp_start, total_damaged_area,
 			sfd->buffer_size);
@@ -989,21 +998,27 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 
 	if (actual_diff_size > 0) {
 		/* Only make the transfer if there were changes */
-		struct transfer *tf = &transfers[(*ntransfers)++];
+		buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
+				&transfers->size, (void **)&transfers->data);
+		buf_ensure_size(blocks->count + map->nthreads,
+				sizeof(struct bytebuf), &blocks->size,
+				(void **)&blocks->data);
+
+		struct transfer *tf = &transfers->data[transfers->count++];
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
 		tf->nblocks = 0;
-		tf->subtransfers = &blocks[*nblocks];
-		tf->special.block_meta = actual_diff_size;
+		tf->subtransfer_idx = blocks->count;
+		tf->special.block_meta = (uint32_t)actual_diff_size;
 
 		if (cd_actual_size0) {
-			blocks[(*nblocks)++] = cd_dst0;
+			blocks->data[blocks->count++] = cd_dst0;
 			tf->nblocks++;
 		}
 		if (use_threads) {
 			for (int i = 0; i < map->nthreads - 1; i++) {
 				if (map->threads[i].cd_actual_size) {
-					blocks[(*nblocks)++] =
+					blocks->data[blocks->count++] =
 							map->threads[i].cd_dst;
 					tf->nblocks++;
 				}
@@ -1029,8 +1044,7 @@ static void get_max_diff_space_usage(struct fd_translation_map *map,
 }
 
 void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
-		int *ntransfers, struct transfer transfers[], int *nblocks,
-		struct bytebuf blocks[])
+		struct transfer_stack *transfers, struct bytebuf_stack *blocks)
 {
 	if (sfd->type == FDC_FILE) {
 		if (!sfd->is_dirty) {
@@ -1059,17 +1073,23 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 									  1)
 							: NULL;
 
-			add_initial_compressed_block(map, sfd, ntransfers,
-					transfers, nblocks, blocks);
+			add_initial_compressed_block(
+					map, sfd, transfers, blocks);
 		}
 
 		if (sfd->has_been_extended) {
 			sfd->has_been_extended = false;
-			struct transfer *tf = &transfers[(*ntransfers)++];
+
+			buf_ensure_size(transfers->count + 1,
+					sizeof(struct transfer),
+					&transfers->size,
+					(void **)&transfers->data);
+			struct transfer *tf =
+					&transfers->data[transfers->count++];
 			tf->type = sfd->type;
 			tf->obj_id = sfd->remote_id;
 			tf->nblocks = 0;
-			tf->subtransfers = NULL;
+			tf->subtransfer_idx = -1;
 			tf->special.block_meta = FILE_SIZE_EXTEND_FLAG |
 						 (uint32_t)sfd->buffer_size;
 		}
@@ -1092,8 +1112,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 						calloc(sfd->compress_space, 1);
 			}
 		}
-		add_updated_diff_block(map, sfd, ntransfers, transfers, nblocks,
-				blocks, total_area);
+		add_updated_diff_block(map, sfd, transfers, blocks, total_area);
 
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
@@ -1140,8 +1159,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (sfd->video_codec && sfd->video_context &&
 				sfd->video_reg_frame && sfd->video_packet) {
 			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
-			collect_video_from_mirror(sfd, ntransfers, transfers,
-					nblocks, blocks, first);
+			collect_video_from_mirror(
+					sfd, transfers, blocks, first);
 			return;
 		}
 
@@ -1150,8 +1169,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// only touching data once
 			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
 
-			add_initial_compressed_block(map, sfd, ntransfers,
-					transfers, nblocks, blocks);
+			add_initial_compressed_block(
+					map, sfd, transfers, blocks);
 		} else {
 
 			if (!sfd->diff_buffer) {
@@ -1177,8 +1196,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			 * significantly faster. */
 			// TODO: Either autodetect when this happens, or write a
 			// faster/vectorizable diff routine
-			add_updated_diff_block(map, sfd, ntransfers, transfers,
-					nblocks, blocks, (int)sfd->buffer_size);
+			add_updated_diff_block(map, sfd, transfers, blocks,
+					(int)sfd->buffer_size);
 			sfd->mem_local = NULL;
 		}
 		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
@@ -1200,8 +1219,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 							? 'Y'
 							: 'n');
 			struct transfer *tf = setup_single_block_transfer(
-					ntransfers, transfers, nblocks, blocks,
-					sfd->pipe_recv.used,
+					transfers, blocks, sfd->pipe_recv.used,
 					sfd->pipe_recv.data);
 			tf->type = sfd->type;
 			tf->obj_id = sfd->remote_id;
@@ -1220,7 +1238,8 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 }
 
 void create_from_update(struct fd_translation_map *map,
-		struct render_data *render, const struct transfer *transf)
+		struct render_data *render, const struct transfer *transf,
+		const struct bytebuf *block)
 {
 
 	wp_log(WP_DEBUG, "Introducing new fd, remoteid=%d", transf->obj_id);
@@ -1257,8 +1276,7 @@ void create_from_update(struct fd_translation_map *map,
 		} else {
 			size_t act_size = 0;
 			const char *act_buffer = NULL;
-			uncompress_buffer(map, transf->subtransfers[0].size,
-					transf->subtransfers[0].data,
+			uncompress_buffer(map, block->size, block->data,
 					sfd->buffer_size, sfd->compress_buffer,
 					&act_size, &act_buffer);
 
@@ -1348,9 +1366,8 @@ void create_from_update(struct fd_translation_map *map,
 				&sfd->compress_space);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
-		struct bytebuf block = transf->subtransfers[0];
 		struct dmabuf_slice_data *info =
-				(struct dmabuf_slice_data *)block.data;
+				(struct dmabuf_slice_data *)block->data;
 		const char *contents = NULL;
 		size_t contents_size = sfd->buffer_size;
 		if (use_video) {
@@ -1369,10 +1386,10 @@ void create_from_update(struct fd_translation_map *map,
 					(int)info->format);
 
 			// Apply first frame, if available
-			if (block.size > sizeof(struct dmabuf_slice_data)) {
+			if (block->size > sizeof(struct dmabuf_slice_data)) {
 				apply_video_packet_to_mirror(sfd,
-						block.size - sizeof(struct dmabuf_slice_data),
-						block.data + sizeof(struct dmabuf_slice_data));
+						block->size - sizeof(struct dmabuf_slice_data),
+						block->data + sizeof(struct dmabuf_slice_data));
 			} else {
 				memset(sfd->mem_mirror, 213, sfd->buffer_size);
 			}
@@ -1380,12 +1397,12 @@ void create_from_update(struct fd_translation_map *map,
 		} else {
 			sfd->mem_mirror = calloc(sfd->buffer_size, 1);
 			const char *compressed_contents =
-					block.data +
+					block->data +
 					sizeof(struct dmabuf_slice_data);
 
 			size_t szcheck = 0;
 			uncompress_buffer(map,
-					block.size - sizeof(struct dmabuf_slice_data),
+					block->size - sizeof(struct dmabuf_slice_data),
 					compressed_contents, sfd->buffer_size,
 					sfd->compress_buffer, &szcheck,
 					&contents);
@@ -1449,15 +1466,14 @@ static void increase_buffer_sizes(struct fd_translation_map *map,
 }
 
 void apply_update(struct fd_translation_map *map, struct render_data *render,
-		const struct transfer *transf)
+		const struct transfer *transf, const struct bytebuf *block)
 {
 	struct shadow_fd *sfd = get_shadow_for_rid(map, transf->obj_id);
 	if (!sfd) {
-		create_from_update(map, render, transf);
+		create_from_update(map, render, transf, block);
 		return;
 	}
 
-	struct bytebuf block = transf->subtransfers[0];
 	if (sfd->type == FDC_FILE) {
 		if (transf->type != sfd->type) {
 			wp_log(WP_ERROR, "Transfer type mismatch %d %d",
@@ -1479,7 +1495,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		uncompress_buffer(map, block.size, block.data, m_size,
+		uncompress_buffer(map, block->size, block->data, m_size,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff
@@ -1502,7 +1518,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 					transf->type, sfd->type);
 		}
 
-		ssize_t netsize = sfd->pipe_send.used + (ssize_t)block.size;
+		ssize_t netsize = sfd->pipe_send.used + (ssize_t)block->size;
 		if (sfd->pipe_send.size <= 1024) {
 			sfd->pipe_send.size = 1024;
 		}
@@ -1515,9 +1531,9 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		} else {
 			sfd->pipe_send.data = calloc(sfd->pipe_send.size, 1);
 		}
-		memcpy(sfd->pipe_send.data + sfd->pipe_send.used, block.data,
-				block.size);
-		sfd->pipe_send.used += (ssize_t)block.size;
+		memcpy(sfd->pipe_send.data + sfd->pipe_send.used, block->data,
+				block->size);
+		sfd->pipe_send.used += (ssize_t)block->size;
 
 		// The pipe itself will be flushed/or closed later by
 		// flush_writable_pipes
@@ -1536,7 +1552,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 		if (sfd->video_codec) {
 			apply_video_packet_to_mirror(
-					sfd, block.size, block.data);
+					sfd, block->size, block->data);
 
 			// this frame is applied via memcpy
 
@@ -1556,7 +1572,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 			const char *act_buffer = NULL;
 			size_t act_size = 0;
-			uncompress_buffer(map, block.size, block.data,
+			uncompress_buffer(map, block->size, block->data,
 					transf->special.block_meta,
 					sfd->compress_buffer, &act_size,
 					&act_buffer);
