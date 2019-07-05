@@ -158,21 +158,45 @@ test_parse = executable(
 	dependencies: [protos]
 )
 test('That protocol parsing fails cleanly', test_parse)
+
+weston_dep = dependency('weston', required: false)
+testprog_paths = []
+if weston_dep.found()
+	# Sometimes weston's test clients are installed here instead
+	testprog_paths += weston_dep.get_pkgconfig_variable('libexecdir')
+endif
 weston_prog = find_program('weston', required: false)
-weston_shm_prog = find_program('weston-simple-shm', required: false)
-weston_egl_prog = find_program('weston-simple-egl', required: false)
-weston_dma_prog = find_program('weston-simple-dmabuf-drm', required: false)
 envlist = [
 	'TEST_WAYPIPE_PATH=@0@'.format(waypipe_prog.full_path()),
 ]
-if weston_prog.found() and weston_shm_prog.found() and weston_egl_prog.found()
-	modenv = envlist
-	modenv += 'TEST_WESTON_PATH=@0@'.format(weston_prog.path())
-	modenv += 'TEST_WESTON_SHM_PATH=@0@'.format(weston_shm_prog.path())
-	modenv += 'TEST_WESTON_EGL_PATH=@0@'.format(weston_egl_prog.path())
-	modenv += 'TEST_WESTON_DMA_PATH=@0@'.format(weston_dma_prog.path())
+if weston_prog.found()
+	envlist += 'TEST_WESTON_PATH=@0@'.format(weston_prog.path())
+endif
+test_programs = [
+	['TEST_WESTON_SHM_PATH', 'weston-simple-shm'],
+	['TEST_WESTON_EGL_PATH', 'weston-simple-egl'],
+	['TEST_WESTON_DMA_PATH', 'weston-simple-dmabuf-drm'],
+	['TEST_WESTON_TERM_PATH', 'weston-terminal'],
+	['TEST_WESTON_PRES_PATH', 'weston-presentation-shm'],
+	['TEST_WESTON_SUBSURF_PATH', 'weston-subsurfaces'],
+]
+have_test_progs = false
+foreach t : test_programs
+	test_prog = find_program(t[1], required: false)
+	foreach p : testprog_paths
+		if not test_prog.found()
+			test_prog = find_program(join_paths(p, t[1]), required: false)
+		endif
+	endforeach
+	if test_prog.found()
+		have_test_progs = true
+		envlist += '@0@=@1@'.format(t[0], test_prog.path())
+	endif
+endforeach
+
+if weston_prog.found() and have_test_progs
 	test_headless = join_paths(meson.current_source_dir(), 'test/headless.py')
-	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: modenv)
+	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: envlist)
 endif
 test_startup = join_paths(meson.current_source_dir(), 'test/startup_failure.py')
 test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist)

@@ -41,13 +41,24 @@ def safe_cleanup(process):
 
 
 weston_path = os.environ["TEST_WESTON_PATH"]
-weston_shm_path = os.environ["TEST_WESTON_SHM_PATH"]
-weston_egl_path = os.environ["TEST_WESTON_EGL_PATH"]
-weston_dma_path = os.environ["TEST_WESTON_DMA_PATH"]
 waypipe_path = os.environ["TEST_WAYPIPE_PATH"]
 ld_library_path = (
     os.environ["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in os.environ else ""
 )
+
+sub_tests = {
+    "SHM": ["TEST_WESTON_SHM_PATH"],
+    "EGL": ["TEST_WESTON_EGL_PATH", "-o"],
+    "DMABUF": ["TEST_WESTON_DMA_PATH"],
+    "TERM": ["TEST_WESTON_TERM_PATH"],
+    "PRES": ['TEST_WESTON_PRES_PATH'],
+    "SUBSURF": ['TEST_WESTON_SUBSURF_PATH'],
+}
+for k, v in list(sub_tests.items()):
+    if v[0] in os.environ:
+        v[0] = os.environ[v[0]]
+    else:
+        del sub_tests[k]
 
 xdg_runtime_dir = os.path.abspath("./test/")
 os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
@@ -107,12 +118,6 @@ if not wait_until_exists(abs_socket_path):
         "weston failed to create expected display socket path, " + abs_socket_path
     )
 
-sub_tests = {
-    "SHM": [weston_shm_path],
-    "EGL": [weston_egl_path, "-o"],
-    "DMABUF": [weston_dma_path],
-}
-
 processes = {}
 
 try:
@@ -158,13 +163,16 @@ for sub_test_name, command in sub_tests.items():
                 )
             if len(kids) == 1:
                 wp_child = kids[0]
-                if wp_child.name() != os.path.basename(command[0]):
-                    print(
-                        "Unusual child process name",
-                        wp_child.name(),
-                        "does not match",
-                        command[0],
-                    )
+                try:
+                    if wp_child.name() != os.path.basename(command[0]):
+                        print(
+                            "Unusual child process name",
+                            wp_child.name(),
+                            "does not match",
+                            command[0],
+                        )
+                except psutil.NoSuchProcess:
+                    pass
 
     processes[sub_test_name] = (
         ref_proc,
