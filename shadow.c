@@ -511,7 +511,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->fd_local = fd;
 	sfd->mem_local = NULL;
 	sfd->mem_mirror = NULL;
-	sfd->buffer_size = (size_t)-1;
+	sfd->buffer_size = 0;
 	sfd->remote_id = (map->max_local_id++) * map->local_sign;
 	sfd->type = type;
 	// File changes must be propagated
@@ -526,7 +526,12 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 
 	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
 	if (sfd->type == FDC_FILE) {
-		// We have a file-like object
+		if (file_sz > FILE_SIZE_SIZE_MASK) {
+			wp_log(WP_ERROR,
+					"Failed to create shadow structure, file size %ld too large to transfer",
+					(uint64_t)file_sz);
+			return sfd;
+		}
 		sfd->buffer_size = file_sz;
 		// both r/w permissions, because the size the allocates
 		// the memory does not always have to be the size that

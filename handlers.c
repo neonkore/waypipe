@@ -766,6 +766,12 @@ void do_wl_shm_req_create_pool(
 {
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)id;
 
+	if (size <= 0) {
+		wp_log(WP_ERROR,
+				"Ignoring attempt to create a wl_shm_pool with size %d",
+				size);
+	}
+
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	/* It may be valid for the file descriptor size to be larger
