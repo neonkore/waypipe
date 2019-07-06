@@ -30,7 +30,12 @@
 #include <string.h>
 
 struct merge_stack_elem {
-	struct interval *v;
+	int offset;
+	int count;
+};
+struct merge_stack {
+	struct interval *data;
+	int size;
 	int count;
 };
 
@@ -75,6 +80,7 @@ static int stream_merge(int a_count, const struct interval *__restrict__ a_list,
 }
 
 static int fix_merge_stack_property(int size, struct merge_stack_elem *stack,
+		struct merge_stack *base, struct merge_stack *temp,
 		int merge_margin, bool force_compact, int *absorbed)
 {
 	while (size > 1) {
@@ -85,17 +91,24 @@ static int fix_merge_stack_property(int size, struct merge_stack_elem *stack,
 			return size;
 		}
 
-		/* TODO: optimize memory management */
-		struct interval *combo = malloc((top.count + nxt.count + 1) *
-						sizeof(struct interval));
-		int xs = stream_merge(top.count, top.v, nxt.count, nxt.v, combo,
+		buf_ensure_size(top.count + nxt.count + 1,
+				sizeof(struct interval), &temp->size,
+				(void **)&temp->data);
+
+		int xs = stream_merge(top.count, &base->data[top.offset],
+				nxt.count, &base->data[nxt.offset], temp->data,
 				merge_margin);
-		free(top.v);
-		free(nxt.v);
+		/* There are more complicated/multi-buffer alternatives with
+		 * fewer memory copies, but this is already <20% of stream
+		 * merge time */
+		memcpy(&base->data[nxt.offset], temp->data,
+				(size_t)(xs + 1) * sizeof(struct interval));
+		base->count = nxt.offset + xs + 1;
+
 		stack[size - 1] = (struct merge_stack_elem){
-				.v = NULL, .count = 0};
+				.offset = 0, .count = 0};
 		stack[size - 2] = (struct merge_stack_elem){
-				.v = combo, .count = xs};
+				.offset = nxt.offset, .count = xs};
 		size--;
 
 		*absorbed += (top.count + nxt.count - xs);
@@ -111,33 +124,42 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		const int new_count, const struct ext_interval *const new_list,
 		int *dst_count, struct interval **dst_list, int merge_margin)
 {
-	/* Stack-based mergesort: the buffer at position `i+1` should be <= 1/2
-	 * times the size of the buffer at position `i`; buffers will be merged
+	/* Stack-based mergesort: the buffer at position `i+1`
+	 * should be <= 1/2 times the size of the buffer at
+	 * position `i`; buffers will be merged
 	 * to maintain this invariant */
 	// TODO: improve memory management!
 	struct merge_stack_elem substack[32];
 	int substack_size = 0;
 	memset(substack, 0, sizeof(substack));
+	struct merge_stack base = {.data = NULL, .count = 0, .size = 0};
+	struct merge_stack temp = {.data = NULL, .count = 0, .size = 0};
 	if (old_count) {
-		/* seed the stack with the previous damage interval list */
+		/* seed the stack with the previous damage
+		 * interval list,
+		 * including trailing terminator */
+		base.data = old_list;
+		base.size = old_count + 1;
+		base.count = old_count + 1;
 		substack[substack_size++] = (struct merge_stack_elem){
-				.v = old_list, .count = old_count};
+				.offset = 0, .count = old_count};
 	}
 
 	int src_count = 0, absorbed = 0;
 
 	for (int jn = 0; jn < new_count; jn++) {
 		struct ext_interval e = new_list[jn];
-		/* ignore invalid intervals -- also, if e.start is close to
-		 * INT32_MIN, the stream merge breaks */
+		/* ignore invalid intervals -- also, if e.start
+		 * is close to INT32_MIN, the stream merge
+		 * breaks */
 		if (e.width <= 0 || e.rep <= 0 || e.start < 0) {
 			continue;
 		}
-		/* To limit CPU time, if it is very likely that an interval
-		 * would be merged anyway, then replace it with its containing
-		 * interval. */
+		/* To limit CPU time, if it is very likely that
+		 * an interval would be merged anyway, then
+		 * replace it with its containing interval. */
 		int remaining = src_count - absorbed;
-		bool force_combine = (absorbed > 10000) ||
+		bool force_combine = (absorbed > 30000) ||
 				     10 * remaining < src_count;
 
 		long end = e.start + e.stride * (long)(e.rep - 1) + e.width;
@@ -146,15 +168,18 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 			e.width = INT32_MAX - 1 - e.start;
 			e.rep = 1;
 		}
-		/* Remove internal gaps are smaller than the margin and hence
+		/* Remove internal gaps are smaller than the
+		 * margin and hence
 		 * would need to be merged away anyway. */
 		if (e.width > e.stride - merge_margin || force_combine) {
 			e.width = e.stride * (e.rep - 1) + e.width;
 			e.rep = 1;
 		}
 
-		struct interval *vec =
-				malloc((e.rep + 1) * sizeof(struct interval));
+		buf_ensure_size(base.count + e.rep + 1, sizeof(struct interval),
+				&base.size, (void **)&base.data);
+
+		struct interval *vec = &base.data[base.count];
 		for (int k = 0; k < e.rep; k++) {
 			vec[k].start = e.start + k * e.stride;
 			vec[k].end = vec[k].start + e.width;
@@ -166,19 +191,23 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		src_count += e.rep;
 
 		substack[substack_size] = (struct merge_stack_elem){
-				.v = vec, .count = e.rep};
+				.offset = base.count, .count = e.rep};
 		substack_size++;
+
+		base.count += e.rep + 1;
 
 		/* merge down the stack as far as possible */
 		substack_size = fix_merge_stack_property(substack_size,
-				substack, merge_margin, false, &absorbed);
+				substack, &base, &temp, merge_margin, false,
+				&absorbed);
 	}
 
 	/* collapse the stack into a final interval */
-	substack_size = fix_merge_stack_property(
-			substack_size, substack, merge_margin, true, &absorbed);
+	fix_merge_stack_property(substack_size, substack, &base, &temp,
+			merge_margin, true, &absorbed);
+	free(temp.data);
 
-	*dst_list = substack[0].v;
+	*dst_list = base.data;
 	*dst_count = substack[0].count;
 }
 
