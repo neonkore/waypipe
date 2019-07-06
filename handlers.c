@@ -82,7 +82,6 @@ struct wp_keyboard {
 };
 
 struct damage_record {
-	struct damage_record *next;
 	int x, y, width, height;
 	bool buffer_coordinates;
 };
@@ -90,8 +89,9 @@ struct damage_record {
 struct wp_surface {
 	struct wp_object base;
 
-	struct damage_record *damage_stack;
-	int damage_stack_len;
+	struct damage_record *damage_list;
+	int damage_list_len;
+	int damage_list_size;
 
 	uint32_t attached_buffer_id;
 	int32_t scale;
@@ -163,18 +163,6 @@ struct wp_export_dmabuf_frame {
 	uint32_t nobjects;
 };
 
-static void free_damage_stack(struct damage_record **root)
-{
-	if (root && *root) {
-		struct damage_record *r = *root;
-		while (r) {
-			struct damage_record *nxt = r->next;
-			free(r);
-			r = nxt;
-		}
-		*root = NULL;
-	}
-}
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
 	if (object->type == &intf_wl_shm_pool) {
@@ -195,7 +183,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		}
 	} else if (object->type == &intf_wl_surface) {
 		struct wp_surface *r = (struct wp_surface *)object;
-		free_damage_stack(&r->damage_stack);
+		free(r->damage_list);
 	} else if (object->type == &intf_wl_keyboard) {
 		struct wp_keyboard *r = (struct wp_keyboard *)object;
 		if (r->owned_buffer) {
@@ -596,12 +584,17 @@ void do_wl_surface_req_commit(struct context *ctx)
 				"Buffer to commit has the wrong type, and may have been recycled");
 		return;
 	}
-	if (surface->damage_stack_len == 0) {
+	if (surface->damage_list_len == 0) {
 		// No damage to report
 		return;
 	}
 	struct wp_buffer *buf = (struct wp_buffer *)obj;
 	if (buf->type == BUF_DMA) {
+		free(surface->damage_list);
+		surface->damage_list = NULL;
+		surface->damage_list_len = 0;
+		surface->damage_list_size = 0;
+
 		for (int i = 0; i < buf->dmabuf_nplanes; i++) {
 			struct shadow_fd *sfd = buf->dmabuf_buffers[i];
 			if (!sfd) {
@@ -639,14 +632,16 @@ void do_wl_surface_req_commit(struct context *ctx)
 	int bpp = get_shm_bytes_per_pixel(buf->shm_format);
 	if (bpp == -1) {
 		damage_everything(&sfd->damage);
-		free_damage_stack(&surface->damage_stack);
-		surface->damage_stack_len = 0;
+		free(surface->damage_list);
+		surface->damage_list = NULL;
+		surface->damage_list_len = 0;
+		surface->damage_list_size = 0;
 		return;
 	}
 
 	struct ext_interval *damage_array =
 			malloc(sizeof(struct ext_interval) *
-					(size_t)surface->damage_stack_len);
+					(size_t)surface->damage_list_len);
 	if (!damage_array) {
 		wp_log(WP_ERROR, "Failed to allocate damage array");
 		damage_everything(&sfd->damage);
@@ -655,12 +650,12 @@ void do_wl_surface_req_commit(struct context *ctx)
 	int i = 0;
 
 	// Translate damage stack into damage records for the fd buffer
-	struct damage_record *rec = surface->damage_stack;
-	while (rec) {
+	for (int j = 0; j < surface->damage_list_len; j++) {
 		int xlow, xhigh, ylow, yhigh;
 		int r = compute_damage_coordinates(&xlow, &xhigh, &ylow, &yhigh,
-				rec, buf->shm_width, buf->shm_height,
-				surface->transform, surface->scale);
+				&surface->damage_list[j], buf->shm_width,
+				buf->shm_height, surface->transform,
+				surface->scale);
 		if (r != -1) {
 			/* Clip the damage rectangle to the containing
 			 * buffer. */
@@ -677,16 +672,14 @@ void do_wl_surface_req_commit(struct context *ctx)
 			damage_array[i].width = bpp * (xhigh - xlow);
 			i++;
 		}
-
-		struct damage_record *nxt = rec->next;
-		free(rec);
-		rec = nxt;
 	}
 
 	merge_damage_records(&sfd->damage, i, damage_array);
 	free(damage_array);
-	surface->damage_stack = NULL;
-	surface->damage_stack_len = 0;
+	free(surface->damage_list);
+	surface->damage_list = NULL;
+	surface->damage_list_len = 0;
+	surface->damage_list_size = 0;
 }
 void do_wl_surface_req_damage(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
@@ -695,19 +688,21 @@ void do_wl_surface_req_damage(struct context *ctx, int32_t x, int32_t y,
 		// The display side does not need to track the damage
 		return;
 	}
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
+	buf_ensure_size(surface->damage_list_len + 1,
+			sizeof(struct damage_record),
+			&surface->damage_list_size,
+			(void **)&surface->damage_list);
+
 	// A rectangle of the buffer was damaged, hence backing buffers
 	// may be updated.
-	struct damage_record *damage = calloc(1, sizeof(struct damage_record));
+	struct damage_record *damage =
+			&surface->damage_list[surface->damage_list_len++];
 	damage->buffer_coordinates = false;
 	damage->x = x;
 	damage->y = y;
 	damage->width = width;
 	damage->height = height;
-
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
-	damage->next = surface->damage_stack;
-	surface->damage_stack = damage;
-	surface->damage_stack_len++;
 }
 void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
@@ -716,19 +711,21 @@ void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		// The display side does not need to track the damage
 		return;
 	}
+	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
+	buf_ensure_size(surface->damage_list_len + 1,
+			sizeof(struct damage_record),
+			&surface->damage_list_size,
+			(void **)&surface->damage_list);
+
 	// A rectangle of the buffer was damaged, hence backing buffers
 	// may be updated.
-	struct damage_record *damage = calloc(1, sizeof(struct damage_record));
+	struct damage_record *damage =
+			&surface->damage_list[surface->damage_list_len++];
 	damage->buffer_coordinates = true;
 	damage->x = x;
 	damage->y = y;
 	damage->width = width;
 	damage->height = height;
-
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
-	damage->next = surface->damage_stack;
-	surface->damage_stack = damage;
-	surface->damage_stack_len++;
 }
 void do_wl_surface_req_set_buffer_transform(
 		struct context *ctx, int32_t transform)

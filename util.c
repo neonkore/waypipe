@@ -185,6 +185,9 @@ int buf_ensure_size(int count, size_t obj_size, int *space, void **data)
 	if (count >= INT32_MAX / 2 || count <= 0) {
 		return -1;
 	}
+	if (*space < 1) {
+		*space = 1;
+	}
 	while (*space < count) {
 		*space *= 2;
 	}
