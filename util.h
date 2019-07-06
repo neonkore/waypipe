@@ -91,14 +91,16 @@ void test_log_handler(const char *file, int line, enum log_level level,
  * NULL to disable log messages. */
 extern log_handler_func_t log_funcs[2];
 
-#ifndef WAYPIPE_SRC_DIR_LENGTH
-#define WAYPIPE_SRC_DIR_LENGTH 0
+#ifdef WAYPIPE_REL_SRC_DIR
+#define WAYPIPE__FILE__                                                        \
+	((const char *)__FILE__ + sizeof(WAYPIPE_REL_SRC_DIR) - 1)
+#else
+#define WAYPIPE__FILE__ __FILE__
 #endif
 // No trailing ;, user must supply. The first vararg must be the format string.
 #define wp_log(level, ...)                                                     \
 	if (log_funcs[level])                                                  \
-	(*log_funcs[level])(((const char *)__FILE__) + WAYPIPE_SRC_DIR_LENGTH, \
-			__LINE__, (level), __VA_ARGS__)
+	(*log_funcs[level])(WAYPIPE__FILE__, __LINE__, (level), __VA_ARGS__)
 
 /** Run waitpid in a loop until there are no more
  * zombies to clean up. If the target_pid was one of the

@@ -17,23 +17,19 @@ cc = meson.get_compiler('c')
 version = '"@0@"'.format(meson.project_version())
 add_project_arguments('-DWAYPIPE_VERSION=@0@'.format(version), language: 'c')
 
-python3 = import('python').find_installation()
 # Make build reproducible if possible
+python3 = import('python').find_installation()
+prefix_finder = 'import os.path; print(os.path.join(os.path.relpath(\'@0@\', \'@1@\'),\'\'))'
+r = run_command(python3, '-c', prefix_finder.format(meson.source_root(), meson.build_root()))
+relative_dir = r.stdout().strip()
 if cc.has_argument('-fmacro-prefix-map=/prefix/to/hide=')
-	prefix_finder = 'import os.path; print(os.path.join(os.path.relpath(\'@0@\', \'@1@\'),\'\'))'
-	r = run_command(python3, '-c', prefix_finder.format(meson.source_root(), meson.build_root()))
-	relative_dir = r.stdout().strip()
 	add_project_arguments(
 		'-fmacro-prefix-map=@0@='.format(relative_dir),
 		language: 'c',
 	)
 else
-	length_finder = 'import os.path; print(len(os.path.join(os.path.relpath(\'@0@\', \'@1@\'),\'\')))'
-	rel_src_dir_length = run_command(python3, '-c',
-	length_finder.format(meson.source_root(), meson.build_root())).stdout().strip()
-
 	add_project_arguments(
-		'-DWAYPIPE_SRC_DIR_LENGTH=@0@'.format(rel_src_dir_length),
+		'-DWAYPIPE_REL_SRC_DIR="@0@"'.format(relative_dir),
 		language: 'c',
 	)
 endif
