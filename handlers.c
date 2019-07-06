@@ -1046,6 +1046,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 			.using_planes = {true, false, false, false},
 	};
 
+#if !defined(__DragonFly__) && !defined(__FreeBSD__)
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(name, &fdsz);
 	if (fdtype != FDC_DMABUF) {
@@ -1054,6 +1055,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 				name, fdcat_to_str(fdtype));
 		return;
 	}
+#endif
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render,
 			name, FDC_DMABUF, 0, &info, false);
@@ -1272,6 +1274,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 						 format, info.modifier) &&
 				 ctx->g->config->video_if_possible;
 
+#if !defined(__DragonFly__) && !defined(__FreeBSD__)
 		size_t fdsz = 0;
 		fdcat_t fdtype = get_fd_type(params->add[i].fd, &fdsz);
 		if (fdtype != FDC_DMABUF) {
@@ -1280,6 +1283,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 					i, fdcat_to_str(fdtype));
 			continue;
 		}
+#endif
 
 		struct shadow_fd *sfd = translate_fd(&ctx->g->map,
 				&ctx->g->render, params->add[i].fd, FDC_DMABUF,
@@ -1371,6 +1375,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 			.modifier = frame->modifier};
 	info.using_planes[index] = true;
 
+#if !defined(__DragonFly__) && !defined(__FreeBSD__)
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_DMABUF) {
@@ -1379,6 +1384,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 				fd, index, fdcat_to_str(fdtype));
 		return;
 	}
+#endif
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			FDC_DMABUF, 0, &info, false);
