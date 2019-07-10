@@ -209,11 +209,13 @@ struct fd_translation_map {
 
 typedef enum {
 	FDC_UNKNOWN,
-	FDC_FILE,
-	FDC_PIPE_IR,
-	FDC_PIPE_IW,
-	FDC_PIPE_RW,
-	FDC_DMABUF
+	FDC_FILE,      /* Shared memory buffer */
+	FDC_PIPE_IR,   /* pipe-like object, reading from program */
+	FDC_PIPE_IW,   /* pipe-like object, writing to program */
+	FDC_PIPE_RW,   /* pipe-like object, read+write support */
+	FDC_DMABUF,    /* DMABUF buffer (will be exactly replicated) */
+	FDC_DMAVID_IR, /* DMABUF-based video, reading from program */
+	FDC_DMAVID_IW, /* DMABUF-based video, writing to program */
 } fdcat_t;
 bool fdcat_ispipe(fdcat_t t);
 
@@ -341,6 +343,7 @@ struct shadow_fd {
 	struct gbm_bo *dmabuf_bo;
 	struct dmabuf_slice_data dmabuf_info;
 
+	// Video data
 	struct AVCodec *video_codec;
 	struct AVCodecContext *video_context;
 	struct AVFrame *video_reg_frame;
@@ -352,9 +355,8 @@ struct shadow_fd {
 	int64_t video_frameno;
 };
 
-#define FILE_SIZE_VIDEO_FLAG (1u << 31)
-#define FILE_SIZE_EXTEND_FLAG (1u << 30)
-#define FILE_SIZE_SIZE_MASK ((1u << 30) - 1)
+#define FILE_SIZE_EXTEND_FLAG (1u << 31)
+#define FILE_SIZE_SIZE_MASK ((1u << 31) - 1)
 struct transfer {
 	fdcat_t type;
 	int obj_id;
@@ -474,7 +476,7 @@ const char *fdcat_to_str(fdcat_t cat);
 struct dmabuf_slice_data;
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, fdcat_t type, size_t sz,
-		struct dmabuf_slice_data *info, bool try_video);
+		struct dmabuf_slice_data *info);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
@@ -579,8 +581,8 @@ extern const struct wp_interface *the_display_interface;
 int init_render_data(struct render_data *);
 void cleanup_render_data(struct render_data *);
 bool is_dmabuf(int fd);
-struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
-		size_t size, struct dmabuf_slice_data *info);
+struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
+		struct dmabuf_slice_data *info);
 int export_dmabuf(struct gbm_bo *bo);
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		struct dmabuf_slice_data *info);
@@ -601,17 +603,15 @@ bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
 bool video_supports_shm_format(uint32_t format);
 void setup_video_logging(void);
 void destroy_video_data(struct shadow_fd *sfd);
-void setup_video_encode(struct shadow_fd *sfd, int width, int height,
-		int stride, uint32_t drm_format);
-void setup_video_decode(struct shadow_fd *sfd, int width, int height,
-		int stride, uint32_t drm_format);
+/** These need to have the dmabuf/dmabuf_info set beforehand */
+void setup_video_encode(struct shadow_fd *sfd);
+void setup_video_decode(struct shadow_fd *sfd);
 /** the video frame to be transferred should already have been transferred into
  * `sfd->mem_mirror`. */
 void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
 		bool first);
-void apply_video_packet_to_mirror(
-		struct shadow_fd *sfd, size_t size, const char *data);
+void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data);
 /** All return pointers can be NULL. Determines how much extra space or
  * padded width/height is needed for a video frame */
 void pad_video_mirror_size(int width, int height, int stride, int *new_width,

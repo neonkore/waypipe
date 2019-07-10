@@ -89,7 +89,8 @@ static void destroy_unlinked_sfd(
 		if (sfd->file_shm_buf_name[0]) {
 			shm_unlink(sfd->file_shm_buf_name);
 		}
-	} else if (sfd->type == FDC_DMABUF) {
+	} else if (sfd->type == FDC_DMABUF || sfd->type == FDC_DMAVID_IR ||
+			sfd->type == FDC_DMAVID_IW) {
 		destroy_dmabuf(sfd->dmabuf_bo);
 		free(sfd->mem_mirror);
 		free(sfd->diff_buffer);
@@ -295,6 +296,10 @@ const char *fdcat_to_str(fdcat_t cat)
 		return "FDC_PIPE_RW";
 	case FDC_DMABUF:
 		return "FDC_DMABUF";
+	case FDC_DMAVID_IR:
+		return "FDC_DMAVID_IR";
+	case FDC_DMAVID_IW:
+		return "FDC_DMAVID_IW";
 	}
 	return "<invalid>";
 }
@@ -488,7 +493,7 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, fdcat_t type,
-		size_t file_sz, struct dmabuf_slice_data *info, bool use_video)
+		size_t file_sz, struct dmabuf_slice_data *info)
 {
 	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
 	if (sfd) {
@@ -547,6 +552,43 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->pipe_recv.data = calloc((size_t)sfd->pipe_recv.size, 1);
 
 		sfd->pipe_onlyhere = true;
+	} else if (sfd->type == FDC_DMAVID_IR) {
+		if (!info) {
+			wp_error("No info available");
+		}
+		memcpy(&sfd->dmabuf_info, info,
+				sizeof(struct dmabuf_slice_data));
+		init_render_data(render);
+		sfd->dmabuf_bo = import_dmabuf(
+				render, sfd->fd_local, &sfd->buffer_size, info);
+		if (!sfd->dmabuf_bo) {
+			return sfd;
+		}
+		int mirror_size = 0;
+		pad_video_mirror_size((int)sfd->dmabuf_info.width,
+				(int)sfd->dmabuf_info.height,
+				(int)sfd->dmabuf_info.strides[0], NULL, NULL,
+				&mirror_size);
+		sfd->mem_mirror = calloc(
+				(size_t)max((int)sfd->buffer_size, mirror_size),
+				1);
+		setup_video_encode(sfd);
+	} else if (sfd->type == FDC_DMAVID_IW) {
+		if (!info) {
+			wp_error("No info available");
+		}
+		memcpy(&sfd->dmabuf_info, info,
+				sizeof(struct dmabuf_slice_data));
+		// TODO: multifd-dmabuf video surface
+		init_render_data(render);
+		sfd->dmabuf_bo = import_dmabuf(
+				render, sfd->fd_local, &sfd->buffer_size, info);
+		if (!sfd->dmabuf_bo) {
+			return sfd;
+		}
+		setup_video_decode(sfd);
+		/* notify remote side with sentinel frame */
+		sfd->video_frameno = -1;
 	} else if (sfd->type == FDC_DMABUF) {
 		sfd->buffer_size = 0;
 
@@ -565,14 +607,6 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		// to be created on first transfer
 		sfd->mem_mirror = NULL;
 		sfd->diff_buffer = NULL;
-		sfd->type = FDC_DMABUF;
-
-		if (info && use_video) {
-			setup_video_encode(sfd, (int)info->width,
-					(int)info->height,
-					(int)info->strides[0],
-					(int)info->format);
-		}
 	}
 	return sfd;
 }
@@ -818,6 +852,11 @@ static void worker_run_compresseddiff(struct fd_translation_map *map,
 	size_t diff_step = align(ceildiv(sfd->buffer_size, nthreads) + 16, 8);
 	size_t comp_step = compress_bufsize(map, diff_step);
 
+	/* Depending on the buffer format, doing a memcpy before
+	 * running the diff construction routine can be
+	 * significantly faster. */
+	// TODO: Either autodetect when this happens, or write a
+	// faster/vectorizable diff routine
 	size_t diffsize;
 	construct_diff(sfd->buffer_size, &sfd->damage, index, nthreads,
 			sfd->mem_mirror, sfd->mem_local, &diffsize,
@@ -1102,7 +1141,6 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			}
 		}
 		add_updated_diff_block(map, sfd, transfers, blocks, total_area);
-
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
@@ -1111,7 +1149,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		sfd->is_dirty = false;
 
 		bool first = false;
-		if (!sfd->mem_mirror && !sfd->video_codec) {
+		if (!sfd->mem_mirror) {
 			sfd->mem_mirror = calloc(1, sfd->buffer_size);
 
 			size_t diff_space = 0;
@@ -1124,17 +1162,6 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 									  1)
 							: NULL;
 			first = true;
-		} else if (!sfd->mem_mirror && sfd->video_codec) {
-			int mirror_size = 0;
-			pad_video_mirror_size((int)sfd->dmabuf_info.width,
-					(int)sfd->dmabuf_info.height,
-					(int)sfd->dmabuf_info.strides[0], NULL,
-					NULL, &mirror_size);
-			sfd->mem_mirror = calloc(
-					(size_t)max((int)sfd->buffer_size,
-							mirror_size),
-					1);
-			first = true;
 		}
 		void *handle = NULL;
 		if (!sfd->dmabuf_bo) {
@@ -1145,14 +1172,6 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (!data) {
 			return;
 		}
-		if (sfd->video_codec && sfd->video_context &&
-				sfd->video_reg_frame && sfd->video_packet) {
-			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
-			collect_video_from_mirror(
-					sfd, transfers, blocks, first);
-			return;
-		}
-
 		if (first) {
 			// Write diff with a header, and build mirror,
 			// only touching data once
@@ -1161,7 +1180,6 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			add_initial_compressed_block(
 					map, sfd, transfers, blocks);
 		} else {
-
 			if (!sfd->diff_buffer) {
 				// This can happen in
 				// reverse-transport scenarios
@@ -1180,11 +1198,6 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			damage_everything(&sfd->damage);
 			sfd->mem_local = data;
 
-			/* Depending on the buffer format, doing a memcpy before
-			 * running the diff construction routine can be
-			 * significantly faster. */
-			// TODO: Either autodetect when this happens, or write a
-			// faster/vectorizable diff routine
 			add_updated_diff_block(map, sfd, transfers, blocks,
 					(int)sfd->buffer_size);
 			sfd->mem_local = NULL;
@@ -1193,6 +1206,31 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// there was an issue unmapping; unmap_dmabuf
 			// will log error
 			return;
+		}
+	} else if (sfd->type == FDC_DMAVID_IR) {
+		if (!sfd->is_dirty) {
+			return;
+		}
+		sfd->is_dirty = false;
+		if (!sfd->dmabuf_bo || !sfd->video_codec) {
+			// ^ was not previously able to create buffer
+			return;
+		}
+		collect_video_from_mirror(sfd, transfers, blocks,
+				sfd->video_frameno == 0);
+	} else if (sfd->type == FDC_DMAVID_IW) {
+		sfd->is_dirty = false;
+		if (sfd->video_frameno == -1) {
+			/* first time only, send just the needed DMABUF info
+			 * header */
+			struct transfer *tf = setup_single_block_transfer(
+					transfers, blocks,
+					sizeof(struct dmabuf_slice_data),
+					(const char *)&sfd->dmabuf_info);
+			tf->type = sfd->type;
+			tf->obj_id = sfd->remote_id;
+			tf->special.block_meta = (uint32_t)sfd->buffer_size;
+			sfd->video_frameno++;
 		}
 	} else if (fdcat_ispipe(sfd->type)) {
 		// Pipes always update, no matter what the message
@@ -1259,19 +1297,16 @@ void create_from_update(struct fd_translation_map *map,
 						? calloc(sfd->compress_space, 1)
 						: NULL;
 
-		if (transf->special.block_meta & FILE_SIZE_VIDEO_FLAG) {
-			wp_error("TODO, full video frame fill");
-		} else {
-			size_t act_size = 0;
-			const char *act_buffer = NULL;
-			uncompress_buffer(map, block->size, block->data,
-					sfd->buffer_size, sfd->compress_buffer,
-					&act_size, &act_buffer);
+		size_t act_size = 0;
+		const char *act_buffer = NULL;
+		uncompress_buffer(map, block->size, block->data,
+				sfd->buffer_size, sfd->compress_buffer,
+				&act_size, &act_buffer);
 
-			// The first time only, the transfer data is a
-			// direct copy of the source
-			memcpy(sfd->mem_mirror, act_buffer, act_size);
-		}
+		// The first time only, the transfer data is a
+		// direct copy of the source
+		memcpy(sfd->mem_mirror, act_buffer, act_size);
+
 		// The PID should be unique during the lifetime of the
 		// program
 		sprintf(sfd->file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
@@ -1340,9 +1375,79 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->pipe_recv.size = 16384;
 		sfd->pipe_recv.data = calloc((size_t)sfd->pipe_recv.size, 1);
 		sfd->pipe_onlyhere = false;
+	} else if (transf->type == FDC_DMAVID_IR) {
+		/* remote read data, this side writes data */
+		sfd->type = FDC_DMAVID_IW;
+		sfd->buffer_size = (size_t)(transf->special.block_meta &
+					    FILE_SIZE_SIZE_MASK);
+
+		if (init_render_data(render) == 1) {
+			sfd->fd_local = -1;
+			return;
+		}
+		memcpy(&sfd->dmabuf_info, block->data,
+				sizeof(struct dmabuf_slice_data));
+		sfd->dmabuf_bo = make_dmabuf(
+				render, sfd->buffer_size, &sfd->dmabuf_info);
+		if (!sfd->dmabuf_bo) {
+			wp_error("FDC_DMAVID_IW: RID=%d make_dmabuf failure, bs=%d (%d)",
+					sfd->remote_id, (int)block->size,
+					sizeof(struct dmabuf_slice_data));
+			return;
+		}
+		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
+
+		int mirror_size = 0;
+		pad_video_mirror_size((int)sfd->dmabuf_info.width,
+				(int)sfd->dmabuf_info.height,
+				(int)sfd->dmabuf_info.strides[0], NULL, NULL,
+				&mirror_size);
+		sfd->mem_mirror = calloc(
+				(size_t)max((int)sfd->buffer_size, mirror_size),
+				1);
+		setup_video_decode(sfd);
+
+		// Apply first frame, if available
+		if (block->size > sizeof(struct dmabuf_slice_data)) {
+			apply_video_packet(sfd,
+					block->size - sizeof(struct dmabuf_slice_data),
+					block->data + sizeof(struct dmabuf_slice_data));
+		} else {
+			memset(sfd->mem_mirror, 213, sfd->buffer_size);
+		}
+
+	} else if (transf->type == FDC_DMAVID_IW) {
+		/* remote writes data, this side reads data */
+		sfd->type = FDC_DMAVID_IR;
+
+		sfd->buffer_size = (size_t)(transf->special.block_meta &
+					    FILE_SIZE_SIZE_MASK);
+
+		if (init_render_data(render) == 1) {
+			sfd->fd_local = -1;
+			return;
+		}
+		struct dmabuf_slice_data *info =
+				(struct dmabuf_slice_data *)block->data;
+		sfd->dmabuf_bo = make_dmabuf(render, sfd->buffer_size, info);
+		if (!sfd->dmabuf_bo) {
+			wp_error("FDC_DMAVID_IR: RID=%d make_dmabuf failure",
+					sfd->remote_id);
+			return;
+		}
+		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
+
+		int mirror_size = 0;
+		pad_video_mirror_size((int)sfd->dmabuf_info.width,
+				(int)sfd->dmabuf_info.height,
+				(int)sfd->dmabuf_info.strides[0], NULL, NULL,
+				&mirror_size);
+		sfd->mem_mirror = calloc(
+				(size_t)max((int)sfd->buffer_size, mirror_size),
+				1);
+		setup_video_encode(sfd);
+
 	} else if (sfd->type == FDC_DMABUF) {
-		bool use_video = transf->special.block_meta &
-				 FILE_SIZE_VIDEO_FLAG;
 		sfd->buffer_size = (size_t)(transf->special.block_meta &
 					    FILE_SIZE_SIZE_MASK);
 		size_t diff_space = 0;
@@ -1350,49 +1455,22 @@ void create_from_update(struct fd_translation_map *map,
 				&sfd->compress_space);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
-		struct dmabuf_slice_data *info =
-				(struct dmabuf_slice_data *)block->data;
+		memcpy(&sfd->dmabuf_info, block->data,
+				sizeof(struct dmabuf_slice_data));
 		const char *contents = NULL;
 		size_t contents_size = sfd->buffer_size;
-		if (use_video) {
-			int mirror_size = 0;
-			pad_video_mirror_size((int)info->width,
-					(int)info->height,
-					(int)info->strides[0], NULL, NULL,
-					&mirror_size);
-			sfd->mem_mirror = calloc(
-					(size_t)max((int)sfd->buffer_size,
-							mirror_size),
-					1);
-			setup_video_decode(sfd, (int)info->width,
-					(int)info->height,
-					(int)info->strides[0],
-					(int)info->format);
 
-			// Apply first frame, if available
-			if (block->size > sizeof(struct dmabuf_slice_data)) {
-				apply_video_packet_to_mirror(sfd,
-						block->size - sizeof(struct dmabuf_slice_data),
-						block->data + sizeof(struct dmabuf_slice_data));
-			} else {
-				memset(sfd->mem_mirror, 213, sfd->buffer_size);
-			}
-			contents = sfd->mem_mirror;
-		} else {
-			sfd->mem_mirror = calloc(sfd->buffer_size, 1);
-			const char *compressed_contents =
-					block->data +
-					sizeof(struct dmabuf_slice_data);
+		sfd->mem_mirror = calloc(sfd->buffer_size, 1);
+		const char *compressed_contents =
+				block->data + sizeof(struct dmabuf_slice_data);
 
-			size_t szcheck = 0;
-			uncompress_buffer(map,
-					block->size - sizeof(struct dmabuf_slice_data),
-					compressed_contents, sfd->buffer_size,
-					sfd->compress_buffer, &szcheck,
-					&contents);
+		size_t szcheck = 0;
+		uncompress_buffer(map,
+				block->size - sizeof(struct dmabuf_slice_data),
+				compressed_contents, sfd->buffer_size,
+				sfd->compress_buffer, &szcheck, &contents);
 
-			memcpy(sfd->mem_mirror, contents, sfd->buffer_size);
-		}
+		memcpy(sfd->mem_mirror, contents, sfd->buffer_size);
 
 		wp_debug("Creating remote DMAbuf of %d bytes",
 				(int)contents_size);
@@ -1405,13 +1483,25 @@ void create_from_update(struct fd_translation_map *map,
 		}
 
 		sfd->dmabuf_bo = make_dmabuf(
-				render, contents, contents_size, info);
+				render, contents_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			sfd->fd_local = -1;
 			return;
 		}
-		memcpy(&sfd->dmabuf_info, info,
-				sizeof(struct dmabuf_slice_data));
+
+		void *handle = NULL;
+		// unfortunately, there is no easy way to estimate the writeable
+		// region
+		void *dst = map_dmabuf(sfd->dmabuf_bo, true, &handle);
+		if (!dst) {
+			wp_error("Failed to map dmabuf to write initial data");
+			destroy_dmabuf(sfd->dmabuf_bo);
+			sfd->dmabuf_bo = NULL;
+			return;
+		}
+		memcpy(dst, contents, contents_size);
+		unmap_dmabuf(sfd->dmabuf_bo, handle);
+
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 	} else {
 		wp_error("Creating unknown file type updates");
@@ -1460,8 +1550,9 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 	if (sfd->type == FDC_FILE) {
 		if (transf->type != sfd->type) {
-			wp_error("Transfer type mismatch %d %d", transf->type,
-					sfd->type);
+			wp_error("Transfer type mismatch %s %s",
+					fdcat_to_str(transf->type),
+					fdcat_to_str(sfd->type));
 		}
 		uint32_t m_size = transf->special.block_meta &
 				  FILE_SIZE_SIZE_MASK;
@@ -1489,6 +1580,32 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		}
 		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
 				act_size, act_buffer);
+	} else if (sfd->type == FDC_DMABUF) {
+		if (!sfd->dmabuf_bo) {
+			wp_error("Applying update to nonexistent dma buffer object rid=%d",
+					sfd->remote_id);
+			return;
+		}
+
+		const char *act_buffer = NULL;
+		size_t act_size = 0;
+		uncompress_buffer(map, block->size, block->data,
+				transf->special.block_meta,
+				sfd->compress_buffer, &act_size, &act_buffer);
+
+		wp_debug("Applying dmabuf damage");
+		void *handle = NULL;
+		void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
+		if (!data) {
+			return;
+		}
+		apply_diff(sfd->buffer_size, sfd->mem_mirror, data, act_size,
+				act_buffer);
+		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
+			// there was an issue unmapping;
+			// unmap_dmabuf will log error
+			return;
+		}
 	} else if (fdcat_ispipe(sfd->type)) {
 		bool rw_match = sfd->type == FDC_PIPE_RW &&
 				transf->type == FDC_PIPE_RW;
@@ -1497,8 +1614,9 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		bool ir_match = sfd->type == FDC_PIPE_IR &&
 				transf->type == FDC_PIPE_IW;
 		if (!rw_match && !iw_match && !ir_match) {
-			wp_error("Transfer type contramismatch %d %d",
-					transf->type, sfd->type);
+			wp_error("Transfer type contramismatch %s %s",
+					fdcat_to_str(transf->type),
+					fdcat_to_str(sfd->type));
 		}
 
 		ssize_t netsize = sfd->pipe_send.used + (ssize_t)block->size;
@@ -1525,54 +1643,24 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		if (transf->special.pipeclose) {
 			sfd->pipe_rclosed = true;
 		}
-	} else if (sfd->type == FDC_DMABUF) {
+	} else if (sfd->type == FDC_DMAVID_IW) {
 		if (!sfd->dmabuf_bo) {
 			wp_error("Applying update to nonexistent dma buffer object rid=%d",
 					sfd->remote_id);
 			return;
 		}
-
-		if (sfd->video_codec) {
-			apply_video_packet_to_mirror(
-					sfd, block->size, block->data);
-
-			// this frame is applied via memcpy
-
-			void *handle = NULL;
-			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
-			if (!data) {
-				return;
-			}
-			memcpy(data, sfd->mem_mirror, sfd->buffer_size);
-			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
-				// there was an issue unmapping;
-				// unmap_dmabuf will log error
-				return;
-			}
-
-		} else {
-
-			const char *act_buffer = NULL;
-			size_t act_size = 0;
-			uncompress_buffer(map, block->size, block->data,
-					transf->special.block_meta,
-					sfd->compress_buffer, &act_size,
-					&act_buffer);
-
-			wp_debug("Applying dmabuf damage");
-			void *handle = NULL;
-			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
-			if (!data) {
-				return;
-			}
-			apply_diff(sfd->buffer_size, sfd->mem_mirror, data,
-					act_size, act_buffer);
-			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
-				// there was an issue unmapping;
-				// unmap_dmabuf will log error
-				return;
-			}
+		if (transf->type != FDC_DMAVID_IR) {
+			wp_error("Transfer type mismatch, got %s, expected %s, at rid=%d",
+					fdcat_to_str(transf->type),
+					fdcat_to_str(FDC_DMAVID_IR),
+					sfd->remote_id);
+			return;
 		}
+
+		apply_video_packet(sfd, block->size, block->data);
+	} else if (sfd->type == FDC_DMAVID_IR) {
+		wp_error("Did not expect any messages updating a read-only video channel, rid=%d",
+				sfd->remote_id);
 	}
 }
 

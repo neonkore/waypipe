@@ -27,7 +27,7 @@
 
 #include "util.h"
 
-#ifndef HAS_VIDEO
+#if !defined(HAS_VIDEO) || !defined(HAS_DMABUF)
 
 void setup_video_logging() {}
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
@@ -52,24 +52,8 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	(void)new_min_size;
 }
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
-void setup_video_encode(struct shadow_fd *sfd, int width, int height,
-		int stride, uint32_t drm_format)
-{
-	(void)sfd;
-	(void)width;
-	(void)height;
-	(void)stride;
-	(void)drm_format;
-}
-void setup_video_decode(struct shadow_fd *sfd, int width, int height,
-		int stride, uint32_t drm_format)
-{
-	(void)sfd;
-	(void)width;
-	(void)height;
-	(void)stride;
-	(void)drm_format;
-}
+void setup_video_encode(struct shadow_fd *sfd) { (void)sfd; }
+void setup_video_decode(struct shadow_fd *sfd) { (void)sfd; }
 void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
 		bool first)
@@ -79,8 +63,7 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 	(void)blocks;
 	(void)first;
 }
-void apply_video_packet_to_mirror(
-		struct shadow_fd *sfd, size_t size, const char *data)
+void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 {
 	(void)sfd;
 	(void)size;
@@ -98,7 +81,6 @@ void apply_video_packet_to_mirror(
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
-#ifdef HAS_DMABUF
 /* these are equivalent to the GBM formats */
 #include <libdrm/drm_fourcc.h>
 
@@ -118,9 +100,9 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 		return AV_PIX_FMT_RGB565LE;
 
 	/* there really isn't a matching format, because no fast video
-	 * codec supports alpha */
+	 * codec supports alpha. Expect unusual error patterns */
 	case DRM_FORMAT_GR88:
-		return AV_PIX_FMT_NONE;
+		return AV_PIX_FMT_YUYV422;
 
 	case DRM_FORMAT_RGB888:
 		return AV_PIX_FMT_BGR24;
@@ -145,31 +127,21 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 		return AV_PIX_FMT_NONE;
 	}
 }
-#endif
 
 static enum AVPixelFormat shm_to_av(uint32_t format)
 {
 	if (format == 0) {
 		return AV_PIX_FMT_BGR0;
 	}
-#ifdef HAS_DMABUF
 	return drm_to_av(format);
-#else
-	return AV_PIX_FMT_NONE;
-#endif
 }
 
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
 {
-#ifdef HAS_DMABUF
 	if (modifier == DRM_FORMAT_MOD_LINEAR &&
 			drm_to_av(format) != AV_PIX_FMT_NONE) {
 		return true;
 	}
-#else
-	(void)format;
-	(void)modifier;
-#endif
 	return false;
 }
 bool video_supports_shm_format(uint32_t format)
@@ -265,9 +237,13 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	}
 }
 
-void setup_video_encode(struct shadow_fd *sfd, int width, int height,
-		int stride, uint32_t drm_format)
+void setup_video_encode(struct shadow_fd *sfd)
 {
+	uint32_t drm_format = sfd->dmabuf_info.format;
+	int width = sfd->dmabuf_info.width;
+	int height = sfd->dmabuf_info.height;
+	int stride = sfd->dmabuf_info.strides[0];
+
 	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat	for %x",
@@ -289,8 +265,7 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 	// direction are relatively independent. TODO: use
 	// hardware support only if available.
 
-	/* note: "libx264rgb" should, if compiled in, support RGB
-directly */
+	/* note: "libx264rgb" should, if compiled in, support RGB directly */
 	struct AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
 	if (!codec) {
 		wp_error("Failed to find encoder for h264");
@@ -376,9 +351,13 @@ directly */
 	sfd->video_color_context = sws;
 }
 
-void setup_video_decode(struct shadow_fd *sfd, int width, int height,
-		int stride, uint32_t drm_format)
+void setup_video_decode(struct shadow_fd *sfd)
 {
+	uint32_t drm_format = sfd->dmabuf_info.format;
+	int width = sfd->dmabuf_info.width;
+	int height = sfd->dmabuf_info.height;
+	int stride = sfd->dmabuf_info.strides[0];
+
 	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat for %x",
@@ -461,6 +440,13 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
 		bool first)
 {
+	void *handle = NULL;
+	void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle);
+	if (!data) {
+		return;
+	}
+	memcpy(sfd->mem_mirror, data, sfd->buffer_size);
+	unmap_dmabuf(sfd->dmabuf_bo, handle);
 
 	sfd->video_reg_frame->data[0] = (uint8_t *)sfd->mem_mirror;
 	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
@@ -479,11 +465,8 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 	sfd->video_yuv_frame->pts = sfd->video_frameno++;
 	int sendstat = avcodec_send_frame(
 			sfd->video_context, sfd->video_yuv_frame);
-	char errbuf[256];
-	strcpy(errbuf, "Unknown error");
 	if (sendstat < 0) {
-		av_strerror(sendstat, errbuf, sizeof(errbuf));
-		wp_error("Failed to create frame: %s", errbuf);
+		wp_error("Failed to create frame: %s", av_err2str(sendstat));
 		return;
 	}
 	// assume 1-1 frames to packets, at the moment
@@ -498,39 +481,33 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		// original frame ? but _lag_
 	}
 	if (recvstat == 0) {
-		// we can unref the packet when? after sending?
-		// on the next arrival?
 		struct AVPacket *pkt = sfd->video_packet;
-		size_t tsize;
-		if (first) {
-			// For the first frame, we must prepend
-			// the video slice data
-			free(sfd->video_buffer);
-			sfd->video_buffer = calloc(
-					align(pkt->buf->size + sizeof(struct dmabuf_slice_data),
-							8),
-					1);
-			memcpy(sfd->video_buffer, &sfd->dmabuf_info,
-					sizeof(struct dmabuf_slice_data));
-			memcpy(sfd->video_buffer + sizeof(struct dmabuf_slice_data),
-					pkt->buf->data, pkt->buf->size);
-			tsize = pkt->buf->size +
-				sizeof(struct dmabuf_slice_data);
-		} else {
-			free(sfd->video_buffer);
-			size_t sz = pkt->buf->size;
-			sfd->video_buffer = malloc(align(sz, 8));
-			memcpy(sfd->video_buffer, pkt->buf->data, sz);
-			tsize = sz;
-		}
-		av_packet_unref(pkt);
+		buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
+				&transfers->size, (void **)&transfers->data);
+		buf_ensure_size(blocks->count + 1 + first,
+				sizeof(struct bytebuf), &blocks->size,
+				(void **)&blocks->data);
 
-		struct transfer *tf = setup_single_block_transfer(
-				transfers, blocks, tsize, sfd->video_buffer);
+		struct transfer *tf = &transfers->data[transfers->count++];
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
-		tf->special.block_meta = (uint32_t)sfd->buffer_size |
-					 FILE_SIZE_VIDEO_FLAG;
+		tf->special.block_meta = (uint32_t)sfd->buffer_size;
+		tf->nblocks = 1 + first;
+		tf->subtransfer_idx = blocks->count;
+		if (first) {
+			struct bytebuf *header = &blocks->data[blocks->count++];
+			header->size = sizeof(struct dmabuf_slice_data);
+			header->data = (char *)&sfd->dmabuf_info;
+		}
+		free(sfd->video_buffer);
+		sfd->video_buffer = (char *)malloc(align(pkt->buf->size, 8));
+		memcpy(sfd->video_buffer, pkt->buf->data,
+				(size_t)pkt->buf->size);
+		struct bytebuf *bb = &blocks->data[blocks->count++];
+		bb->size = (size_t)pkt->buf->size;
+		bb->data = (char *)sfd->video_buffer;
+
+		av_packet_unref(pkt);
 	} else if (first) {
 		struct transfer *tf = setup_single_block_transfer(transfers,
 				blocks, sizeof(struct dmabuf_slice_data),
@@ -538,13 +515,11 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		// Q: use a subtype 'FDC_VIDEODMABUF ?'
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
-		tf->special.block_meta = (uint32_t)sfd->buffer_size |
-					 FILE_SIZE_VIDEO_FLAG;
+		tf->special.block_meta = (uint32_t)sfd->buffer_size;
 	}
 }
 
-void apply_video_packet_to_mirror(
-		struct shadow_fd *sfd, size_t size, const char *data)
+void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 {
 	// We unpack directly one mem_mirror
 	sfd->video_reg_frame->data[0] = (uint8_t *)sfd->mem_mirror;
@@ -565,11 +540,13 @@ void apply_video_packet_to_mirror(
 		wp_error("Failed to send packet: %s", errbuf);
 	}
 
+	/* Receive all produced frames, ignoring all but the most recent */
 	while (true) {
-		// Apply all produced frames
 		int recvstat = avcodec_receive_frame(
 				sfd->video_context, sfd->video_yuv_frame);
 		if (recvstat == 0) {
+			/* Handle frame immediately, since the next receive run
+			 * will clear it again */
 			if (sws_scale(sfd->video_color_context,
 					    (const uint8_t *const *)sfd
 							    ->video_yuv_frame
@@ -582,6 +559,19 @@ void apply_video_packet_to_mirror(
 				wp_error("Failed to perform color conversion");
 			}
 
+			if (!sfd->dmabuf_bo) {
+				// ^ was not previously able to create buffer
+				wp_error("DMABUF was not created");
+				return;
+			}
+			/* Copy data onto DMABUF */
+			void *handle = NULL;
+			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
+			if (!data) {
+				return;
+			}
+			memcpy(data, sfd->mem_mirror, sfd->buffer_size);
+			unmap_dmabuf(sfd->dmabuf_bo, handle);
 		} else {
 			if (recvstat != AVERROR(EAGAIN)) {
 				strcpy(errbuf, "Unknown error");
@@ -591,9 +581,7 @@ void apply_video_packet_to_mirror(
 			}
 			break;
 		}
-		// the scale/copy operation output is
-		// already onto mem_mirror
 	}
 }
 
-#endif /* HAS_VIDEO */
+#endif /* HAS_VIDEO && HAS_DMABUF */

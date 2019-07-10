@@ -592,7 +592,9 @@ void do_wl_surface_req_commit(struct context *ctx)
 						i);
 				continue;
 			}
-			if (sfd->type != FDC_DMABUF) {
+
+			if (!(sfd->type == FDC_DMABUF ||
+					    sfd->type == FDC_DMAVID_IR)) {
 				wp_error("fd associated with dmabuf surface is not a dmabuf");
 				continue;
 			}
@@ -737,8 +739,8 @@ void do_wl_keyboard_evt_keymap(
 		return;
 	}
 
-	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			fdtype, fdsz, NULL, false);
+	struct shadow_fd *sfd = translate_fd(
+			&ctx->g->map, &ctx->g->render, fd, fdtype, fdsz, NULL);
 	struct wp_keyboard *keyboard = (struct wp_keyboard *)ctx->obj;
 	keyboard->owned_buffer = shadow_incref_protocol(sfd);
 	(void)format;
@@ -768,8 +770,8 @@ void do_wl_shm_req_create_pool(
 		return;
 	}
 
-	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			fdtype, fdsz, NULL, false);
+	struct shadow_fd *sfd = translate_fd(
+			&ctx->g->map, &ctx->g->render, fd, fdtype, fdsz, NULL);
 	the_shm_pool->owned_buffer = shadow_incref_protocol(sfd);
 }
 
@@ -806,22 +808,6 @@ void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
 	if (!sfd) {
 		wp_error("Creating a wl_buffer from a pool that does not own an fd");
 		return;
-	}
-
-	if (sfd->refcount_protocol == 1 && video_supports_shm_format(format) &&
-			offset == 0 &&
-			stride * height == (int32_t)sfd->buffer_size &&
-			ctx->g->config->video_if_possible) {
-		/* shm data supports video only when there is a single
-		 * wl_buffer that references the underlying file and
-		 * furthermore that buffer lays claim to the entire
-		 * buffer. Otherwise, handling mixed use cases can
-		 * become incredibly complicated.
-		 *
-		 * Additional complications can happen if the pool is
-		 * reused */
-		// setup_video_encode(sfd, width, height, stride,
-		// format);
 	}
 
 	the_buffer->type = BUF_SHM;
@@ -1035,7 +1021,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 #endif
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render,
-			name, FDC_DMABUF, 0, &info, false);
+			name, FDC_DMABUF, 0, &info);
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = 1;
 	buf->dmabuf_buffers[0] = shadow_incref_protocol(sfd);
@@ -1241,10 +1227,6 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		/* replace the format with something the driver can
 		 * probably handle */
 		info.format = dmabuf_get_simple_format_for_plane(format, i);
-		bool try_video = params->nplanes == 1 &&
-				 video_supports_dmabuf_format(
-						 format, info.modifier) &&
-				 ctx->g->config->video_if_possible;
 
 #if !defined(__DragonFly__) && !defined(__FreeBSD__)
 		size_t fdsz = 0;
@@ -1256,9 +1238,20 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		}
 #endif
 
+		fdcat_t res_type = FDC_DMABUF;
+		if (ctx->g->config->video_if_possible) {
+			// TODO: multiplanar support
+			if (params->nplanes == 1 &&
+					video_supports_dmabuf_format(format,
+							info.modifier)) {
+				res_type = ctx->on_display_side ? FDC_DMAVID_IW
+								: FDC_DMAVID_IR;
+			}
+		}
+
 		struct shadow_fd *sfd = translate_fd(&ctx->g->map,
-				&ctx->g->render, params->add[i].fd, FDC_DMABUF,
-				0, &info, try_video);
+				&ctx->g->render, params->add[i].fd, res_type, 0,
+				&info);
 		/* increment for each extra time this fd will be sent */
 		if (sfd->has_owner) {
 			shadow_incref_transfer(sfd);
@@ -1356,7 +1349,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 #endif
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_DMABUF, 0, &info, false);
+			FDC_DMABUF, 0, &info);
 	if (sfd->buffer_size < size) {
 		wp_error("Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
 				index, (uint32_t)sfd->buffer_size, size);
@@ -1397,7 +1390,7 @@ static void translate_data_transfer_fd(struct context *context, int32_t fd)
 	 * around should be, according to the protocol, only written into and
 	 * closed */
 	translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE_IW, 0,
-			NULL, false);
+			NULL);
 }
 void do_gtk_primary_selection_offer_req_receive(
 		struct context *ctx, const char *mime_type, int fd)

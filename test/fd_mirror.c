@@ -253,8 +253,8 @@ static bool test_mirror(int new_file_fd, size_t sz,
 
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(new_file_fd, &fdsz);
-	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
-			fdtype, fdsz, slice_data, false);
+	struct shadow_fd *src_shadow = translate_fd(
+			&src_map, rd, new_file_fd, fdtype, fdsz, slice_data);
 	struct shadow_fd *dst_shadow = NULL;
 	int rid = src_shadow->remote_id;
 
@@ -374,12 +374,22 @@ int main(int argc, char **argv)
 
 				if (has_dmabuf) {
 					struct gbm_bo *bo = make_dmabuf(&rd,
-							(const char *)test_pattern,
 							test_size, &slice_data);
 					if (!bo) {
 						has_dmabuf = false;
 						continue;
 					}
+					void *map_handle = NULL;
+					void *data = map_dmabuf(
+							bo, true, &map_handle);
+					if (!data) {
+						destroy_dmabuf(bo);
+						has_dmabuf = false;
+						continue;
+					}
+					memcpy(data, test_pattern, test_size);
+					unmap_dmabuf(bo, &map_handle);
+
 					int dmafd = export_dmabuf(bo);
 					if (dmafd == -1) {
 						has_dmabuf = false;

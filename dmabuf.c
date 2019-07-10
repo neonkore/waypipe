@@ -57,11 +57,10 @@ int get_unique_dmabuf_handle(
 	(void)temporary_bo;
 	return -1;
 }
-struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
-		size_t size, struct dmabuf_slice_data *info)
+struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
+		struct dmabuf_slice_data *info)
 {
 	(void)rd;
-	(void)data;
 	(void)size;
 	(void)info;
 	return NULL;
@@ -268,8 +267,8 @@ int get_unique_dmabuf_handle(
 	return handle;
 }
 
-struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
-		size_t size, struct dmabuf_slice_data *info)
+struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
+		struct dmabuf_slice_data *info)
 {
 	struct gbm_bo *bo;
 	if (!info || info->num_planes == 0) {
@@ -341,17 +340,6 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 			}
 		}
 	}
-
-	void *handle = NULL;
-	// unfortunately, there is no easy way to estimate the writeable region
-	void *dst = map_dmabuf(bo, true, &handle);
-	if (!dst) {
-		gbm_bo_destroy(bo);
-		return NULL;
-	}
-	memcpy(dst, data, size);
-	// no error message :-(, even though unmap ~ commit
-	unmap_dmabuf(bo, handle);
 	return bo;
 }
 int export_dmabuf(struct gbm_bo *bo)
