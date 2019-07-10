@@ -1409,7 +1409,7 @@ void create_from_update(struct fd_translation_map *map,
 
 		// Apply first frame, if available
 		if (block->size > sizeof(struct dmabuf_slice_data)) {
-			apply_video_packet(sfd,
+			apply_video_packet(sfd, render,
 					block->size - sizeof(struct dmabuf_slice_data),
 					block->data + sizeof(struct dmabuf_slice_data));
 		} else {
@@ -1657,7 +1657,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 			return;
 		}
 
-		apply_video_packet(sfd, block->size, block->data);
+		apply_video_packet(sfd, render, block->size, block->data);
 	} else if (sfd->type == FDC_DMAVID_IR) {
 		wp_error("Did not expect any messages updating a read-only video channel, rid=%d",
 				sfd->remote_id);

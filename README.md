@@ -49,11 +49,11 @@ Requirements:
 * libgbm (optional, to support programs using OpenGL via DMABUFs)
 * libdrm (optional, same as for libgbm)
 * ffmpeg (optional, >=3.1, needs avcodec/avutil/swscale for lossy video encoding)
+* libva (optional, for hardware video encoding and decoding)
 * scdoc (optional, to generate a man page)
 * sys/sdt.h (optional, to provide static tracepoints for profiling)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)
 * libx264 (ffmpeg runtime, for software video decoding and encoding)
-* a VAAPI driver (ffmpeg runtime, for hardware video decoding and encoding)
 
 [0] [https://mesonbuild.com/](https://mesonbuild.com/)
 [1] [https://git.sr.ht/~sircmpwn/scdoc](https://git.sr.ht/~sircmpwn/scdoc)

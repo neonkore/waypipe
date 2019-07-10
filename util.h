@@ -123,6 +123,9 @@ struct bytebuf_stack {
 	int size, count;
 };
 
+typedef void *VADisplay;
+typedef unsigned int VAGenericID;
+typedef VAGenericID VAConfigID;
 struct render_data {
 	bool disabled;
 	int drm_fd;
@@ -132,6 +135,8 @@ struct render_data {
 	bool av_disabled;
 	struct AVBufferRef *av_hwdevice_ref;
 	struct AVBufferRef *av_drmdevice_ref;
+	VADisplay av_vadisplay;
+	VAConfigID av_copy_config;
 };
 
 enum thread_task {
@@ -296,6 +301,10 @@ void reset_damage(struct damage *base);
 /** Expand damage to cover everything */
 void damage_everything(struct damage *base);
 
+typedef VAGenericID VAContextID;
+typedef VAGenericID VASurfaceID;
+typedef VAGenericID VABufferID;
+
 struct shadow_fd {
 	struct shadow_fd *next; // singly-linked list
 	fdcat_t type;
@@ -357,6 +366,10 @@ struct shadow_fd {
 	struct SwsContext *video_color_context;
 	char *video_buffer;
 	int64_t video_frameno;
+
+	VASurfaceID video_va_surface;
+	VAContextID video_va_context;
+	VABufferID video_va_pipeline;
 };
 
 #define FILE_SIZE_EXTEND_FLAG (1u << 31)
@@ -617,7 +630,8 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
 void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
 		bool first);
-void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data);
+void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
+		size_t size, const char *data);
 /** All return pointers can be NULL. Determines how much extra space or
  * padded width/height is needed for a video frame */
 void pad_video_mirror_size(int width, int height, int stride, int *new_width,

@@ -61,6 +61,10 @@ libswscale = dependency('libswscale', required: get_option('with_video'))
 if libavcodec.found() and libavutil.found() and libswscale.found()
 	add_project_arguments('-DHAS_VIDEO=1', language: 'c')
 endif
+libva = dependency('libva', required: get_option('with_vaapi'))
+if libva.found()
+	add_project_arguments('-DHAS_VAAPI=1', language: 'c')
+endif
 
 subdir('protocols')
 
@@ -73,6 +77,7 @@ waypipe_dependencies = [
 	pthreads,        # To run expensive computations in parallel
 	protos,          # Wayland protocol data
 	rt,              # For shared memory
+	libva,           # For NV12->RGB conversions
 ]
 
 waypipe_includes = []

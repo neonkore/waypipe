@@ -52,8 +52,16 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	(void)new_min_size;
 }
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
-void setup_video_encode(struct shadow_fd *sfd) { (void)sfd; }
-void setup_video_decode(struct shadow_fd *sfd) { (void)sfd; }
+void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
+{
+	(void)sfd;
+	(void)rd;
+}
+void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
+{
+	(void)sfd;
+	(void)rd;
+}
 void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
 		bool first)
@@ -63,8 +71,10 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 	(void)blocks;
 	(void)first;
 }
-void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
+void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
+		size_t size, const char *data)
 {
+	(void)rd;
 	(void)sfd;
 	(void)size;
 	(void)data;
@@ -81,6 +91,12 @@ void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 #include <unistd.h>
+
+#ifdef HAS_VAAPI
+#include <libavutil/hwcontext_vaapi.h>
+#include <va/va_drmcommon.h>
+#include <va/va_vpp.h>
+#endif
 
 /* these are equivalent to the GBM formats */
 #include <libdrm/drm_fourcc.h>
@@ -186,9 +202,180 @@ void setup_video_logging()
 	av_log_set_callback(video_log_callback);
 }
 
+#ifdef HAS_VAAPI
+
+static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd)
+{
+	VADisplay vadisp = rd->av_vadisplay;
+
+	unsigned long buffer_val = (unsigned long)sfd->fd_local;
+
+	VASurfaceAttribExternalBuffers buffer_desc;
+	/* so, we create a vaSurface from the existing buffer
+	 * structure, hence won't need to deallocate at all. All
+	 * additional surfaces written into will also be DMABUF
+	 * surfaces; we guarantee disjointness by the client only
+	 * updating a surface after release */
+	buffer_desc.num_buffers = 1;
+	buffer_desc.buffers = &buffer_val;
+	/* only very few surface types supported */
+	buffer_desc.pixel_format = VA_FOURCC_BGRX;
+	buffer_desc.flags = 0;
+	buffer_desc.width = sfd->video_context->width;
+	buffer_desc.height = sfd->video_context->height;
+	buffer_desc.data_size = sfd->buffer_size;
+	buffer_desc.num_planes = 1;
+	buffer_desc.offsets[0] = sfd->dmabuf_info.offsets[0];
+	buffer_desc.pitches[0] = sfd->dmabuf_info.strides[0];
+
+	VASurfaceAttrib attribs[3];
+	attribs[0].type = VASurfaceAttribPixelFormat;
+	attribs[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
+	attribs[0].value.type = VAGenericValueTypeInteger;
+	attribs[0].value.value.i = VA_FOURCC_RGBX;
+	attribs[1].type = VASurfaceAttribMemoryType;
+	attribs[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
+	attribs[1].value.type = VAGenericValueTypeInteger;
+	attribs[1].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+	attribs[2].type = VASurfaceAttribExternalBufferDescriptor;
+	attribs[2].flags = VA_SURFACE_ATTRIB_SETTABLE;
+	attribs[2].value.type = VAGenericValueTypePointer;
+	attribs[2].value.value.p = &buffer_desc;
+
+	sfd->video_va_surface = 0;
+	sfd->video_va_context = 0;
+	sfd->video_va_pipeline = 0;
+
+	VAStatus stat = vaCreateSurfaces(vadisp, VA_RT_FORMAT_RGB32,
+			buffer_desc.width, buffer_desc.height,
+			&sfd->video_va_surface, 1, attribs, 3);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Create surface failed: %s", vaErrorStr(stat));
+		sfd->video_va_surface = 0;
+		return -1;
+	}
+
+	stat = vaCreateContext(vadisp, rd->av_copy_config, buffer_desc.width,
+			buffer_desc.height, 0, &sfd->video_va_surface, 1,
+			&sfd->video_va_context);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Create context failed %s", vaErrorStr(stat));
+		vaDestroySurfaces(vadisp, &sfd->video_va_surface, 1);
+		sfd->video_va_surface = 0;
+		sfd->video_va_context = 0;
+		return -1;
+	}
+
+	stat = vaCreateBuffer(vadisp, sfd->video_va_context,
+			VAProcPipelineParameterBufferType,
+			sizeof(VAProcPipelineParameterBuffer), 1, NULL,
+			&sfd->video_va_pipeline);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Failed to create pipeline buffer: %s",
+				vaErrorStr(stat));
+		vaDestroySurfaces(vadisp, &sfd->video_va_surface, 1);
+		vaDestroyContext(vadisp, sfd->video_va_context);
+		sfd->video_va_surface = 0;
+		sfd->video_va_context = 0;
+		sfd->video_va_pipeline = 0;
+		return -1;
+	}
+	return 0;
+}
+
+static void cleanup_vaapi_pipeline(struct shadow_fd *sfd)
+{
+	if (!sfd->video_context) {
+		return;
+	}
+	if (!sfd->video_context->hw_device_ctx) {
+		return;
+	}
+	AVHWDeviceContext *vwdc =
+			(AVHWDeviceContext *)
+					sfd->video_context->hw_device_ctx->data;
+	if (vwdc->type != AV_HWDEVICE_TYPE_VAAPI) {
+		return;
+	}
+	AVVAAPIDeviceContext *vdctx = (AVVAAPIDeviceContext *)vwdc->hwctx;
+	VADisplay vadisp = vdctx->display;
+
+	if (sfd->video_va_surface) {
+		vaDestroySurfaces(vadisp, &sfd->video_va_surface, 1);
+		sfd->video_va_surface = 0;
+	}
+	if (sfd->video_va_context) {
+		vaDestroyContext(vadisp, sfd->video_va_context);
+		sfd->video_va_context = 0;
+	}
+	if (sfd->video_va_pipeline) {
+		vaDestroyBuffer(vadisp, sfd->video_va_pipeline);
+		sfd->video_va_pipeline = 0;
+	}
+}
+
+static void run_vaapi_conversion(struct shadow_fd *sfd, struct render_data *rd,
+		struct AVFrame *va_frame)
+{
+	VADisplay vadisp = rd->av_vadisplay;
+
+	if (va_frame->format != AV_PIX_FMT_VAAPI) {
+		wp_error("Non-vaapi pixel format: %s",
+				av_get_pix_fmt_name(va_frame->format));
+	}
+	VASurfaceID src_surf = (VASurfaceID)(ptrdiff_t)va_frame->data[3];
+
+	int stat = vaBeginPicture(
+			vadisp, sfd->video_va_context, sfd->video_va_surface);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Begin picture config failed: %s", vaErrorStr(stat));
+	}
+
+	VAProcPipelineParameterBuffer *pipeline_param;
+	stat = vaMapBuffer(vadisp, sfd->video_va_pipeline,
+			(void **)&pipeline_param);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Failed to map pipeline buffer: %s", vaErrorStr(stat));
+	}
+
+	pipeline_param->surface = src_surf;
+	pipeline_param->surface_region = NULL;
+	pipeline_param->output_region = NULL;
+	pipeline_param->output_background_color = 0;
+	pipeline_param->filter_flags = VA_FILTER_SCALING_FAST;
+	pipeline_param->filters = NULL;
+	pipeline_param->filters = 0;
+
+	stat = vaUnmapBuffer(vadisp, sfd->video_va_pipeline);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Failed to unmap pipeline buffer: %s",
+				vaErrorStr(stat));
+	}
+
+	stat = vaRenderPicture(vadisp, sfd->video_va_context,
+			&sfd->video_va_pipeline, 1);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Failed to render picture: %s", vaErrorStr(stat));
+	}
+
+	stat = vaEndPicture(vadisp, sfd->video_va_context);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("End picture failed: %s", vaErrorStr(stat));
+	}
+
+	stat = vaSyncSurface(vadisp, sfd->video_va_surface);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Sync surface failed: %s", vaErrorStr(stat));
+	}
+}
+#endif
+
 void destroy_video_data(struct shadow_fd *sfd)
 {
 	if (sfd->video_context) {
+#ifdef HAS_VAAPI
+		cleanup_vaapi_pipeline(sfd);
+#endif
 		/* free contexts (which, theoretically, could have hooks into
 		 * frames/packets) first */
 		avcodec_free_context(&sfd->video_context);
@@ -256,6 +443,10 @@ int init_hwcontext(struct render_data *rd)
 		return -1;
 	}
 
+	rd->av_vadisplay = 0;
+	rd->av_copy_config = 0;
+	rd->av_drmdevice_ref = NULL;
+
 	// Q: what does this even do?
 	rd->av_drmdevice_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_DRM);
 	if (!rd->av_drmdevice_ref) {
@@ -269,6 +460,8 @@ int init_hwcontext(struct render_data *rd)
 	dctx->fd = rd->drm_fd;
 	if (av_hwdevice_ctx_init(rd->av_drmdevice_ref)) {
 		wp_error("Failed to initialize AV DRM device context");
+		rd->av_disabled = true;
+		return -1;
 	}
 
 	/* We create a derived context here, to ensure that the drm fd matches
@@ -279,7 +472,30 @@ int init_hwcontext(struct render_data *rd)
 			    AV_HWDEVICE_TYPE_VAAPI, rd->av_drmdevice_ref,
 			    0) < 0) {
 		wp_error("Failed to create VAAPI hardware device");
+		rd->av_disabled = true;
+		return -1;
 	}
+
+#ifdef HAS_VAAPI
+	AVHWDeviceContext *vwdc =
+			(AVHWDeviceContext *)rd->av_hwdevice_ref->data;
+	AVVAAPIDeviceContext *vdctx = (AVVAAPIDeviceContext *)vwdc->hwctx;
+	if (!vdctx) {
+		wp_error("No vaapi device context");
+		rd->av_disabled = true;
+		return -1;
+	}
+	rd->av_vadisplay = vdctx->display;
+
+	int stat = vaCreateConfig(rd->av_vadisplay, VAProfileNone,
+			VAEntrypointVideoProc, NULL, 0, &rd->av_copy_config);
+	if (stat != VA_STATUS_SUCCESS) {
+		wp_error("Create config failed: %s", vaErrorStr(stat));
+		rd->av_disabled = true;
+		return -1;
+	}
+
+#endif
 
 	return 0;
 }
@@ -287,6 +503,12 @@ int init_hwcontext(struct render_data *rd)
 void cleanup_hwcontext(struct render_data *rd)
 {
 	rd->av_disabled = true;
+#if HAS_VAAPI
+	if (rd->av_vadisplay && rd->av_copy_config) {
+		vaDestroyConfig(rd->av_vadisplay, rd->av_copy_config);
+	}
+#endif
+
 	if (rd->av_hwdevice_ref) {
 		av_buffer_unref(&rd->av_hwdevice_ref);
 	}
@@ -807,7 +1029,8 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 	sfd->video_color_context = sws;
 }
 
-void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
+void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
+		size_t size, const char *data)
 {
 	// padding, requires zerod overflow for read
 	sfd->video_packet->data = (uint8_t *)data;
@@ -825,6 +1048,24 @@ void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 				sfd->video_context, sfd->video_yuv_frame);
 		if (recvstat == 0) {
 			struct AVFrame *cpu_frame = sfd->video_yuv_frame;
+#if HAS_VAAPI
+			if (rd->av_vadisplay &&
+					sfd->video_yuv_frame->format ==
+							AV_PIX_FMT_VAAPI) {
+				if (!sfd->video_va_surface) {
+					setup_vaapi_pipeline(sfd, rd);
+				}
+				/* if setup successful, run conversion */
+				if (sfd->video_va_surface) {
+					run_vaapi_conversion(sfd, rd,
+							sfd->video_yuv_frame);
+					continue;
+				}
+			}
+#else
+			(void)rd;
+#endif
+
 			if (sfd->video_yuv_frame->format == AV_PIX_FMT_VAAPI) {
 				if (!sfd->video_tmp_frame) {
 					sfd->video_tmp_frame = av_frame_alloc();
