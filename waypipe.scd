@@ -96,6 +96,12 @@ will be displayed locally.
 	Compress specific DMABUF formats using a lossy video codec. Opaque, 10-bit, and
 	multiplanar formats, among others, are not supported.
 
+*--hwvideo*
+	Sets the *--video* option, and also specifies that hardware video encoding and decoding
+	should be used if possible. Whether this option improves bandwidth use and latency
+	is hardware dependent.
+
+
 # EXAMPLE 
 
 The following *waypipe ssh* subcommand will attempt to run *weston-flower* on

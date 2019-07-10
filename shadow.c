@@ -572,7 +572,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
-		setup_video_encode(sfd);
+		setup_video_encode(sfd, render);
 	} else if (sfd->type == FDC_DMAVID_IW) {
 		if (!info) {
 			wp_error("No info available");
@@ -586,7 +586,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
-		setup_video_decode(sfd);
+		setup_video_decode(sfd, render);
 		/* notify remote side with sentinel frame */
 		sfd->video_frameno = -1;
 	} else if (sfd->type == FDC_DMABUF) {
@@ -1212,7 +1212,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			return;
 		}
 		sfd->is_dirty = false;
-		if (!sfd->dmabuf_bo || !sfd->video_codec) {
+		if (!sfd->dmabuf_bo || !sfd->video_context) {
 			// ^ was not previously able to create buffer
 			return;
 		}
@@ -1405,7 +1405,7 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
-		setup_video_decode(sfd);
+		setup_video_decode(sfd, render);
 
 		// Apply first frame, if available
 		if (block->size > sizeof(struct dmabuf_slice_data)) {
@@ -1445,7 +1445,7 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
-		setup_video_encode(sfd);
+		setup_video_encode(sfd, render);
 
 	} else if (sfd->type == FDC_DMABUF) {
 		sfd->buffer_size = (size_t)(transf->special.block_meta &

@@ -964,10 +964,14 @@ int main_interface_loop(int chanfd, int progfd,
 
 	struct globals g;
 	g.config = config;
-	g.render = (struct render_data){.drm_node_path = config->drm_node,
+	g.render = (struct render_data){
+			.drm_node_path = config->drm_node,
 			.drm_fd = -1,
 			.dev = NULL,
-			.disabled = config->no_gpu};
+			.disabled = config->no_gpu,
+			.av_disabled = config->no_gpu ||
+				       !config->prefer_hwvideo,
+	};
 	setup_translation_map(&g.map, display_side, config->compression,
 			config->n_worker_threads);
 	init_message_tracker(&g.tracker);

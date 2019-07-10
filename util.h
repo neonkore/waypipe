@@ -128,6 +128,10 @@ struct render_data {
 	int drm_fd;
 	const char *drm_node_path;
 	struct gbm_device *dev;
+	/* video hardware context */
+	bool av_disabled;
+	struct AVBufferRef *av_hwdevice_ref;
+	struct AVBufferRef *av_drmdevice_ref;
 };
 
 enum thread_task {
@@ -344,9 +348,8 @@ struct shadow_fd {
 	struct dmabuf_slice_data dmabuf_info;
 
 	// Video data
-	struct AVCodec *video_codec;
 	struct AVCodecContext *video_context;
-	struct AVFrame *video_reg_frame;
+	struct AVFrame *video_local_frame;
 	struct AVFrame *video_yuv_frame;
 	void *video_yuv_frame_data;
 	struct AVPacket *video_packet;
@@ -448,6 +451,7 @@ struct main_config {
 	bool no_gpu;
 	bool linear_dmabuf;
 	bool video_if_possible;
+	bool prefer_hwvideo;
 };
 struct globals {
 	const struct main_config *config;
@@ -599,13 +603,14 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
 // video.c
 /** set redirect for ffmpeg logging through wp_log */
 
+void cleanup_hwcontext(struct render_data *rd);
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
 bool video_supports_shm_format(uint32_t format);
 void setup_video_logging(void);
 void destroy_video_data(struct shadow_fd *sfd);
 /** These need to have the dmabuf/dmabuf_info set beforehand */
-void setup_video_encode(struct shadow_fd *sfd);
-void setup_video_decode(struct shadow_fd *sfd);
+void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd);
+void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
 /** the video frame to be transferred should already have been transferred into
  * `sfd->mem_mirror`. */
 void collect_video_from_mirror(struct shadow_fd *sfd,

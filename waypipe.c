@@ -86,6 +86,7 @@ static const char usage_string[] =
 		"      --threads T      set thread pool size, default=hardware threads/2\n"
 		"      --unlink-socket  server mode: unlink the socket that waypipe connects to\n"
 		"      --video          compress certain linear dmabufs only with a video codec\n"
+		"      --hwvideo        use --video, and try hardware enc/decoding if available\n"
 		"\n";
 
 static int usage(int retcode)
@@ -260,6 +261,7 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_THREADS 1006
 #define ARG_UNLINK 1007
 #define ARG_VIDEO 1008
+#define ARG_HWVIDEO 1009
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -275,6 +277,7 @@ static const struct option options[] = {
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
 		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
 		{"video", no_argument, NULL, ARG_VIDEO},
+		{"hwvideo", no_argument, NULL, ARG_HWVIDEO},
 		{"threads", required_argument, NULL, ARG_THREADS},
 		{"display", required_argument, NULL, ARG_DISPLAY},
 		{0, 0, NULL, 0}};
@@ -294,14 +297,13 @@ int main(int argc, char **argv)
 	char *wayland_display = NULL;
 	const char *socketpath = NULL;
 
-	struct main_config config = {
-			.n_worker_threads = 0,
+	struct main_config config = {.n_worker_threads = 0,
 			.drm_node = NULL,
 			.compression = COMP_NONE,
 			.no_gpu = false,
 			.linear_dmabuf = false,
 			.video_if_possible = false,
-	};
+			.prefer_hwvideo = false};
 
 	/* We do not parse any getopt arguments happening after the mode choice
 	 * string, so as not to interfere with them. */
@@ -405,6 +407,10 @@ int main(int argc, char **argv)
 			break;
 		case ARG_VIDEO:
 			config.video_if_possible = true;
+			break;
+		case ARG_HWVIDEO:
+			config.video_if_possible = true;
+			config.prefer_hwvideo = true;
 			break;
 		case ARG_THREADS: {
 			char *endptr;
@@ -600,7 +606,10 @@ int main(int argc, char **argv)
 						"--login-shell";
 			}
 			if (config.video_if_possible) {
-				arglist[dstidx + 1 + offset++] = "--video";
+				arglist[dstidx + 1 + offset++] =
+						config.prefer_hwvideo
+								? "--hwvideo"
+								: "--video";
 			}
 			if (remote_drm_node) {
 				arglist[dstidx + 1 + offset++] = "--drm-node";

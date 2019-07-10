@@ -80,9 +80,14 @@ void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
+#include <unistd.h>
 
 /* these are equivalent to the GBM formats */
 #include <libdrm/drm_fourcc.h>
+
+#define VIDEO_HW_ENCODER "h264_vaapi"
+#define VIDEO_SW_ENCODER "libx264"
+#define VIDEO_DECODER "h264"
 
 static enum AVPixelFormat drm_to_av(uint32_t format)
 {
@@ -191,7 +196,7 @@ void destroy_video_data(struct shadow_fd *sfd)
 		if (sfd->video_yuv_frame_data) {
 			av_freep(sfd->video_yuv_frame_data);
 		}
-		av_frame_free(&sfd->video_reg_frame);
+		av_frame_free(&sfd->video_local_frame);
 		av_frame_free(&sfd->video_yuv_frame);
 		av_packet_free(&sfd->video_packet);
 	}
@@ -237,48 +242,61 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	}
 }
 
-void setup_video_encode(struct shadow_fd *sfd)
+int init_hwcontext(struct render_data *rd)
 {
-	uint32_t drm_format = sfd->dmabuf_info.format;
-	int width = sfd->dmabuf_info.width;
-	int height = sfd->dmabuf_info.height;
-	int stride = sfd->dmabuf_info.strides[0];
-
-	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
-	if (avpixfmt == AV_PIX_FMT_NONE) {
-		wp_error("Failed to find matching AvPixelFormat	for %x",
-				drm_format);
-		return;
+	if (rd->av_disabled) {
+		return -1;
 	}
-	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
-	if (sws_isSupportedInput(avpixfmt) == 0) {
-		wp_error("frame format %x not supported", avpixfmt);
-		return;
+	if (rd->av_hwdevice_ref != NULL) {
+		return 0;
 	}
-	if (sws_isSupportedInput(videofmt) == 0) {
-		wp_error("videofmt %x not supported", videofmt);
-		return;
+	if (init_render_data(rd) == -1) {
+		rd->av_disabled = true;
+		return -1;
 	}
 
-	// Try to set up a video encoding and a video decoding
-	// stream with AVCodec, although transmissions in each
-	// direction are relatively independent. TODO: use
-	// hardware support only if available.
-
-	/* note: "libx264rgb" should, if compiled in, support RGB directly */
-	struct AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
-	if (!codec) {
-		wp_error("Failed to find encoder for h264");
-		return;
+	// Q: what does this even do?
+	rd->av_drmdevice_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_DRM);
+	if (!rd->av_drmdevice_ref) {
+		wp_error("Failed to allocate AV DRM device context");
+		rd->av_disabled = true;
+		return -1;
+	}
+	AVHWDeviceContext *hwdc =
+			(AVHWDeviceContext *)rd->av_drmdevice_ref->data;
+	AVDRMDeviceContext *dctx = hwdc->hwctx;
+	dctx->fd = rd->drm_fd;
+	if (av_hwdevice_ctx_init(rd->av_drmdevice_ref)) {
+		wp_error("Failed to initialize AV DRM device context");
 	}
 
-	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
+	/* We create a derived context here, to ensure that the drm fd matches
+	 * that which was used to create the DMABUFs. Also, this ensures that
+	 * the VA implementation doesn't look for a connection via e.g. Wayland
+	 * or X11 */
+	if (av_hwdevice_ctx_create_derived(&rd->av_hwdevice_ref,
+			    AV_HWDEVICE_TYPE_VAAPI, rd->av_drmdevice_ref,
+			    0) < 0) {
+		wp_error("Failed to create VAAPI hardware device");
+	}
 
-	struct AVPacket *pkt = av_packet_alloc();
+	return 0;
+}
 
-	ctx->bit_rate = 3000000;
-	pad_video_mirror_size(
-			width, height, stride, &ctx->width, &ctx->height, NULL);
+void cleanup_hwcontext(struct render_data *rd)
+{
+	rd->av_disabled = true;
+	if (rd->av_hwdevice_ref) {
+		av_buffer_unref(&rd->av_hwdevice_ref);
+	}
+	if (rd->av_drmdevice_ref) {
+		av_buffer_unref(&rd->av_drmdevice_ref);
+	}
+}
+
+static void configure_low_latency_enc_context(
+		struct AVCodecContext *ctx, bool sw)
+{
 	// "time" is only meaningful in terms of the frames
 	// provided
 	ctx->time_base = (AVRational){1, 25};
@@ -289,16 +307,247 @@ void setup_video_encode(struct shadow_fd *sfd)
 	 * frames. The gop size is chosen by the driver. */
 	ctx->gop_size = -1;
 	ctx->max_b_frames = 0; // Q: how to get this to zero?
-	ctx->pix_fmt = videofmt;
 	// low latency
 	ctx->delay = 0;
 	ctx->thread_count = 1;
-	if (av_opt_set(ctx->priv_data, "preset", "ultrafast", 0) != 0) {
-		wp_error("Failed to set x264 encode ultrafast preset");
+
+	if (sw) {
+		ctx->bit_rate = 3000000;
+		if (av_opt_set(ctx->priv_data, "preset", "ultrafast", 0) != 0) {
+			wp_error("Failed to set x264 encode ultrafast preset");
+		}
+		if (av_opt_set(ctx->priv_data, "tune", "zerolatency", 0) != 0) {
+			wp_error("Failed to set x264 encode zerolatency");
+		}
+	} else {
+		/* with i965/gen8, hardware encoding is faster but has
+		 * significantly worse quality per bitrate than x264 */
+		ctx->bit_rate = 9000000;
+		if (av_opt_set(ctx->priv_data, "quality", "7", 0) != 0) {
+			wp_error("Failed to set h264 encode quality");
+		}
+		if (av_opt_set(ctx->priv_data, "profile", "main", 0) != 0) {
+			wp_error("Failed to set h264 encode main profile");
+		}
 	}
-	if (av_opt_set(ctx->priv_data, "tune", "zerolatency", 0) != 0) {
-		wp_error("Failed to set x264 encode zerolatency");
+}
+
+static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
+{
+	int nplanes = av_pix_fmt_count_planes(
+			drm_to_av(sfd->dmabuf_info.format));
+	if (nplanes != 1) {
+		wp_error("Equivalent AV format %s has too many (%d) planes",
+				av_get_pix_fmt_name(drm_to_av(
+						sfd->dmabuf_info.format)),
+				nplanes);
+		return -1;
 	}
+
+	/* NV12 is the preferred format for Intel VAAPI; see also
+	 * intel-vaapi-driver/src/i965_drv_video.c . Packed formats like
+	 * YUV420P typically don't work. */
+	const enum AVPixelFormat videofmt = AV_PIX_FMT_NV12;
+	struct AVCodec *codec = avcodec_find_encoder_by_name(VIDEO_HW_ENCODER);
+	if (!codec) {
+		wp_error("Failed to find encoder \"" VIDEO_HW_ENCODER "\"");
+		return -1;
+	}
+	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
+	configure_low_latency_enc_context(ctx, false);
+	/* see i965_drv_video.c, i965_suface_external_memory() [sic] ; to
+	 * map a frame, its dimensions must already be aligned. Tiling modes
+	 * have even stronger alignment restrictions */
+	ctx->width = sfd->dmabuf_info.width - sfd->dmabuf_info.width % 16;
+	ctx->height = sfd->dmabuf_info.height - sfd->dmabuf_info.height % 16;
+
+	AVHWFramesConstraints *constraints =
+			av_hwdevice_get_hwframe_constraints(
+					rd->av_hwdevice_ref, NULL);
+	if (!constraints) {
+		wp_error("Failed to get hardware frame constraints");
+		goto fail_hwframe_constraints;
+	}
+	enum AVPixelFormat hw_format = constraints->valid_hw_formats[0];
+	av_hwframe_constraints_free(&constraints);
+
+	AVBufferRef *frame_ref = av_hwframe_ctx_alloc(rd->av_hwdevice_ref);
+	if (!frame_ref) {
+		wp_error("Failed to allocate frame reference");
+		goto fail_frameref;
+	}
+
+	AVHWFramesContext *fctx = (AVHWFramesContext *)frame_ref->data;
+	/* hw fmt is e.g. "vaapi_vld" */
+	fctx->format = hw_format;
+	fctx->sw_format = videofmt;
+	fctx->width = ctx->width;
+	fctx->height = ctx->height;
+
+	int err = av_hwframe_ctx_init(frame_ref);
+	if (err < 0) {
+		wp_error("Failed to init hardware frame context, %s",
+				av_err2str(err));
+		goto fail_hwframe_init;
+	}
+
+	ctx->pix_fmt = hw_format;
+	ctx->hw_frames_ctx = av_buffer_ref(frame_ref);
+	if (!ctx->hw_frames_ctx) {
+		wp_error("Failed to reference hardware frame context for codec context");
+		goto fail_ctx_hwfctx;
+	}
+
+	int open_err = avcodec_open2(ctx, codec, NULL);
+	if (open_err < 0) {
+		wp_error("Failed to open codec: %s", av_err2str(open_err));
+		goto fail_codec_open;
+	}
+
+	/* Create a VAAPI frame linked to the sfd DMABUF */
+	struct AVDRMFrameDescriptor *framedesc =
+			av_mallocz(sizeof(struct AVDRMFrameDescriptor));
+	if (!framedesc) {
+		wp_error("Failed to allocate DRM frame descriptor");
+		goto fail_framedesc_alloc;
+	}
+	/* todo: multiplanar support */
+	framedesc->nb_objects = 1;
+	framedesc->objects[0].format_modifier = sfd->dmabuf_info.modifier;
+	framedesc->objects[0].fd = dup(sfd->fd_local);
+	framedesc->objects[0].size = sfd->buffer_size;
+	framedesc->nb_layers = 1;
+	framedesc->layers[0].format = sfd->dmabuf_info.format;
+	framedesc->layers[0].planes[0].object_index = 0;
+	framedesc->layers[0].planes[0].offset = sfd->dmabuf_info.offsets[0];
+	framedesc->layers[0].planes[0].pitch = sfd->dmabuf_info.strides[0];
+	framedesc->layers[0].nb_planes = av_pix_fmt_count_planes(
+			drm_to_av(sfd->dmabuf_info.format));
+
+	AVFrame *local_frame = av_frame_alloc();
+	if (!local_frame) {
+		wp_error("Failed to allocate local frame");
+		goto fail_frame_alloc;
+	}
+	local_frame->width = ctx->width;
+	local_frame->height = ctx->height;
+	local_frame->format = AV_PIX_FMT_DRM_PRIME;
+	local_frame->buf[0] = av_buffer_create((uint8_t *)framedesc,
+			sizeof(struct AVDRMFrameDescriptor),
+			av_buffer_default_free, local_frame, 0);
+	if (!local_frame->buf[0]) {
+		wp_error("Failed to reference count frame DRM description");
+		goto fail_framedesc_ref;
+	}
+	local_frame->data[0] = (uint8_t *)framedesc;
+	local_frame->hw_frames_ctx = av_buffer_ref(frame_ref);
+	if (!local_frame->hw_frames_ctx) {
+		wp_error("Failed to reference hardware frame context for local frame");
+		goto fail_frame_hwfctx;
+	}
+
+	AVFrame *yuv_frame = av_frame_alloc();
+	if (!yuv_frame) {
+		wp_error("Failed to allocate yuv frame");
+		goto fail_yuv_frame;
+	}
+	yuv_frame->format = hw_format;
+	yuv_frame->hw_frames_ctx = av_buffer_ref(frame_ref);
+	if (!yuv_frame->hw_frames_ctx) {
+		wp_error("Failed to reference hardware frame context for yuv frame");
+		goto fail_yuv_hwfctx;
+	}
+
+	int map_err = av_hwframe_map(yuv_frame, local_frame, 0);
+	if (map_err) {
+		wp_error("Failed to map (DRM) local frame to (hardware) yuv frame: %s",
+				av_err2str(map_err));
+		goto fail_map;
+	}
+
+	struct AVPacket *pkt = av_packet_alloc();
+	if (!pkt) {
+		wp_error("Failed to allocate av packet");
+		goto fail_pkt_alloc;
+	}
+
+	av_buffer_unref(&frame_ref);
+
+	sfd->video_context = ctx;
+	sfd->video_local_frame = local_frame;
+	sfd->video_yuv_frame = yuv_frame;
+	sfd->video_packet = pkt;
+	return 0;
+
+fail_pkt_alloc:
+fail_map:
+fail_yuv_hwfctx:
+	av_frame_free(&yuv_frame);
+fail_yuv_frame:
+fail_framedesc_ref:
+fail_frame_hwfctx:
+	av_frame_free(&local_frame);
+fail_frame_alloc:
+fail_framedesc_alloc:
+fail_codec_open:
+fail_ctx_hwfctx:
+fail_hwframe_init:
+	av_buffer_unref(&frame_ref);
+fail_frameref:
+fail_hwframe_constraints:
+	avcodec_free_context(&ctx);
+
+	return -1;
+}
+
+void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
+{
+	bool has_hw = init_hwcontext(rd) == 0;
+	/* Attempt hardware encoding, and if it doesn't succeed, fall back
+	 * to software encoding */
+	if (has_hw && setup_hwvideo_encode(sfd, rd) == 0) {
+		return;
+	}
+
+	enum AVPixelFormat avpixfmt = shm_to_av(sfd->dmabuf_info.format);
+	if (avpixfmt == AV_PIX_FMT_NONE) {
+		wp_error("Failed to find matching AvPixelFormat	for %x",
+				sfd->dmabuf_info.format);
+		return;
+	}
+	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
+	if (sws_isSupportedInput(avpixfmt) == 0) {
+		wp_error("frame format %s not supported",
+				av_get_pix_fmt_name(avpixfmt));
+		return;
+	}
+	if (sws_isSupportedInput(videofmt) == 0) {
+		wp_error("videofmt %s not supported",
+				av_get_pix_fmt_name(videofmt));
+		return;
+	}
+
+	// Try to set up a video encoding and a video decoding
+	// stream with AVCodec, although transmissions in each
+	// direction are relatively independent. TODO: use
+	// hardware support only if available.
+
+	/* note: "libx264rgb" should, if compiled in, support RGB directly */
+	struct AVCodec *codec = avcodec_find_encoder_by_name(VIDEO_SW_ENCODER);
+	if (!codec) {
+		wp_error("Failed to find encoder for h264");
+		return;
+	}
+
+	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
+
+	struct AVPacket *pkt = av_packet_alloc();
+
+	pad_video_mirror_size(sfd->dmabuf_info.width, sfd->dmabuf_info.height,
+			sfd->dmabuf_info.strides[0], &ctx->width, &ctx->height,
+			NULL);
+	ctx->pix_fmt = videofmt;
+	configure_low_latency_enc_context(ctx, true);
 
 	bool near_perfect = false;
 	if (near_perfect && av_opt_set(ctx->priv_data, "crf", "0", 0) != 0) {
@@ -321,7 +570,7 @@ void setup_video_encode(struct shadow_fd *sfd)
 	/* adopt padded sizes */
 	frame->width = ctx->width;
 	frame->height = ctx->height;
-	frame->linesize[0] = stride;
+	frame->linesize[0] = sfd->dmabuf_info.strides[0];
 
 	struct AVFrame *yuv_frame = av_frame_alloc();
 	yuv_frame->width = ctx->width;
@@ -341,18 +590,20 @@ void setup_video_encode(struct shadow_fd *sfd)
 		return;
 	}
 
-	sfd->video_codec = codec;
 	sfd->video_yuv_frame = yuv_frame;
 	/* recorded pointer to be freed to match av_image_alloc */
 	sfd->video_yuv_frame_data = &yuv_frame->data[0];
-	sfd->video_reg_frame = frame;
+	sfd->video_local_frame = frame;
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
 	sfd->video_color_context = sws;
 }
 
-void setup_video_decode(struct shadow_fd *sfd)
+void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 {
+	bool has_hw = init_hwcontext(rd) == 0;
+	(void)has_hw;
+
 	uint32_t drm_format = sfd->dmabuf_info.format;
 	int width = sfd->dmabuf_info.width;
 	int height = sfd->dmabuf_info.height;
@@ -427,8 +678,7 @@ void setup_video_decode(struct shadow_fd *sfd)
 		wp_error("Could not allocate video packet");
 	}
 
-	sfd->video_codec = codec;
-	sfd->video_reg_frame = frame;
+	sfd->video_local_frame = frame;
 	sfd->video_yuv_frame = yuv_frame;
 	sfd->video_yuv_frame_data = NULL; /* yuv_frame not allocated by us */
 	sfd->video_packet = pkt;
@@ -440,26 +690,30 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
 		bool first)
 {
-	void *handle = NULL;
-	void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle);
-	if (!data) {
-		return;
-	}
-	memcpy(sfd->mem_mirror, data, sfd->buffer_size);
-	unmap_dmabuf(sfd->dmabuf_bo, handle);
+	if (sfd->video_color_context) {
+		/* If using software encoding, need to convert to YUV */
+		void *handle = NULL;
+		void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle);
+		if (!data) {
+			return;
+		}
+		memcpy(sfd->mem_mirror, data, sfd->buffer_size);
+		unmap_dmabuf(sfd->dmabuf_bo, handle);
 
-	sfd->video_reg_frame->data[0] = (uint8_t *)sfd->mem_mirror;
-	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-		sfd->video_reg_frame->data[i] = NULL;
-	}
+		sfd->video_local_frame->data[0] = (uint8_t *)sfd->mem_mirror;
+		for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
+			sfd->video_local_frame->data[i] = NULL;
+		}
 
-	if (sws_scale(sfd->video_color_context,
-			    (const uint8_t *const *)sfd->video_reg_frame->data,
-			    sfd->video_reg_frame->linesize, 0,
-			    sfd->video_reg_frame->height,
-			    sfd->video_yuv_frame->data,
-			    sfd->video_yuv_frame->linesize) < 0) {
-		wp_error("Failed to perform color conversion");
+		if (sws_scale(sfd->video_color_context,
+				    (const uint8_t *const *)sfd
+						    ->video_local_frame->data,
+				    sfd->video_local_frame->linesize, 0,
+				    sfd->video_local_frame->height,
+				    sfd->video_yuv_frame->data,
+				    sfd->video_yuv_frame->linesize) < 0) {
+			wp_error("Failed to perform color conversion");
+		}
 	}
 
 	sfd->video_yuv_frame->pts = sfd->video_frameno++;
@@ -522,9 +776,9 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 {
 	// We unpack directly one mem_mirror
-	sfd->video_reg_frame->data[0] = (uint8_t *)sfd->mem_mirror;
+	sfd->video_local_frame->data[0] = (uint8_t *)sfd->mem_mirror;
 	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-		sfd->video_reg_frame->data[i] = NULL;
+		sfd->video_local_frame->data[i] = NULL;
 	}
 
 	// padding, requires zerod overflow for read
@@ -553,8 +807,8 @@ void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 							    ->data,
 					    sfd->video_yuv_frame->linesize, 0,
 					    sfd->video_yuv_frame->height,
-					    sfd->video_reg_frame->data,
-					    sfd->video_reg_frame->linesize) <
+					    sfd->video_local_frame->data,
+					    sfd->video_local_frame->linesize) <
 					0) {
 				wp_error("Failed to perform color conversion");
 			}
