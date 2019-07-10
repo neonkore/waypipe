@@ -205,8 +205,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 			// Sometimes multiple entries point to the same buffer
 			if (r->add[i].fd != -1) {
 				if (close(r->add[i].fd) == -1) {
-					wp_log(WP_ERROR,
-							"Incorrect close(%d): %s",
+					wp_error("Incorrect close(%d): %s",
 							r->add[i].fd,
 							strerror(errno));
 				}
@@ -279,8 +278,8 @@ void do_wl_display_evt_error(struct context *ctx, struct wp_object *object_id,
 			object_id ? (object_id->type ? object_id->type->name
 						     : "<no type>")
 				  : "<no object>";
-	wp_log(WP_ERROR, "Display sent fatal error message %s, code %u: %s",
-			type_name, code, message ? message : "<no message>");
+	wp_error("Display sent fatal error message %s, code %u: %s", type_name,
+			code, message ? message : "<no message>");
 	(void)ctx;
 }
 void do_wl_display_evt_delete_id(struct context *ctx, uint32_t id)
@@ -308,8 +307,7 @@ void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 		const char *interface, uint32_t version)
 {
 	if (!interface) {
-		wp_log(WP_DEBUG,
-				"Interface name provided via wl_registry::global was NULL");
+		wp_debug("Interface name provided via wl_registry::global was NULL");
 		return;
 	}
 	bool requires_rnode = false;
@@ -322,8 +320,7 @@ void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 			 * both sides, since data transfers may occur in both
 			 * directions, and
 			 * modifying textures may require driver support */
-			wp_log(WP_DEBUG,
-					"Discarding protocol advertisement for %s, render node support disabled",
+			wp_debug("Discarding protocol advertisement for %s, render node support disabled",
 					interface);
 			ctx->drop_this_msg = true;
 			return;
@@ -334,8 +331,7 @@ void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 	// deprecated, and waypipe doesn't have logic for it anyway
 	unsupported |= !strcmp(interface, "wl_shell");
 	if (unsupported) {
-		wp_log(WP_DEBUG, "Hiding %s advertisement, unsupported",
-				interface);
+		wp_debug("Hiding %s advertisement, unsupported", interface);
 		ctx->drop_this_msg = true;
 	}
 
@@ -352,8 +348,7 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 		const char *interface, uint32_t version, struct wp_object *id)
 {
 	if (!interface) {
-		wp_log(WP_DEBUG,
-				"Interface name provided to wl_registry::bind was NULL");
+		wp_debug("Interface name provided to wl_registry::bind was NULL");
 		return;
 	}
 	/* The object has already been created, but its type is NULL */
@@ -362,8 +357,7 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	for (int i = 0; handlers[i].interface; i++) {
 		if (!strcmp(interface, handlers[i].interface->name)) {
 			if (!handlers[i].is_global) {
-				wp_log(WP_ERROR,
-						"Interface %s does not support binding globals",
+				wp_error("Interface %s does not support binding globals",
 						handlers[i].interface->name);
 				/* exit search, discard unbound object */
 				break;
@@ -387,8 +381,8 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	listset_remove(ctx->obj_list, the_object);
 	free(the_object);
 
-	wp_log(WP_DEBUG, "Binding fail name=%d %s id=%d (v%d)", name, interface,
-			id, version);
+	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface, id,
+			version);
 	(void)name;
 	(void)version;
 }
@@ -460,12 +454,11 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 	case WL_SHM_FORMAT_YVU422:
 	case WL_SHM_FORMAT_YUV444:
 	case WL_SHM_FORMAT_YVU444:
-		wp_log(WP_ERROR,
-				"Encountered planar wl_shm format %x; marking entire buffer",
+		wp_error("Encountered planar wl_shm format %x; marking entire buffer",
 				format);
 		return -1;
 	default:
-		wp_log(WP_ERROR, "Unidentified WL_SHM format %x", format);
+		wp_error("Unidentified WL_SHM format %x", format);
 		return -1;
 	}
 }
@@ -474,14 +467,12 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 		int buf_height, int transform, int scale)
 {
 	if (scale <= 0) {
-		wp_log(WP_ERROR,
-				"Not applying damage due to invalid buffer scale (%d)",
+		wp_error("Not applying damage due to invalid buffer scale (%d)",
 				scale);
 		return -1;
 	}
 	if (transform < 0 || transform > 8) {
-		wp_log(WP_ERROR,
-				"Not applying damage due to invalid buffer transform (%d)",
+		wp_error("Not applying damage due to invalid buffer transform (%d)",
 				transform);
 		return -1;
 	}
@@ -547,11 +538,11 @@ void do_wl_surface_req_attach(struct context *ctx, struct wp_object *buffer,
 		/* A null buffer can legitimately be send to remove
 		 * surface contents, presumably with shell-defined
 		 * semantics */
-		wp_log(WP_DEBUG, "Buffer to be attached is null");
+		wp_debug("Buffer to be attached is null");
 		return;
 	}
 	if (bufobj->type != &intf_wl_buffer) {
-		wp_log(WP_ERROR, "Buffer to be attached has the wrong type");
+		wp_error("Buffer to be attached has the wrong type");
 		return;
 	}
 	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
@@ -576,12 +567,11 @@ void do_wl_surface_req_commit(struct context *ctx)
 	struct wp_object *obj =
 			listset_get(ctx->obj_list, surface->attached_buffer_id);
 	if (!obj) {
-		wp_log(WP_ERROR, "Attached buffer no longer exists");
+		wp_error("Attached buffer no longer exists");
 		return;
 	}
 	if (obj->type != &intf_wl_buffer) {
-		wp_log(WP_ERROR,
-				"Buffer to commit has the wrong type, and may have been recycled");
+		wp_error("Buffer to commit has the wrong type, and may have been recycled");
 		return;
 	}
 	if (surface->damage_list_len == 0) {
@@ -598,14 +588,12 @@ void do_wl_surface_req_commit(struct context *ctx)
 		for (int i = 0; i < buf->dmabuf_nplanes; i++) {
 			struct shadow_fd *sfd = buf->dmabuf_buffers[i];
 			if (!sfd) {
-				wp_log(WP_ERROR,
-						"dmabuf surface buffer is missing plane %d",
+				wp_error("dmabuf surface buffer is missing plane %d",
 						i);
 				continue;
 			}
 			if (sfd->type != FDC_DMABUF) {
-				wp_log(WP_ERROR,
-						"fd associated with dmabuf surface is not a dmabuf");
+				wp_error("fd associated with dmabuf surface is not a dmabuf");
 				continue;
 			}
 
@@ -615,17 +603,16 @@ void do_wl_surface_req_commit(struct context *ctx)
 		}
 		return;
 	} else if (buf->type != BUF_SHM) {
-		wp_log(WP_ERROR,
-				"wp_buffer is backed neither by DMA nor SHM, not yet supported");
+		wp_error("wp_buffer is backed neither by DMA nor SHM, not yet supported");
 		return;
 	}
 	struct shadow_fd *sfd = buf->shm_buffer;
 	if (!sfd) {
-		wp_log(WP_ERROR, "wp_buffer to be committed has no fd");
+		wp_error("wp_buffer to be committed has no fd");
 		return;
 	}
 	if (sfd->type != FDC_FILE) {
-		wp_log(WP_ERROR, "fd associated with surface is not file-like");
+		wp_error("fd associated with surface is not file-like");
 		return;
 	}
 	sfd->is_dirty = true;
@@ -643,7 +630,7 @@ void do_wl_surface_req_commit(struct context *ctx)
 			malloc(sizeof(struct ext_interval) *
 					(size_t)surface->damage_list_len);
 	if (!damage_array) {
-		wp_log(WP_ERROR, "Failed to allocate damage array");
+		wp_error("Failed to allocate damage array");
 		damage_everything(&sfd->damage);
 		return;
 	}
@@ -745,8 +732,7 @@ void do_wl_keyboard_evt_keymap(
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_FILE || fdsz != size) {
-		wp_log(WP_ERROR,
-				"keymap candidate fd %d was not file-like (type=%s), and with size=%ld did not match %d",
+		wp_error("keymap candidate fd %d was not file-like (type=%s), and with size=%ld did not match %d",
 				fd, fdcat_to_str(fdtype), fdsz, size);
 		return;
 	}
@@ -764,8 +750,7 @@ void do_wl_shm_req_create_pool(
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)id;
 
 	if (size <= 0) {
-		wp_log(WP_ERROR,
-				"Ignoring attempt to create a wl_shm_pool with size %d",
+		wp_error("Ignoring attempt to create a wl_shm_pool with size %d",
 				size);
 	}
 
@@ -777,8 +762,7 @@ void do_wl_shm_req_create_pool(
 	 * which then increases the size
 	 */
 	if (fdtype != FDC_FILE || (int32_t)fdsz < size) {
-		wp_log(WP_ERROR,
-				"File type or size mismatch for fd %d with claimed: %s %s | %ld %d",
+		wp_error("File type or size mismatch for fd %d with claimed: %s %s | %ld %d",
 				fd, fdcat_to_str(fdtype),
 				fdcat_to_str(FDC_FILE), fdsz, size);
 		return;
@@ -794,7 +778,7 @@ void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)ctx->obj;
 
 	if (!the_shm_pool->owned_buffer) {
-		wp_log(WP_ERROR, "Pool to be resized owns no buffer");
+		wp_error("Pool to be resized owns no buffer");
 		return;
 	}
 	if ((int32_t)the_shm_pool->owned_buffer->buffer_size >= size) {
@@ -815,13 +799,12 @@ void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
 	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)ctx->obj;
 	struct wp_buffer *the_buffer = (struct wp_buffer *)id;
 	if (!the_buffer) {
-		wp_log(WP_ERROR, "No buffer available");
+		wp_error("No buffer available");
 		return;
 	}
 	struct shadow_fd *sfd = the_shm_pool->owned_buffer;
 	if (!sfd) {
-		wp_log(WP_ERROR,
-				"Creating a wl_buffer from a pool that does not own an fd");
+		wp_error("Creating a wl_buffer from a pool that does not own an fd");
 		return;
 	}
 
@@ -857,34 +840,32 @@ void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 	struct wp_wlr_screencopy_frame *frame =
 			(struct wp_wlr_screencopy_frame *)ctx->obj;
 	if (!frame->buffer_id) {
-		wp_log(WP_ERROR, "frame has no copy target");
+		wp_error("frame has no copy target");
 		return;
 	}
 	struct wp_object *obj = (struct wp_object *)listset_get(
 			ctx->obj_list, frame->buffer_id);
 	if (!obj) {
-		wp_log(WP_ERROR, "frame copy target no longer exists");
+		wp_error("frame copy target no longer exists");
 		return;
 	}
 	if (obj->type != &intf_wl_buffer) {
-		wp_log(WP_ERROR, "frame copy target is not a wl_buffer");
+		wp_error("frame copy target is not a wl_buffer");
 		return;
 	}
 	struct wp_buffer *buffer = (struct wp_buffer *)obj;
 	struct shadow_fd *sfd = buffer->shm_buffer;
 	if (!sfd) {
-		wp_log(WP_ERROR, "frame copy target does not own any buffers");
+		wp_error("frame copy target does not own any buffers");
 		return;
 	}
 	if (sfd->type != FDC_FILE) {
-		wp_log(WP_ERROR,
-				"frame copy target buffer file descriptor (RID=%d) was not file-like (type=%d)",
+		wp_error("frame copy target buffer file descriptor (RID=%d) was not file-like (type=%d)",
 				sfd->remote_id, sfd->type);
 		return;
 	}
 	if (buffer->type != BUF_SHM) {
-		wp_log(WP_ERROR,
-				"screencopy not yet supported for non-shm-backed buffers");
+		wp_error("screencopy not yet supported for non-shm-backed buffers");
 		return;
 	}
 	if (!ctx->on_display_side) {
@@ -911,7 +892,7 @@ void do_zwlr_screencopy_frame_v1_req_copy(
 			(struct wp_wlr_screencopy_frame *)ctx->obj;
 	struct wp_object *buf = (struct wp_object *)buffer;
 	if (buf->type != &intf_wl_buffer) {
-		wp_log(WP_ERROR, "frame copy destination is not a wl_buffer");
+		wp_error("frame copy destination is not a wl_buffer");
 		return;
 	}
 	frame->buffer_id = buf->obj_id;
@@ -997,23 +978,20 @@ void do_wl_drm_evt_device(struct context *ctx, const char *name)
 		return;
 	}
 	if (!name) {
-		wp_log(WP_DEBUG,
-				"Device name provided via wl_drm::device was NULL");
+		wp_debug("Device name provided via wl_drm::device was NULL");
 		return;
 	}
 	if (!ctx->g->render.drm_node_path) {
 		/* While the render node should have been initialized in
 		 * wl_registry.global, setting this path, we still don't want
 		 * to crash even if this gets called by accident */
-		wp_log(WP_DEBUG,
-				"wl_drm::device, local render node not set up");
+		wp_debug("wl_drm::device, local render node not set up");
 		return;
 	}
 	int path_len = (int)strlen(ctx->g->render.drm_node_path);
 	int message_bytes = 8 + 4 + 4 * ((path_len + 1 + 3) / 4);
 	if (message_bytes > ctx->message_available_space) {
-		wp_log(WP_ERROR,
-				"Not enough space to modify DRM device advertisement from '%s' to '%s'",
+		wp_error("Not enough space to modify DRM device advertisement from '%s' to '%s'",
 				name, ctx->g->render.drm_node_path);
 		return;
 	}
@@ -1050,8 +1028,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(name, &fdsz);
 	if (fdtype != FDC_DMABUF) {
-		wp_log(WP_ERROR,
-				"create_prime_buffer candidate fd %d was not a dmabuf (type=%s)",
+		wp_error("create_prime_buffer candidate fd %d was not a dmabuf (type=%s)",
 				name, fdcat_to_str(fdtype));
 		return;
 	}
@@ -1091,8 +1068,7 @@ void do_zwp_linux_buffer_params_v1_evt_created(
 	buf->dmabuf_nplanes = params->nplanes;
 	for (int i = 0; i < params->nplanes; i++) {
 		if (!params->add[i].buffer) {
-			wp_log(WP_ERROR,
-					"dmabuf backed wl_buffer plane %d was missing",
+			wp_error("dmabuf backed wl_buffer plane %d was missing",
 					i);
 			continue;
 		}
@@ -1114,13 +1090,12 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 	struct wp_linux_dmabuf_params *params =
 			(struct wp_linux_dmabuf_params *)ctx->obj;
 	if (params->nplanes != (int)plane_idx) {
-		wp_log(WP_ERROR,
-				"Expected sequentially assigned plane fds: got new_idx=%d != %d=nplanes",
+		wp_error("Expected sequentially assigned plane fds: got new_idx=%d != %d=nplanes",
 				plane_idx, params->nplanes);
 		return;
 	}
 	if (params->nplanes >= MAX_DMABUF_PLANES) {
-		wp_log(WP_ERROR, "Too many planes");
+		wp_error("Too many planes");
 		return;
 	}
 	params->nplanes++;
@@ -1150,13 +1125,11 @@ static int reintroduce_add_msgs(
 		nfds++;
 	}
 	if (net_length > context->message_available_space) {
-		wp_log(WP_ERROR,
-				"Not enough space to reintroduce zwp_linux_buffer_params_v1.add message data");
+		wp_error("Not enough space to reintroduce zwp_linux_buffer_params_v1.add message data");
 		return -1;
 	}
 	if (nfds > context->fds->size - context->fds->zone_end) {
-		wp_log(WP_ERROR,
-				"Not enough space to reintroduce zwp_linux_buffer_params_v1.add message fds");
+		wp_error("Not enough space to reintroduce zwp_linux_buffer_params_v1.add message fds");
 		return -1;
 	}
 	// Update fds
@@ -1188,8 +1161,7 @@ static int reintroduce_add_msgs(
 		params->add[i].msg = NULL;
 		params->add[i].msg_len = 0;
 	}
-	wp_log(WP_DEBUG,
-			"Reintroducing add requests for zwp_linux_buffer_params_v1, going from %d to %d bytes",
+	wp_debug("Reintroducing add requests for zwp_linux_buffer_params_v1, going from %d to %d bytes",
 			context->message_length, net_length);
 	context->message_length = net_length;
 	context->fds_changed = true;
@@ -1224,7 +1196,7 @@ static void deduplicate_dmabuf_fds(
 		if (lowest != i &&
 				params->add[i].fd != params->add[lowest].fd) {
 			if (close(params->add[i].fd) == -1) {
-				wp_log(WP_ERROR, "Incorrect close(%d): %s",
+				wp_error("Incorrect close(%d): %s",
 						params->add[i].fd,
 						strerror(errno));
 			}
@@ -1278,8 +1250,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		size_t fdsz = 0;
 		fdcat_t fdtype = get_fd_type(params->add[i].fd, &fdsz);
 		if (fdtype != FDC_DMABUF) {
-			wp_log(WP_ERROR,
-					"fd #%d for linux-dmabuf request wasn't a dmabuf, instead %s",
+			wp_error("fd #%d for linux-dmabuf request wasn't a dmabuf, instead %s",
 					i, fdcat_to_str(fdtype));
 			continue;
 		}
@@ -1331,7 +1302,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_frame(struct context *ctx,
 	frame->modifier = mod_high * 0x100000000uL + mod_low;
 	frame->nobjects = num_objects;
 	if (frame->nobjects > MAX_DMABUF_PLANES) {
-		wp_log(WP_ERROR, "Too many (%u) frame objects required",
+		wp_error("Too many (%u) frame objects required",
 				frame->nobjects);
 		frame->nobjects = MAX_DMABUF_PLANES;
 	}
@@ -1343,13 +1314,12 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 	struct wp_export_dmabuf_frame *frame =
 			(struct wp_export_dmabuf_frame *)ctx->obj;
 	if (index > frame->nobjects) {
-		wp_log(WP_ERROR, "Cannot add frame object with index %u >= %u",
-				index, frame->nobjects);
+		wp_error("Cannot add frame object with index %u >= %u", index,
+				frame->nobjects);
 		return;
 	}
 	if (frame->objects[index].buffer) {
-		wp_log(WP_ERROR,
-				"Cannot add frame object with index %u, already used",
+		wp_error("Cannot add frame object with index %u, already used",
 				frame->nobjects);
 		return;
 	}
@@ -1379,8 +1349,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_DMABUF) {
-		wp_log(WP_ERROR,
-				"fd %d, #%d for wlr-export-dmabuf frame wasn't a dmabuf, instead %s",
+		wp_error("fd %d, #%d for wlr-export-dmabuf frame wasn't a dmabuf, instead %s",
 				fd, index, fdcat_to_str(fdtype));
 		return;
 	}
@@ -1389,8 +1358,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			FDC_DMABUF, 0, &info, false);
 	if (sfd->buffer_size < size) {
-		wp_log(WP_ERROR,
-				"Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
+		wp_error("Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
 				index, (uint32_t)sfd->buffer_size, size);
 	}
 

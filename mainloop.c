@@ -117,14 +117,13 @@ static ssize_t iovec_write(int conn, const char *buf, size_t buflen,
 		for (int i = 0; i < numfds; i++) {
 			int flags = fcntl(fds[i], F_GETFL, 0);
 			if (flags == -1 && errno == EBADF) {
-				wp_log(WP_ERROR, "Writing invalid fd %d",
-						fds[i]);
+				wp_error("Writing invalid fd %d", fds[i]);
 			}
 		}
 
 		frst->cmsg_len = CMSG_LEN(nwritten * sizeof(int));
 		msg.msg_controllen = CMSG_SPACE(nwritten * sizeof(int));
-		wp_log(WP_DEBUG, "Writing %d fds to cmsg data", *nfds_written);
+		wp_debug("Writing %d fds to cmsg data", *nfds_written);
 	} else {
 		*nfds_written = 0;
 	}
@@ -154,8 +153,7 @@ static void untranslate_ids(struct fd_translation_map *map, int nids,
 	for (int i = 0; i < nids; i++) {
 		struct shadow_fd *shadow = get_shadow_for_rid(map, ids[i]);
 		if (!shadow) {
-			wp_log(WP_ERROR,
-					"Could not untranslate remote id %d in map. Application will probably crash.",
+			wp_error("Could not untranslate remote id %d in map. Application will probably crash.",
 					ids[i]);
 			fds[i] = -1;
 		} else {
@@ -202,7 +200,7 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
 			// Not enough remaining bytes to parse the
 			// header
-			wp_log(WP_DEBUG, "Insufficient bytes for header: %d %d",
+			wp_debug("Insufficient bytes for header: %d %d",
 					source_bytes->zone_start,
 					source_bytes->zone_end);
 			break;
@@ -210,14 +208,13 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		int msgsz = peek_message_size(
 				&source_bytes->data[source_bytes->zone_start]);
 		if (source_bytes->zone_start + msgsz > source_bytes->zone_end) {
-			wp_log(WP_DEBUG, "Insufficient bytes");
+			wp_debug("Insufficient bytes");
 			// Not enough remaining bytes to contain the
 			// message
 			break;
 		}
 		if (msgsz < 8) {
-			wp_log(WP_DEBUG, "Degenerate message, claimed len=%d",
-					msgsz);
+			wp_debug("Degenerate message, claimed len=%d", msgsz);
 			// Not enough remaining bytes to contain the
 			// message
 			break;
@@ -362,8 +359,8 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 		struct transfer_stack *transfers, struct bytebuf_stack *blocks)
 {
 	if (msglen % 8 != 0) {
-		wp_log(WP_ERROR, "Unpacking uneven message, size %ld=%ld mod 8",
-				msglen, msglen % 8);
+		wp_error("Unpacking uneven message, size %ld=%ld mod 8", msglen,
+				msglen % 8);
 		*nids = 0;
 		transfers->count = 0;
 		return;
@@ -401,8 +398,7 @@ static void unpack_pipe_message(size_t msglen, const char *msg, int *waylen,
 			}
 			size_t nlongs = ((size_t)sd->size + 7) / 8;
 			if (nlongs > msglen / 8) {
-				wp_log(WP_ERROR,
-						"Excessively long buffer: length: %ld x uint64_t",
+				wp_error("Excessively long buffer: length: %ld x uint64_t",
 						nlongs);
 				return;
 			}
@@ -486,7 +482,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 	cmsg->dbuffer_start = 0;
 	cmsg->dbuffer_end = 0;
 
-	wp_log(WP_DEBUG, "Read %d byte msg, unpacking", cmsg->cmsg_size);
+	wp_debug("Read %d byte msg, unpacking", cmsg->cmsg_size);
 
 	cmsg->transfers.count = 0;
 	cmsg->blocks.count = 0;
@@ -495,8 +491,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 			&cmsg->rbuffer_count, cmsg->rbuffer, &cmsg->transfers,
 			&cmsg->blocks);
 
-	wp_log(WP_DEBUG,
-			"Read %d byte msg, %d fds, %d transfers. Data buffer has %d bytes",
+	wp_debug("Read %d byte msg, %d fds, %d transfers. Data buffer has %d bytes",
 			cmsg->cmsg_size, cmsg->rbuffer_count,
 			cmsg->transfers.count, cmsg->dbuffer_end);
 
@@ -546,8 +541,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 		parse_and_prune_messages(g, display_side, display_side, &src,
 				&dst, &fds);
 		if (src.zone_start != cmsg->dbuffer_end) {
-			wp_log(WP_ERROR,
-					"did not expect partial messages over channel, only parsed %d/%d bytes",
+			wp_error("did not expect partial messages over channel, only parsed %d/%d bytes",
 					src.zone_start, cmsg->dbuffer_end);
 			return -1;
 		}
@@ -573,26 +567,23 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 		uint64_t size = 0;
 		ssize_t r = read(chanfd, &size, sizeof(size));
 		if (r == -1 && errno == EWOULDBLOCK) {
-			wp_log(WP_DEBUG, "Read would block");
+			wp_debug("Read would block");
 			return 0;
 		} else if (r == -1) {
-			wp_log(WP_ERROR, "chanfd read failure: %s",
-					strerror(errno));
+			wp_error("chanfd read failure: %s", strerror(errno));
 			return -1;
 		} else if (r == 0) {
-			wp_log(WP_DEBUG, "Channel connection closed");
+			wp_debug("Channel connection closed");
 			return -1;
 		} else if (r < (ssize_t)sizeof(uint64_t)) {
-			wp_log(WP_ERROR,
-					"insufficient starting read block %ld of 8 bytes",
+			wp_error("insufficient starting read block %ld of 8 bytes",
 					r);
 			return -1;
 		} else if (size > (1 << 30)) {
-			wp_log(WP_ERROR, "Invalid transfer block size %ld",
-					size);
+			wp_error("Invalid transfer block size %ld", size);
 			return -1;
 		} else if (size == 0) {
-			wp_log(WP_ERROR, "Meaningless zero-byte transfer");
+			wp_error("Meaningless zero-byte transfer");
 			return -1;
 		} else {
 			DTRACE_PROBE1(waypipe, channel_read_start, size);
@@ -609,11 +600,11 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 			if (r == -1 && errno == EWOULDBLOCK) {
 				return 0;
 			} else if (r == -1) {
-				wp_log(WP_ERROR, "chanfd read failure: %s",
+				wp_error("chanfd read failure: %s",
 						strerror(errno));
 				return -1;
 			} else if (r == 0) {
-				wp_log(WP_ERROR, "chanfd closed");
+				wp_error("chanfd closed");
 				return -1;
 			} else {
 				cmsg->cmsg_end += r;
@@ -644,20 +635,18 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 				cmsg->tfbuffer, cmsg->tfbuffer_count,
 				&nfds_written);
 		if (wc == -1 && errno == EWOULDBLOCK) {
-			wp_log(WP_DEBUG, "Write to the %s would block",
-					progdesc);
+			wp_debug("Write to the %s would block", progdesc);
 			return 0;
 		} else if (wc == -1) {
-			wp_log(WP_ERROR, "%s write failure %ld: %s", progdesc,
-					wc, strerror(errno));
+			wp_error("%s write failure %ld: %s", progdesc, wc,
+					strerror(errno));
 			return -1;
 		} else if (wc == 0) {
-			wp_log(WP_ERROR, "%s has closed", progdesc);
+			wp_error("%s has closed", progdesc);
 			return -1;
 		} else {
 			cmsg->dbuffer_start += wc;
-			wp_log(WP_DEBUG,
-					"Wrote, have done %d/%d bytes in chunk %ld, %d/%d fds",
+			wp_debug("Wrote, have done %d/%d bytes in chunk %ld, %d/%d fds",
 					cmsg->dbuffer_start, cmsg->dbuffer_end,
 					wc, nfds_written, cmsg->tfbuffer_count);
 			// We send as many fds as we can with the first
@@ -670,7 +659,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 		}
 	}
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
-		wp_log(WP_DEBUG, "Write to the %s succeeded", progdesc);
+		wp_debug("Write to the %s succeeded", progdesc);
 		close_local_pipe_ends(&g->map);
 		free(cmsg->cmsg_buffer);
 		cmsg->cmsg_buffer = NULL;
@@ -709,11 +698,10 @@ static int advance_waymsg_chanwrite(
 		} else if (wr == -1 && errno == EAGAIN) {
 			continue;
 		} else if (wr == -1) {
-			wp_log(WP_ERROR, "chanfd write failure: %s",
-					strerror(errno));
+			wp_error("chanfd write failure: %s", strerror(errno));
 			return -1;
 		} else if (wr == 0) {
-			wp_log(WP_ERROR, "chanfd has closed");
+			wp_error("chanfd has closed");
 			return 0;
 		}
 		size_t uwr = (size_t)wr;
@@ -744,8 +732,7 @@ static int advance_waymsg_chanwrite(
 	}
 	if (bt->blocks_written == bt->nblocks) {
 		DTRACE_PROBE(waypipe, channel_write_end);
-		wp_log(WP_DEBUG,
-				"The %d-byte, %d block message from %s to channel has been written",
+		wp_debug("The %d-byte, %d block message from %s to channel has been written",
 				bt->total_size, bt->nblocks, progdesc);
 		free(bt->blocks);
 		free(bt->meta_header);
@@ -778,11 +765,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
 		} else if (rc == -1) {
-			wp_log(WP_ERROR, "%s read failure: %s", progdesc,
+			wp_error("%s read failure: %s", progdesc,
 					strerror(errno));
 			return -1;
 		} else if (rc == 0) {
-			wp_log(WP_ERROR, "%s has closed", progdesc);
+			wp_error("%s has closed", progdesc);
 			return 0;
 		} else {
 			// We have successfully read some data.
@@ -794,8 +781,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	wmsg->blocks.count = 0;
 
 	if (rc > 0) {
-		wp_log(WP_DEBUG,
-				"Read %d new file descriptors, have %d total now",
+		wp_debug("Read %d new file descriptors, have %d total now",
 				wmsg->fds.zone_end - old_fbuffer_end,
 				wmsg->fds.zone_end);
 
@@ -835,8 +821,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		}
 
 		if (dst.zone_end > 0) {
-			wp_log(WP_DEBUG,
-					"We are transferring a data buffer with %ld bytes",
+			wp_debug("We are transferring a data buffer with %ld bytes",
 					dst.zone_end);
 			wmsg->transfers.data[0].obj_id = 0;
 			wmsg->transfers.data[0].nblocks = 1;
@@ -859,8 +844,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 
 		decref_transferred_rids(
 				&g->map, wmsg->rbuffer_count, wmsg->rbuffer);
-		wp_log(WP_DEBUG,
-				"Packed message size (%d fds, %d blobs, %d blocks): %d",
+		wp_debug("Packed message size (%d fds, %d blobs, %d blocks): %d",
 				wmsg->rbuffer_count, wmsg->transfers.count,
 				wmsg->cmsg.nblocks, wmsg->cmsg.total_size);
 
@@ -901,16 +885,15 @@ int main_interface_loop(int chanfd, int progfd,
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_nonblocking(chanfd) == -1) {
-		wp_log(WP_ERROR,
-				"Error making channel connection nonblocking: %s",
+		wp_error("Error making channel connection nonblocking: %s",
 				strerror(errno));
 		close(chanfd);
 		close(progfd);
 		return EXIT_FAILURE;
 	}
 	if (set_nonblocking(progfd) == -1) {
-		wp_log(WP_ERROR, "Error making %s connection nonblocking: %s",
-				progdesc, strerror(errno));
+		wp_error("Error making %s connection nonblocking: %s", progdesc,
+				strerror(errno));
 		close(chanfd);
 		close(progfd);
 		return EXIT_FAILURE;
@@ -1016,13 +999,11 @@ int main_interface_loop(int chanfd, int progfd,
 		if (r == -1) {
 			free(pfds);
 			if (errno == EINTR) {
-				wp_log(WP_ERROR,
-						"poll interrupted: shutdown=%c",
+				wp_error("poll interrupted: shutdown=%c",
 						shutdown_flag ? 'Y' : 'n');
 				continue;
 			} else {
-				wp_log(WP_ERROR,
-						"poll failed due to, stopping: %s",
+				wp_error("poll failed due to, stopping: %s",
 						strerror(errno));
 				break;
 			}
@@ -1036,7 +1017,7 @@ int main_interface_loop(int chanfd, int progfd,
 			       (pfds[1].revents & POLLHUP);
 		free(pfds);
 		if (hang_up) {
-			wp_log(WP_ERROR, "Connection hang-up detected");
+			wp_error("Connection hang-up detected");
 			break;
 		}
 

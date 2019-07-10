@@ -43,13 +43,11 @@ int run_server(const char *socket_path, const char *wayland_display,
 		bool unlink_at_end, const char *application,
 		char *const app_argv[])
 {
-	wp_log(WP_DEBUG, "I'm a server on %s, running: %s", socket_path,
-			app_argv[0]);
+	wp_debug("I'm a server on %s, running: %s", socket_path, app_argv[0]);
 
 	if (strlen(socket_path) >=
 			sizeof(((struct sockaddr_un *)NULL)->sun_path)) {
-		wp_log(WP_ERROR,
-				"Socket path is too long and would be truncated: %s",
+		wp_error("Socket path is too long and would be truncated: %s",
 				socket_path);
 		return EXIT_FAILURE;
 	}
@@ -60,8 +58,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 		} else {
 			const char *xdg_dir = getenv("XDG_RUNTIME_DIR");
 			if (!xdg_dir) {
-				wp_log(WP_ERROR,
-						"Env. var XDG_RUNTIME_DIR not available, cannot place display socket for WAYLAND_DISPLAY=\"%s\"",
+				wp_error("Env. var XDG_RUNTIME_DIR not available, cannot place display socket for WAYLAND_DISPLAY=\"%s\"",
 						wayland_display);
 				return EXIT_FAILURE;
 			}
@@ -75,8 +72,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 	if (oneshot) {
 		int csockpair[2];
 		if (socketpair(AF_UNIX, SOCK_STREAM, 0, csockpair) == -1) {
-			wp_log(WP_ERROR, "Socketpair failed: %s",
-					strerror(errno));
+			wp_error("Socketpair failed: %s", strerror(errno));
 			return EXIT_FAILURE;
 		}
 		wayland_socket = csockpair[1];
@@ -94,7 +90,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 	// Launch program
 	pid_t pid = fork();
 	if (pid == -1) {
-		wp_log(WP_ERROR, "Fork failed");
+		wp_error("Fork failed");
 		if (!oneshot) {
 			unlink(display_path);
 		}
@@ -118,7 +114,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 		}
 
 		execvp(application, app_argv);
-		wp_log(WP_ERROR, "Failed to execvp \'%s\': %s", application,
+		wp_error("Failed to execvp \'%s\': %s", application,
 				strerror(errno));
 		return EXIT_FAILURE;
 	}
@@ -127,7 +123,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 		close(wayland_socket);
 	}
 
-	wp_log(WP_DEBUG, "Server main!");
+	wp_debug("Server main!");
 
 	int retcode = EXIT_SUCCESS;
 	if (oneshot) {
@@ -136,7 +132,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 			unlink(socket_path);
 		}
 
-		wp_log(WP_DEBUG, "Oneshot connected");
+		wp_debug("Oneshot connected");
 		if (chanfd != -1) {
 			retcode = main_interface_loop(
 					chanfd, server_link, config, false);
@@ -145,7 +141,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 		}
 		close(server_link);
 
-		wp_log(WP_DEBUG, "Waiting for child process");
+		wp_debug("Waiting for child process");
 	} else {
 		// Poll loop - 1s poll, either child dies, or we have a
 		// connection
@@ -157,8 +153,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 			int status = -1;
 			if (wait_for_pid_and_clean(pid, &status, WNOHANG)) {
 				pid = 0;
-				wp_log(WP_DEBUG,
-						"Child program has died, exiting");
+				wp_debug("Child program has died, exiting");
 				retcode = WEXITSTATUS(status);
 				break;
 			}
@@ -184,7 +179,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 					// The wakeup may have been spurious
 					continue;
 				}
-				wp_log(WP_ERROR, "Connection failure: %s",
+				wp_error("Connection failure: %s",
 						strerror(errno));
 				retcode = EXIT_FAILURE;
 				break;
@@ -206,7 +201,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 						return EXIT_FAILURE;
 					}
 				} else if (npid == -1) {
-					wp_log(WP_DEBUG, "Fork failure");
+					wp_debug("Fork failure");
 					retcode = EXIT_FAILURE;
 					break;
 				} else {
@@ -224,13 +219,13 @@ int run_server(const char *socket_path, const char *wayland_display,
 		close(wdisplay_socket);
 
 		// Wait for child processes to exit
-		wp_log(WP_DEBUG, "Waiting for child handlers and program");
+		wp_debug("Waiting for child handlers and program");
 	}
 	int status = -1;
 	if (wait_for_pid_and_clean(pid, &status, shutdown_flag ? WNOHANG : 0)) {
-		wp_log(WP_DEBUG, "Child program has died, exiting");
+		wp_debug("Child program has died, exiting");
 		retcode = WEXITSTATUS(status);
 	}
-	wp_log(WP_DEBUG, "Program ended");
+	wp_debug("Program ended");
 	return retcode;
 }

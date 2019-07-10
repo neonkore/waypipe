@@ -134,8 +134,7 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 	fdcat_t ctype = get_fd_type(copy_fd, &csz);
 	fdcat_t otype = get_fd_type(orig_fd, &osz);
 	if (ctype != otype || csz != osz) {
-		wp_log(WP_ERROR,
-				"Mirrored file descriptor has different type or size: ot=%d ct=%d | os=%d cs=%d",
+		wp_error("Mirrored file descriptor has different type or size: ot=%d ct=%d | os=%d cs=%d",
 				otype, ctype, (int)osz, (int)csz);
 		return false;
 	}
@@ -175,7 +174,7 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 	}
 
 	if (!pass) {
-		wp_log(WP_ERROR, "Mirrored file descriptor contents differ");
+		wp_error("Mirrored file descriptor contents differ");
 	}
 
 	return pass;
@@ -202,16 +201,14 @@ static bool test_transfer(struct fd_translation_map *src_map,
 		free(transfers.data);
 		free(blocks.data);
 		if (transfers.count > 0) {
-			wp_log(WP_ERROR,
-					"Collecting updates gave a transfer when none was expected",
+			wp_error("Collecting updates gave a transfer when none was expected",
 					transfers.count);
 			return false;
 		}
 		return true;
 	}
 	if (transfers.count != 1) {
-		wp_log(WP_ERROR,
-				"Collecting updates gave a unexpected number (%d) of transfers",
+		wp_error("Collecting updates gave a unexpected number (%d) of transfers",
 				transfers.count);
 		free(transfers.data);
 		free(blocks.data);
@@ -308,8 +305,7 @@ int main(int argc, char **argv)
 
 	if (mkdir("test", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1 &&
 			errno != EEXIST) {
-		wp_log(WP_ERROR,
-				"Not allowed to create test directory, cannot run tests.");
+		wp_error("Not allowed to create test directory, cannot run tests.");
 		return EXIT_FAILURE;
 	}
 
@@ -355,15 +351,13 @@ int main(int argc, char **argv)
 						O_CREAT | O_RDWR | O_TRUNC,
 						0644);
 				if (file_fd == -1) {
-					wp_log(WP_ERROR,
-							"Failed to create test file: %s",
+					wp_error("Failed to create test file: %s",
 							strerror(errno));
 					continue;
 				}
 				if (write(file_fd, test_pattern, test_size) !=
 						(ssize_t)test_size) {
-					wp_log(WP_ERROR,
-							"Failed to write to test file: %s",
+					wp_error("Failed to write to test file: %s",
 							strerror(errno));
 					close(file_fd);
 					continue;

@@ -76,8 +76,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	int sock;
 
 	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
-		wp_log(WP_ERROR,
-				"Socket path is too long and would be truncated: %s",
+		wp_error("Socket path is too long and would be truncated: %s",
 				socket_path);
 		return -1;
 	}
@@ -86,24 +85,24 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
 	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (sock == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
+		wp_error("Error creating socket: %s", strerror(errno));
 		return -1;
 	}
 	if (set_nonblocking(sock) == -1) {
-		wp_log(WP_ERROR, "Error making socket nonblocking: %s",
+		wp_error("Error making socket nonblocking: %s",
 				strerror(errno));
 		close(sock);
 		return -1;
 	}
 	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error binding socket at %s: %s", socket_path,
+		wp_error("Error binding socket at %s: %s", socket_path,
 				strerror(errno));
 		close(sock);
 		return -1;
 	}
 	if (listen(sock, nmaxclients) == -1) {
-		wp_log(WP_ERROR, "Error listening to socket at %s: %s",
-				socket_path, strerror(errno));
+		wp_error("Error listening to socket at %s: %s", socket_path,
+				strerror(errno));
 		close(sock);
 		unlink(socket_path);
 		return -1;
@@ -118,7 +117,7 @@ int connect_to_socket(const char *socket_path)
 	saddr.sun_family = AF_UNIX;
 	int len = (int)strlen(socket_path);
 	if (len >= (int)sizeof(saddr.sun_path)) {
-		wp_log(WP_ERROR, "Socket path (%s) is too long, at %d bytes",
+		wp_error("Socket path (%s) is too long, at %d bytes",
 				socket_path, len);
 		return -1;
 	}
@@ -126,13 +125,13 @@ int connect_to_socket(const char *socket_path)
 
 	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (chanfd == -1) {
-		wp_log(WP_ERROR, "Error creating socket: %s", strerror(errno));
+		wp_error("Error creating socket: %s", strerror(errno));
 		return -1;
 	}
 
 	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_log(WP_ERROR, "Error connecting to socket (%s): %s",
-				socket_path, strerror(errno));
+		wp_error("Error connecting to socket (%s): %s", socket_path,
+				strerror(errno));
 		close(chanfd);
 		return -1;
 	}
@@ -158,7 +157,7 @@ bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options)
 		int stat;
 		pid_t r = waitpid((pid_t)-1, &stat, options);
 		if (r > 0) {
-			wp_log(WP_DEBUG, "Child process %d has died", r);
+			wp_debug("Child process %d has died", r);
 			if (r == target_pid) {
 				target_pid = 0;
 				*status = stat;
@@ -171,7 +170,7 @@ bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options)
 			// Valid exit reasons, not an error
 			errno = 0;
 		} else if (r == -1) {
-			wp_log(WP_ERROR, "waitpid failed: %s", strerror(errno));
+			wp_error("waitpid failed: %s", strerror(errno));
 		}
 		return found;
 	}

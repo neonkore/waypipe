@@ -98,9 +98,12 @@ extern log_handler_func_t log_funcs[2];
 #define WAYPIPE__FILE__ __FILE__
 #endif
 // No trailing ;, user must supply. The first vararg must be the format string.
-#define wp_log(level, ...)                                                     \
-	if (log_funcs[level])                                                  \
-	(*log_funcs[level])(WAYPIPE__FILE__, __LINE__, (level), __VA_ARGS__)
+#define wp_error(...)                                                          \
+	if (log_funcs[WP_ERROR])                                               \
+	(*log_funcs[WP_ERROR])(WAYPIPE__FILE__, __LINE__, WP_ERROR, __VA_ARGS__)
+#define wp_debug(...)                                                          \
+	if (log_funcs[WP_DEBUG])                                               \
+	(*log_funcs[WP_DEBUG])(WAYPIPE__FILE__, __LINE__, WP_DEBUG, __VA_ARGS__)
 
 /** Run waitpid in a loop until there are no more
  * zombies to clean up. If the target_pid was one of the

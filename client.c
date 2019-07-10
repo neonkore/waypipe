@@ -45,15 +45,13 @@ static int get_inherited_socket()
 	errno = 0;
 	int fd = (int)strtol(fd_no, &endptr, 10);
 	if (*endptr || errno) {
-		wp_log(WP_ERROR,
-				"Failed to parse WAYLAND_SOCKET env variable with value \"%s\", exiting",
+		wp_error("Failed to parse WAYLAND_SOCKET env variable with value \"%s\", exiting",
 				fd_no);
 		return -1;
 	}
 	int flags = fcntl(fd, F_GETFL, 0);
 	if (flags == -1 && errno == EBADF) {
-		wp_log(WP_ERROR,
-				"The file descriptor WAYLAND_SOCKET=%d was invalid, exiting",
+		wp_error("The file descriptor WAYLAND_SOCKET=%d was invalid, exiting",
 				fd);
 		return -1;
 	}
@@ -66,14 +64,14 @@ static int get_display_path(char path[static MAX_SOCKETPATH_LEN])
 {
 	const char *display = getenv("WAYLAND_DISPLAY");
 	if (!display) {
-		wp_log(WP_ERROR, "WAYLAND_DISPLAY is not set, exiting");
+		wp_error("WAYLAND_DISPLAY is not set, exiting");
 		return -1;
 	}
 	int len = 0;
 	if (display[0] != '/') {
 		const char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
 		if (!xdg_runtime_dir) {
-			wp_log(WP_ERROR, "XDG_RUNTIME_DIR is not set, exiting");
+			wp_error("XDG_RUNTIME_DIR is not set, exiting");
 			return -1;
 		}
 		len = snprintf(path, MAX_SOCKETPATH_LEN, "%s/%s",
@@ -82,8 +80,7 @@ static int get_display_path(char path[static MAX_SOCKETPATH_LEN])
 		len = snprintf(path, MAX_SOCKETPATH_LEN, "%s", display);
 	}
 	if (len >= MAX_SOCKETPATH_LEN) {
-		wp_log(WP_ERROR,
-				"Wayland display socket path is >=%d bytes, truncated to \"%s\", exiting",
+		wp_error("Wayland display socket path is >=%d bytes, truncated to \"%s\", exiting",
 				MAX_SOCKETPATH_LEN, path);
 		return -1;
 	}
@@ -129,7 +126,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 		}
 		close(test_conn);
 	}
-	wp_log(WP_DEBUG, "A wayland compositor is available. Proceeding.");
+	wp_debug("A wayland compositor is available. Proceeding.");
 
 	int nmaxclients = oneshot ? 1 : 128;
 	int channelsock = setup_nb_socket(socket_path, nmaxclients);
@@ -158,7 +155,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 		if (wait_for_pid_and_clean(eol_pid, &status, WNOHANG)) {
 			eol_pid = 0; // < in case eol_pid is recycled
 
-			wp_log(WP_DEBUG, "Child (ssh) died, exiting");
+			wp_debug("Child (ssh) died, exiting");
 			// Copy the exit code
 			retcode = WEXITSTATUS(status);
 			break;
@@ -184,8 +181,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 				// The wakeup may have been spurious
 				continue;
 			}
-			wp_log(WP_ERROR, "Connection failure: %s",
-					strerror(errno));
+			wp_error("Connection failure: %s", strerror(errno));
 			retcode = EXIT_FAILURE;
 			break;
 		} else {
@@ -213,7 +209,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 					// exit path?
 					return EXIT_SUCCESS;
 				} else if (npid == -1) {
-					wp_log(WP_DEBUG, "Fork failure");
+					wp_debug("Fork failure");
 					retcode = EXIT_FAILURE;
 					break;
 				} else {

@@ -158,8 +158,7 @@ int main(int argc, char **argv)
 				/* 'copy' sink */
 				new_fileno = open("/dev/null", O_WRONLY);
 				if (new_fileno == -1) {
-					wp_log(WP_ERROR,
-							"Failed to open /dev/null");
+					wp_error("Failed to open /dev/null");
 				}
 			} else {
 				/* avoid buffer overflow */
@@ -177,10 +176,9 @@ int main(int argc, char **argv)
 				unlink(template);
 #endif
 				if (new_fileno == -1) {
-					wp_log(WP_ERROR, "Failed to mkstemp");
+					wp_error("Failed to mkstemp");
 				} else if (ftruncate(new_fileno, fsize) == -1) {
-					wp_log(WP_ERROR,
-							"Failed to resize tempfile");
+					wp_error("Failed to resize tempfile");
 					close(new_fileno);
 					new_fileno = -1;
 				}
@@ -252,12 +250,11 @@ int main(int argc, char **argv)
 			int target_fd = to_server ? srv_fds[0] : cli_fds[0];
 			ssize_t ret = sendmsg(target_fd, &msg, 0);
 			if (ret == -1) {
-				wp_log(WP_ERROR, "Error in sendmsg");
+				wp_error("Error in sendmsg");
 				break;
 			}
 		} else {
-			wp_log(WP_ERROR,
-					"Failed to send message before timeout");
+			wp_error("Failed to send message before timeout");
 		}
 		if (new_fileno != -1) {
 			close(new_fileno);
@@ -280,8 +277,7 @@ int main(int argc, char **argv)
 			printf("Poll error\n");
 			break;
 		} else if (nr == 0) {
-			wp_log(WP_DEBUG, "No reply to sent packet %d",
-					packet_size);
+			wp_debug("No reply to sent packet %d", packet_size);
 		}
 		for (int i = 0; i < 2; i++) {
 			if (read_pfds[i].revents & POLLIN) {
@@ -299,7 +295,7 @@ int main(int argc, char **argv)
 				msg.msg_flags = 0;
 				ssize_t ret = recvmsg(read_pfds[i].fd, &msg, 0);
 				if (ret == -1) {
-					wp_log(WP_ERROR, "Error in recvmsg");
+					wp_error("Error in recvmsg");
 				}
 			}
 		}

@@ -465,11 +465,11 @@ int main(int argc, char **argv)
 	sigemptyset(&ca.sa_mask);
 	ca.sa_flags = SA_RESTART | SA_NOCLDSTOP;
 	if (sigaction(SIGINT, &ia, NULL) == -1) {
-		wp_log(WP_ERROR, "Failed to set signal action for SIGINT");
+		wp_error("Failed to set signal action for SIGINT");
 		return EXIT_FAILURE;
 	}
 	if (sigaction(SIGCHLD, &ca, NULL) == -1) {
-		wp_log(WP_ERROR, "Failed to set signal action for SIGCHLD");
+		wp_error("Failed to set signal action for SIGCHLD");
 		return EXIT_FAILURE;
 	}
 
@@ -553,7 +553,7 @@ int main(int argc, char **argv)
 
 		pid_t conn_pid = fork();
 		if (conn_pid == -1) {
-			wp_log(WP_ERROR, "Fork failure");
+			wp_error("Fork failure");
 			return EXIT_FAILURE;
 		} else if (conn_pid == 0) {
 			int nextra = 12 + debug + oneshot +
@@ -624,7 +624,7 @@ int main(int argc, char **argv)
 
 			// execvp effectively frees arglist
 			execvp(arglist[0], arglist);
-			wp_log(WP_ERROR, "Fork failed");
+			wp_error("Fork failed");
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {

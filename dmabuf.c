@@ -130,7 +130,7 @@ int init_render_data(struct render_data *data)
 
 	int drm_fd = open(card, O_RDWR | O_CLOEXEC);
 	if (drm_fd == -1) {
-		wp_log(WP_ERROR, "Failed to open drm fd for %s: %s", card,
+		wp_error("Failed to open drm fd for %s: %s", card,
 				strerror(errno));
 		data->disabled = true;
 		return -1;
@@ -140,7 +140,7 @@ int init_render_data(struct render_data *data)
 	if (!dev) {
 		data->disabled = true;
 		close(drm_fd);
-		wp_log(WP_ERROR, "Failed to create gbm device from drm_fd");
+		wp_error("Failed to create gbm device from drm_fd");
 		return -1;
 	}
 
@@ -164,13 +164,12 @@ static long get_dmabuf_fd_size(int fd)
 {
 	ssize_t endp = lseek(fd, 0, SEEK_END);
 	if (endp == -1) {
-		wp_log(WP_ERROR,
-				"Failed to estimate dmabuf size with lseek: %s",
+		wp_error("Failed to estimate dmabuf size with lseek: %s",
 				strerror(errno));
 		return -1;
 	}
 	if (lseek(fd, 0, SEEK_SET) == -1) {
-		wp_log(WP_ERROR, "Failed to reset dmabuf offset with lseek: %s",
+		wp_error("Failed to reset dmabuf offset with lseek: %s",
 				strerror(errno));
 		return -1;
 	}
@@ -221,7 +220,7 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	struct gbm_bo *bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER,
 			&data, GBM_BO_USE_RENDERING);
 	if (!bo) {
-		wp_log(WP_ERROR, "Failed to import dmabuf to gbm bo: %s",
+		wp_error("Failed to import dmabuf to gbm bo: %s",
 				strerror(errno));
 		return NULL;
 	}
@@ -235,8 +234,7 @@ bool is_dmabuf(int fd)
 	struct dma_buf_sync sync;
 	sync.flags = 0;
 	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != -1) {
-		wp_log(WP_ERROR,
-				"DMAbuf test ioctl succeeded when it should have errored");
+		wp_error("DMAbuf test ioctl succeeded when it should have errored");
 		return false;
 	}
 	if (errno == EINVAL) {
@@ -244,8 +242,7 @@ bool is_dmabuf(int fd)
 	} else if (errno == ENOTTY) {
 		return false;
 	} else {
-		wp_log(WP_ERROR,
-				"Unexpected error from dmabuf detection probe: %d, %s",
+		wp_error("Unexpected error from dmabuf detection probe: %d, %s",
 				errno, strerror(errno));
 		return false;
 	}
@@ -284,8 +281,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		bo = gbm_bo_create(rd->dev, width, height, format,
 				GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
 		if (!bo) {
-			wp_log(WP_ERROR, "Failed to make dmabuf: %s",
-					strerror(errno));
+			wp_error("Failed to make dmabuf: %s", strerror(errno));
 			return NULL;
 		}
 	} else {
@@ -310,8 +306,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		bo = gbm_bo_create_with_modifiers(rd->dev, info->width,
 				info->height, info->format, modifiers, 2);
 		if (!bo) {
-			wp_log(WP_ERROR,
-					"Failed to make dmabuf (with modifier %lx): %s",
+			wp_error("Failed to make dmabuf (with modifier %lx): %s",
 					info->modifier, strerror(errno));
 			return NULL;
 		}
@@ -319,8 +314,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 		long csize = get_dmabuf_fd_size(tfd);
 		close(tfd);
 		if (csize != (long)size) {
-			wp_log(WP_ERROR,
-					"Created DMABUF size (%ld disagrees with original size (%ld), %s",
+			wp_error("Created DMABUF size (%ld disagrees with original size (%ld), %s",
 					csize, size,
 					(csize > (long)size)
 							? "keeping anyway"
@@ -341,8 +335,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, const char *data,
 				long nsize = get_dmabuf_fd_size(nfd);
 				close(nfd);
 				if (nsize < (long)size) {
-					wp_log(WP_ERROR,
-							"Trying to fudge dmabuf height to reach target size of %ld bytes; failed, got %ld",
+					wp_error("Trying to fudge dmabuf height to reach target size of %ld bytes; failed, got %ld",
 							size, nsize);
 				}
 			}
@@ -365,8 +358,7 @@ int export_dmabuf(struct gbm_bo *bo)
 {
 	int fd = gbm_bo_get_fd(bo);
 	if (fd == -1) {
-		wp_log(WP_ERROR, "Failed to export dmabuf: %s",
-				strerror(errno));
+		wp_error("Failed to export dmabuf: %s", strerror(errno));
 	}
 	return fd;
 }
@@ -392,7 +384,7 @@ void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle)
 			&stride, map_handle);
 	if (!data) {
 		// errno is useless here
-		wp_log(WP_ERROR, "Failed to map dmabuf");
+		wp_error("Failed to map dmabuf");
 	}
 	return data;
 }

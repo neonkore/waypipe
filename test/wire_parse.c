@@ -178,8 +178,7 @@ int main(int argc, char **argv)
 				bool sp = size_check(wt->data, wt->words,
 						length, fdlen);
 				if (sp != expect_success) {
-					wp_log(WP_ERROR,
-							"size check FAIL (%c, expected %c) at %d/%d chars, %d/%d fds",
+					wp_error("size check FAIL (%c, expected %c) at %d/%d chars, %d/%d fds",
 							sp ? 'Y' : 'n',
 							expect_success ? 'Y'
 								       : 'n',

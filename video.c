@@ -270,17 +270,17 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 {
 	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
-		wp_log(WP_ERROR, "Failed to find matching AvPixelFormat	for %x",
+		wp_error("Failed to find matching AvPixelFormat	for %x",
 				drm_format);
 		return;
 	}
 	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
 	if (sws_isSupportedInput(avpixfmt) == 0) {
-		wp_log(WP_ERROR, "frame format %x not supported", avpixfmt);
+		wp_error("frame format %x not supported", avpixfmt);
 		return;
 	}
 	if (sws_isSupportedInput(videofmt) == 0) {
-		wp_log(WP_ERROR, "videofmt %x not supported", videofmt);
+		wp_error("videofmt %x not supported", videofmt);
 		return;
 	}
 
@@ -293,7 +293,7 @@ void setup_video_encode(struct shadow_fd *sfd, int width, int height,
 directly */
 	struct AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
 	if (!codec) {
-		wp_log(WP_ERROR, "Failed to find encoder for h264");
+		wp_error("Failed to find encoder for h264");
 		return;
 	}
 
@@ -319,27 +319,27 @@ directly */
 	ctx->delay = 0;
 	ctx->thread_count = 1;
 	if (av_opt_set(ctx->priv_data, "preset", "ultrafast", 0) != 0) {
-		wp_log(WP_ERROR, "Failed to set x264 encode ultrafast preset");
+		wp_error("Failed to set x264 encode ultrafast preset");
 	}
 	if (av_opt_set(ctx->priv_data, "tune", "zerolatency", 0) != 0) {
-		wp_log(WP_ERROR, "Failed to set x264 encode zerolatency");
+		wp_error("Failed to set x264 encode zerolatency");
 	}
 
 	bool near_perfect = false;
 	if (near_perfect && av_opt_set(ctx->priv_data, "crf", "0", 0) != 0) {
-		wp_log(WP_ERROR, "Failed to set x264 crf");
+		wp_error("Failed to set x264 crf");
 	}
 
 	// option: crf = 0
 
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
-		wp_log(WP_ERROR, "Failed to open codec");
+		wp_error("Failed to open codec");
 		return;
 	}
 
 	struct AVFrame *frame = av_frame_alloc();
 	if (!frame) {
-		wp_log(WP_ERROR, "Could not allocate video frame");
+		wp_error("Could not allocate video frame");
 		return;
 	}
 	frame->format = avpixfmt;
@@ -355,15 +355,14 @@ directly */
 	if (av_image_alloc(yuv_frame->data, yuv_frame->linesize,
 			    yuv_frame->width, yuv_frame->height, videofmt,
 			    64) < 0) {
-		wp_log(WP_ERROR, "Failed to allocate temp image");
+		wp_error("Failed to allocate temp image");
 		return;
 	}
 	struct SwsContext *sws = sws_getContext(frame->width, frame->height,
 			avpixfmt, yuv_frame->width, yuv_frame->height, videofmt,
 			SWS_BILINEAR, NULL, NULL, NULL);
 	if (!sws) {
-		wp_log(WP_ERROR,
-				"Could not create software color conversion context");
+		wp_error("Could not create software color conversion context");
 		return;
 	}
 
@@ -382,30 +381,29 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 {
 	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
-		wp_log(WP_ERROR, "Failed to find matching AvPixelFormat for %x",
+		wp_error("Failed to find matching AvPixelFormat for %x",
 				drm_format);
 		return;
 	}
 	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P /*AV_PIX_FMT_YUV420P*/;
 
 	if (sws_isSupportedInput(avpixfmt) == 0) {
-		wp_log(WP_ERROR, "source pixel format %x not supported",
-				avpixfmt);
+		wp_error("source pixel format %x not supported", avpixfmt);
 		return;
 	}
 	if (sws_isSupportedInput(videofmt) == 0) {
-		wp_log(WP_ERROR, "AV_PIX_FMT_YUV420P not supported");
+		wp_error("AV_PIX_FMT_YUV420P not supported");
 		return;
 	}
 
 	struct AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
 	if (!codec) {
-		wp_log(WP_ERROR, "Failed to find decoder for h264");
+		wp_error("Failed to find decoder for h264");
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	if (!ctx) {
-		wp_log(WP_ERROR, "Failed to allocate context");
+		wp_error("Failed to allocate context");
 	}
 
 	/* set context dimensions */
@@ -415,12 +413,12 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	ctx->delay = 0;
 	ctx->thread_count = 1;
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
-		wp_log(WP_ERROR, "Failed to open codec");
+		wp_error("Failed to open codec");
 	}
 
 	struct AVFrame *frame = av_frame_alloc();
 	if (!frame) {
-		wp_log(WP_ERROR, "Could not allocate video frame");
+		wp_error("Could not allocate video frame");
 	}
 	frame->format = avpixfmt;
 	/* adopt padded sizes */
@@ -434,7 +432,7 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 	yuv_frame->height = ctx->height;
 	yuv_frame->format = videofmt;
 	if (!yuv_frame) {
-		wp_log(WP_ERROR, "Could not allocate video yuv_frame");
+		wp_error("Could not allocate video yuv_frame");
 	}
 
 	struct SwsContext *sws = sws_getContext(yuv_frame->width,
@@ -442,13 +440,12 @@ void setup_video_decode(struct shadow_fd *sfd, int width, int height,
 			frame->height, avpixfmt, SWS_BILINEAR, NULL, NULL,
 			NULL);
 	if (!sws) {
-		wp_log(WP_ERROR,
-				"Could not create software color conversion context");
+		wp_error("Could not create software color conversion context");
 	}
 
 	struct AVPacket *pkt = av_packet_alloc();
 	if (!pkt) {
-		wp_log(WP_ERROR, "Could not allocate video packet");
+		wp_error("Could not allocate video packet");
 	}
 
 	sfd->video_codec = codec;
@@ -476,7 +473,7 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 			    sfd->video_reg_frame->height,
 			    sfd->video_yuv_frame->data,
 			    sfd->video_yuv_frame->linesize) < 0) {
-		wp_log(WP_ERROR, "Failed to perform color conversion");
+		wp_error("Failed to perform color conversion");
 	}
 
 	sfd->video_yuv_frame->pts = sfd->video_frameno++;
@@ -486,17 +483,17 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 	strcpy(errbuf, "Unknown error");
 	if (sendstat < 0) {
 		av_strerror(sendstat, errbuf, sizeof(errbuf));
-		wp_log(WP_ERROR, "Failed to create frame: %s", errbuf);
+		wp_error("Failed to create frame: %s", errbuf);
 		return;
 	}
 	// assume 1-1 frames to packets, at the moment
 	int recvstat = avcodec_receive_packet(
 			sfd->video_context, sfd->video_packet);
 	if (recvstat == AVERROR(EINVAL)) {
-		wp_log(WP_ERROR, "Failed to receive packet");
+		wp_error("Failed to receive packet");
 		return;
 	} else if (recvstat == AVERROR(EAGAIN)) {
-		wp_log(WP_ERROR, "Packet needs more input");
+		wp_error("Packet needs more input");
 		// Clearly, the solution is to resend the
 		// original frame ? but _lag_
 	}
@@ -565,7 +562,7 @@ void apply_video_packet_to_mirror(
 	strcpy(errbuf, "Unknown error");
 	if (sendstat < 0) {
 		av_strerror(sendstat, errbuf, sizeof(errbuf));
-		wp_log(WP_ERROR, "Failed to send packet: %s", errbuf);
+		wp_error("Failed to send packet: %s", errbuf);
 	}
 
 	while (true) {
@@ -582,16 +579,14 @@ void apply_video_packet_to_mirror(
 					    sfd->video_reg_frame->data,
 					    sfd->video_reg_frame->linesize) <
 					0) {
-				wp_log(WP_ERROR,
-						"Failed to perform color conversion");
+				wp_error("Failed to perform color conversion");
 			}
 
 		} else {
 			if (recvstat != AVERROR(EAGAIN)) {
 				strcpy(errbuf, "Unknown error");
 				av_strerror(sendstat, errbuf, sizeof(errbuf));
-				wp_log(WP_ERROR,
-						"Failed to receive frame due to error: %s",
+				wp_error("Failed to receive frame due to error: %s",
 						errbuf);
 			}
 			break;

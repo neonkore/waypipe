@@ -57,8 +57,7 @@ void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 			 * elements are never duplicated and make the deletion
 			 * process cause crashes */
 			if (!lst->objs[i]->is_zombie) {
-				wp_log(WP_ERROR,
-						"Replacing object @%u that already exists: old type %s, new type %s",
+				wp_error("Replacing object @%u that already exists: old type %s, new type %s",
 						obj->obj_id,
 						get_type_name(lst->objs[i]),
 						get_type_name(obj));
@@ -95,7 +94,7 @@ void listset_remove(struct obj_list *lst, struct wp_object *obj)
 		}
 	}
 
-	wp_log(WP_ERROR, "Object not in list");
+	wp_error("Object not in list");
 	return;
 }
 struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
@@ -152,14 +151,14 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
 		unsigned int true_length, int fd_length)
 {
 	if (data->n_fds > fd_length) {
-		wp_log(WP_ERROR, "Msg overflow, not enough fds %d > %d",
-				data->n_fds, fd_length);
+		wp_error("Msg overflow, not enough fds %d > %d", data->n_fds,
+				fd_length);
 		return false;
 	}
 
 	unsigned int len = data->base_gap;
 	if (len > true_length) {
-		wp_log(WP_ERROR, "Msg overflow, not enough words %d > %d", len,
+		wp_error("Msg overflow, not enough words %d > %d", len,
 				true_length);
 		return false;
 	}
@@ -174,8 +173,7 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
 			if (end_idx < true_length &&
 					!word_has_empty_bytes(
 							payload[end_idx])) {
-				wp_log(WP_ERROR,
-						"Msg overflow, string termination %d < %d, %d, %x %d",
+				wp_error("Msg overflow, string termination %d < %d, %d, %x %d",
 						len, true_length, x_words,
 						payload[end_idx],
 						word_has_empty_bytes(
@@ -186,8 +184,8 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
 		len += x_words;
 		len += data->trail_gap[i];
 		if (len > true_length) {
-			wp_log(WP_ERROR, "Msg overflow, post string %d %d > %d",
-					i, len, true_length);
+			wp_error("Msg overflow, post string %d %d > %d", i, len,
+					true_length);
 			return false;
 		}
 	}
@@ -215,8 +213,7 @@ static bool build_new_objects(const struct msg_data *data,
 		} else {
 			uint32_t new_id = payload[pos + data->new_obj_idxs[k]];
 			if (new_id == caller_obj->obj_id) {
-				wp_log(WP_ERROR,
-						"In %s.%s, tried to create object id=%u conflicting with object being called, also id=%u",
+				wp_error("In %s.%s, tried to create object id=%u conflicting with object being called, also id=%u",
 						caller_obj->type->name,
 						data->name, new_id,
 						caller_obj->obj_id);
@@ -245,7 +242,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	int meth = (int)((header[1] << 16) >> 16);
 	int len = (int)(header[1] >> 16);
 	if (len != chars->zone_end - chars->zone_start) {
-		wp_log(WP_ERROR, "Message length disagreement %d vs %d", len,
+		wp_error("Message length disagreement %d vs %d", len,
 				chars->zone_end - chars->zone_start);
 		return PARSE_ERROR;
 	}
@@ -253,7 +250,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	struct wp_object *objh = listset_get(&g->tracker.objects, obj);
 
 	if (!objh || !objh->type) {
-		wp_log(WP_DEBUG, "Unidentified object %d with %s", obj,
+		wp_debug("Unidentified object %d with %s", obj,
 				from_client ? "request" : "event");
 		return PARSE_UNKNOWN;
 	}
@@ -264,12 +261,11 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	if (meth < intf->nfuncs[type_idx] && meth >= 0) {
 		msg = &intf->funcs[type_idx][meth];
 	} else {
-		wp_log(WP_DEBUG,
-				"Unidentified request #%d (of %d) on interface %s",
+		wp_debug("Unidentified request #%d (of %d) on interface %s",
 				meth, intf->nfuncs[type_idx], intf->name);
 	}
 	if (!msg) {
-		wp_log(WP_DEBUG, "Unidentified %s from known object",
+		wp_debug("Unidentified %s from known object",
 				from_client ? "request" : "event");
 		return PARSE_UNKNOWN;
 	}
@@ -288,8 +284,8 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	const uint32_t *payload = header + 2;
 	if (!size_check(msg, payload, len / 4 - 2,
 			    fds->zone_end - fds->zone_start)) {
-		wp_log(WP_ERROR, "Message %x %s@%u.%s parse length overflow",
-				payload, intf->name, objh->obj_id, msg->name);
+		wp_error("Message %x %s@%u.%s parse length overflow", payload,
+				intf->name, objh->obj_id, msg->name);
 		return PARSE_UNKNOWN;
 	}
 
@@ -344,8 +340,8 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	if (ctx.drop_this_msg) {
-		wp_log(WP_DEBUG, "Dropping %s.%s, with %d fds", intf->name,
-				msg->name, fds_used);
+		wp_debug("Dropping %s.%s, with %d fds", intf->name, msg->name,
+				fds_used);
 		chars->zone_end = chars->zone_start;
 		int nmoved = fds->zone_end - fds->zone_start - fds_used;
 		memmove(&fds->data[fds->zone_start],
@@ -360,8 +356,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		fds->zone_start += fds_used;
 	}
 	if (fds->zone_end < fds->zone_start) {
-		wp_log(WP_ERROR,
-				"Handler error after %s.%s: fdzs = %d > %d = fdze",
+		wp_error("Handler error after %s.%s: fdzs = %d > %d = fdze",
 				intf->name, msg->name, fds->zone_start,
 				fds->zone_end);
 	}

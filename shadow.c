@@ -105,8 +105,8 @@ static void destroy_unlinked_sfd(
 	}
 	if (sfd->fd_local != -2 && sfd->fd_local != -1) {
 		if (close(sfd->fd_local) == -1) {
-			wp_log(WP_ERROR, "Incorrect close(%d): %s",
-					sfd->fd_local, strerror(errno));
+			wp_error("Incorrect close(%d): %s", sfd->fd_local,
+					strerror(errno));
 		}
 	}
 	free(sfd);
@@ -152,8 +152,7 @@ static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
 		LZ4F_errorCode_t err = LZ4F_createDecompressionContext(
 				&ctx->lz4f_dcontext, LZ4F_VERSION);
 		if (LZ4F_isError(err)) {
-			wp_log(WP_ERROR,
-					"Failed to created LZ4F decompression context: %s",
+			wp_error("Failed to created LZ4F decompression context: %s",
 					LZ4F_getErrorName(err));
 		}
 	}
@@ -268,7 +267,7 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side,
 			int ret = pthread_create(&map->threads[i].thread, NULL,
 					worker_thread_main, &map->threads[i]);
 			if (ret == -1) {
-				wp_log(WP_ERROR, "Thread creation failed");
+				wp_error("Thread creation failed");
 				had_failures = true;
 				break;
 			}
@@ -306,8 +305,7 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	memset(&fsdata, 0, sizeof(fsdata));
 	int ret = fstat(fd, &fsdata);
 	if (ret == -1) {
-		wp_log(WP_ERROR, "The fd %d is not file-like: %s", fd,
-				strerror(errno));
+		wp_error("The fd %d is not file-like: %s", fd, strerror(errno));
 		return FDC_UNKNOWN;
 	} else if (S_ISREG(fsdata.st_mode)) {
 		if (size) {
@@ -317,18 +315,16 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	} else if (S_ISFIFO(fsdata.st_mode) || S_ISCHR(fsdata.st_mode) ||
 			S_ISSOCK(fsdata.st_mode)) {
 		if (S_ISCHR(fsdata.st_mode)) {
-			wp_log(WP_ERROR,
-					"The fd %d, size %ld, mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
+			wp_error("The fd %d, size %ld, mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
 					fd, fsdata.st_size, fsdata.st_mode);
 		}
 		if (S_ISSOCK(fsdata.st_mode)) {
-			wp_log(WP_ERROR,
-					"The fd %d, size %ld, mode %x is a socket. Proceeding under the assumption that it is pipe-like.",
+			wp_error("The fd %d, size %ld, mode %x is a socket. Proceeding under the assumption that it is pipe-like.",
 					fd, fsdata.st_size, fsdata.st_mode);
 		}
 		int flags = fcntl(fd, F_GETFL, 0);
 		if (flags == -1) {
-			wp_log(WP_ERROR, "fctnl F_GETFL failed!");
+			wp_error("fctnl F_GETFL failed!");
 		}
 		if ((flags & O_ACCMODE) == O_RDONLY) {
 			return FDC_PIPE_IR;
@@ -340,8 +336,7 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	} else if (is_dmabuf(fd)) {
 		return FDC_DMABUF;
 	} else {
-		wp_log(WP_ERROR,
-				"The fd %d has an unusual mode %x (type=%x): blk=%d chr=%d dir=%d lnk=%d reg=%d fifo=%d sock=%d; expect an application crash!",
+		wp_error("The fd %d has an unusual mode %x (type=%x): blk=%d chr=%d dir=%d lnk=%d reg=%d fifo=%d sock=%d; expect an application crash!",
 				fd, fsdata.st_mode, fsdata.st_mode & S_IFMT,
 				S_ISBLK(fsdata.st_mode),
 				S_ISCHR(fsdata.st_mode),
@@ -398,8 +393,7 @@ static void compress_buffer(struct fd_translation_map *map,
 	case COMP_LZ4: {
 		size_t ws = LZ4F_compressFrame(mbuf, msize, ibuf, isize, NULL);
 		if (LZ4F_isError(ws)) {
-			wp_log(WP_ERROR,
-					"Lz4 compression failed for %d bytes in %d of space: %s",
+			wp_error("Lz4 compression failed for %d bytes in %d of space: %s",
 					(int)isize, (int)msize,
 					LZ4F_getErrorName(ws));
 		}
@@ -413,8 +407,7 @@ static void compress_buffer(struct fd_translation_map *map,
 		size_t ws = ZSTD_compress2(
 				ctx->zstd_ccontext, mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws)) {
-			wp_log(WP_ERROR,
-					"Zstd compression failed for %d bytes in %d of space: %s",
+			wp_error("Zstd compression failed for %d bytes in %d of space: %s",
 					(int)isize, (int)msize,
 					ZSTD_getErrorName(ws));
 		}
@@ -463,8 +456,7 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 			read += src_remaining;
 			total += dst_remaining;
 			if (LZ4F_isError(hint)) {
-				wp_log(WP_ERROR,
-						"Lz4 decomp. failed with %d bytes and %d space remaining: %s",
+				wp_error("Lz4 decomp. failed with %d bytes and %d space remaining: %s",
 						isize - read, msize - total,
 						LZ4F_getErrorName(hint));
 				break;
@@ -480,8 +472,7 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		size_t ws = ZSTD_decompressDCtx(map->comp_ctx.zstd_dcontext,
 				mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws) || (size_t)ws != msize) {
-			wp_log(WP_ERROR,
-					"Zstd decompression failed for %d bytes to %d of space: %s",
+			wp_error("Zstd decompression failed for %d bytes to %d of space: %s",
 					(int)isize, (int)msize,
 					ZSTD_getErrorName(ws));
 			ws = 0;
@@ -524,11 +515,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->refcount_transfer = 1;
 	sfd->refcount_protocol = 0;
 
-	wp_log(WP_DEBUG, "Creating new shadow buffer for local fd %d", fd);
+	wp_debug("Creating new shadow buffer for local fd %d", fd);
 	if (sfd->type == FDC_FILE) {
 		if (file_sz > FILE_SIZE_SIZE_MASK) {
-			wp_log(WP_ERROR,
-					"Failed to create shadow structure, file size %ld too large to transfer",
+			wp_error("Failed to create shadow structure, file size %ld too large to transfer",
 					(uint64_t)file_sz);
 			return sfd;
 		}
@@ -539,7 +529,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (!sfd->mem_local) {
-			wp_log(WP_ERROR, "Mmap failed!");
+			wp_error("Mmap failed!");
 			return sfd;
 		}
 		// This will be created at the first transfer
@@ -548,7 +538,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		// Make this end of the pipe nonblocking, so that we can
 		// include it in our main loop.
 		if (set_nonblocking(sfd->fd_local) == -1) {
-			wp_log(WP_ERROR, "Failed to make fd nonblocking");
+			wp_error("Failed to make fd nonblocking");
 		}
 		sfd->pipe_fd = sfd->fd_local;
 
@@ -765,7 +755,7 @@ void apply_diff(size_t size, char *__restrict__ target1,
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
 	uint64_t ndifftrailing = diffsize - 8 * ndiffblocks;
 	if (diffsize % 8 != 0 && ndifftrailing != (size - 8 * nblocks)) {
-		wp_log(WP_ERROR, "Trailing bytes mismatch for diff.");
+		wp_error("Trailing bytes mismatch for diff.");
 		return;
 	}
 	DTRACE_PROBE2(waypipe, apply_diff_enter, size, diffsize);
@@ -775,8 +765,7 @@ void apply_diff(size_t size, char *__restrict__ target1,
 		uint64_t nto = (block << 32) >> 32;
 		if (nto > nblocks || nfrom >= nto ||
 				i + (nto - nfrom) >= ndiffblocks) {
-			wp_log(WP_ERROR,
-					"Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks",
+			wp_error("Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks",
 					nfrom, nto, nblocks, i + 1,
 					i + 1 + (nto - nfrom), ndiffblocks);
 			return;
@@ -836,8 +825,8 @@ static void worker_run_compresseddiff(struct fd_translation_map *map,
 	*actual_size = diffsize;
 
 	if (diffsize > diff_step) {
-		wp_log(WP_ERROR, "Compression section %d overflow (%d>%d)",
-				index, (int)diffsize, (int)diff_step);
+		wp_error("Compression section %d overflow (%d>%d)", index,
+				(int)diffsize, (int)diff_step);
 	}
 
 	dst->size = 0;
@@ -1027,7 +1016,7 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 	}
 	reset_damage(&sfd->damage);
 	DTRACE_PROBE1(waypipe, diffcomp_end, actual_diff_size);
-	wp_log(WP_DEBUG, "Diff+comp construction end: %ld/%ld",
+	wp_debug("Diff+comp construction end: %ld/%ld",
 			(uint64_t)actual_diff_size, (uint64_t)sfd->buffer_size);
 }
 
@@ -1211,8 +1200,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 		if (sfd->pipe_recv.used > 0 || sfd->pipe_onlyhere ||
 				(sfd->pipe_lclosed && !sfd->pipe_rclosed)) {
 			sfd->pipe_onlyhere = false;
-			wp_log(WP_DEBUG,
-					"Adding update to pipe RID=%d, with %ld bytes, close %c",
+			wp_debug("Adding update to pipe RID=%d, with %ld bytes, close %c",
 					sfd->remote_id, sfd->pipe_recv.used,
 					(sfd->pipe_lclosed &&
 							!sfd->pipe_rclosed)
@@ -1242,7 +1230,7 @@ void create_from_update(struct fd_translation_map *map,
 		const struct bytebuf *block)
 {
 
-	wp_log(WP_DEBUG, "Introducing new fd, remoteid=%d", transf->obj_id);
+	wp_debug("Introducing new fd, remoteid=%d", transf->obj_id);
 	struct shadow_fd *sfd = calloc(1, sizeof(struct shadow_fd));
 	sfd->next = map->list;
 	map->list = sfd;
@@ -1272,7 +1260,7 @@ void create_from_update(struct fd_translation_map *map,
 						: NULL;
 
 		if (transf->special.block_meta & FILE_SIZE_VIDEO_FLAG) {
-			wp_log(WP_ERROR, "TODO, full video frame fill");
+			wp_error("TODO, full video frame fill");
 		} else {
 			size_t act_size = 0;
 			const char *act_buffer = NULL;
@@ -1292,14 +1280,12 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->fd_local = shm_open(sfd->file_shm_buf_name,
 				O_RDWR | O_CREAT | O_TRUNC, 0644);
 		if (sfd->fd_local == -1) {
-			wp_log(WP_ERROR,
-					"Failed to create shm file for object %d: %s",
+			wp_error("Failed to create shm file for object %d: %s",
 					sfd->remote_id, strerror(errno));
 			return;
 		}
 		if (ftruncate(sfd->fd_local, sfd->buffer_size) == -1) {
-			wp_log(WP_ERROR,
-					"Failed to resize shm file %s to size %ld for reason: %s",
+			wp_error("Failed to resize shm file %s to size %ld for reason: %s",
 					sfd->file_shm_buf_name,
 					sfd->buffer_size, strerror(errno));
 			return;
@@ -1313,14 +1299,13 @@ void create_from_update(struct fd_translation_map *map,
 		if (transf->type == FDC_PIPE_RW) {
 			if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipedes) ==
 					-1) {
-				wp_log(WP_ERROR,
-						"Failed to create a socketpair: %s",
+				wp_error("Failed to create a socketpair: %s",
 						strerror(errno));
 				return;
 			}
 		} else {
 			if (pipe(pipedes) == -1) {
-				wp_log(WP_ERROR, "Failed to create a pipe: %s",
+				wp_error("Failed to create a pipe: %s",
 						strerror(errno));
 				return;
 			}
@@ -1346,8 +1331,7 @@ void create_from_update(struct fd_translation_map *map,
 		}
 
 		if (set_nonblocking(sfd->pipe_fd) == -1) {
-			wp_log(WP_ERROR,
-					"Failed to make private pipe end nonblocking: %s",
+			wp_error("Failed to make private pipe end nonblocking: %s",
 					strerror(errno));
 			return;
 		}
@@ -1410,7 +1394,7 @@ void create_from_update(struct fd_translation_map *map,
 			memcpy(sfd->mem_mirror, contents, sfd->buffer_size);
 		}
 
-		wp_log(WP_DEBUG, "Creating remote DMAbuf of %d bytes",
+		wp_debug("Creating remote DMAbuf of %d bytes",
 				(int)contents_size);
 		// Create mirror from first transfer
 		// The file can only actually be created when we know
@@ -1430,7 +1414,7 @@ void create_from_update(struct fd_translation_map *map,
 				sizeof(struct dmabuf_slice_data));
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 	} else {
-		wp_log(WP_ERROR, "Creating unknown file type updates");
+		wp_error("Creating unknown file type updates");
 	}
 }
 
@@ -1443,7 +1427,7 @@ static void increase_buffer_sizes(struct fd_translation_map *map,
 	sfd->mem_local = mmap(NULL, sfd->buffer_size, PROT_READ | PROT_WRITE,
 			MAP_SHARED, sfd->fd_local, 0);
 	if (!sfd->mem_local) {
-		wp_log(WP_ERROR, "Mmap failed!");
+		wp_error("Mmap failed!");
 		return;
 	}
 	// todo: handle allocation failures
@@ -1476,16 +1460,15 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 	if (sfd->type == FDC_FILE) {
 		if (transf->type != sfd->type) {
-			wp_log(WP_ERROR, "Transfer type mismatch %d %d",
-					transf->type, sfd->type);
+			wp_error("Transfer type mismatch %d %d", transf->type,
+					sfd->type);
 		}
 		uint32_t m_size = transf->special.block_meta &
 				  FILE_SIZE_SIZE_MASK;
 		if (transf->special.block_meta & FILE_SIZE_EXTEND_FLAG) {
 			/* Zero-extend the buffer to have the new size */
 			if (ftruncate(sfd->fd_local, m_size) == -1) {
-				wp_log(WP_ERROR,
-						"Failed to resize file buffer: %s",
+				wp_error("Failed to resize file buffer: %s",
 						strerror(errno));
 			}
 			increase_buffer_sizes(map, sfd, m_size);
@@ -1501,8 +1484,8 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		// `memsize+8*remote_nthreads` is the worst-case diff
 		// expansion
 		if (act_size > sfd->buffer_size + 8 * 128) {
-			wp_log(WP_ERROR, "Transfer size mismatch %ld %ld",
-					act_size, sfd->buffer_size);
+			wp_error("Transfer size mismatch %ld %ld", act_size,
+					sfd->buffer_size);
 		}
 		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
 				act_size, act_buffer);
@@ -1514,7 +1497,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		bool ir_match = sfd->type == FDC_PIPE_IR &&
 				transf->type == FDC_PIPE_IW;
 		if (!rw_match && !iw_match && !ir_match) {
-			wp_log(WP_ERROR, "Transfer type contramismatch %d %d",
+			wp_error("Transfer type contramismatch %d %d",
 					transf->type, sfd->type);
 		}
 
@@ -1544,8 +1527,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		}
 	} else if (sfd->type == FDC_DMABUF) {
 		if (!sfd->dmabuf_bo) {
-			wp_log(WP_ERROR,
-					"Applying update to nonexistent dma buffer object rid=%d",
+			wp_error("Applying update to nonexistent dma buffer object rid=%d",
 					sfd->remote_id);
 			return;
 		}
@@ -1577,7 +1559,7 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 					sfd->compress_buffer, &act_size,
 					&act_buffer);
 
-			wp_log(WP_DEBUG, "Applying dmabuf damage");
+			wp_debug("Applying dmabuf damage");
 			void *handle = NULL;
 			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
 			if (!data) {
@@ -1614,8 +1596,7 @@ static bool destroy_shadow_if_unreferenced(
 		destroy_unlinked_sfd(map, sfd);
 		return true;
 	} else if (sfd->refcount_protocol < 0 || sfd->refcount_transfer < 0) {
-		wp_log(WP_ERROR,
-				"Negative refcount for rid=%d: %d protocol references, %d transfer references",
+		wp_error("Negative refcount for rid=%d: %d protocol references, %d transfer references",
 				sfd->remote_id, sfd->refcount_protocol,
 				sfd->refcount_transfer);
 	}
@@ -1714,8 +1695,7 @@ void mark_pipe_object_statuses(
 		int lfd = pfds[i].fd;
 		struct shadow_fd *sfd = get_shadow_for_pipe_fd(map, lfd);
 		if (!sfd) {
-			wp_log(WP_ERROR,
-					"Failed to find shadow struct for .pipe_fd=%d",
+			wp_error("Failed to find shadow struct for .pipe_fd=%d",
 					lfd);
 			continue;
 		}
@@ -1737,19 +1717,18 @@ void flush_writable_pipes(struct fd_translation_map *map)
 		if (fdcat_ispipe(cur->type) && cur->pipe_writable &&
 				cur->pipe_send.used > 0) {
 			cur->pipe_writable = false;
-			wp_log(WP_DEBUG, "Flushing %ld bytes into RID=%d",
+			wp_debug("Flushing %ld bytes into RID=%d",
 					cur->pipe_send.used, cur->remote_id);
 			ssize_t changed =
 					write(cur->pipe_fd, cur->pipe_send.data,
 							cur->pipe_send.used);
 
 			if (changed == -1) {
-				wp_log(WP_ERROR,
-						"Failed to write into pipe with remote_id=%d: %s",
+				wp_error("Failed to write into pipe with remote_id=%d: %s",
 						cur->remote_id,
 						strerror(errno));
 			} else if (changed == 0) {
-				wp_log(WP_DEBUG, "Zero write event");
+				wp_debug("Zero write event");
 			} else {
 				cur->pipe_send.used -= changed;
 				if (cur->pipe_send.used) {
@@ -1779,15 +1758,13 @@ void read_readable_pipes(struct fd_translation_map *map)
 					cur->pipe_recv.size -
 							cur->pipe_recv.used);
 			if (changed == -1) {
-				wp_log(WP_ERROR,
-						"Failed to read from pipe with remote_id=%d: %s",
+				wp_error("Failed to read from pipe with remote_id=%d: %s",
 						cur->remote_id,
 						strerror(errno));
 			} else if (changed == 0) {
-				wp_log(WP_DEBUG, "Zero write event");
+				wp_debug("Zero write event");
 			} else {
-				wp_log(WP_DEBUG,
-						"Read %ld more bytes from RID=%d",
+				wp_debug("Read %ld more bytes from RID=%d",
 						changed, cur->remote_id);
 				cur->pipe_recv.used += changed;
 			}
@@ -1832,13 +1809,11 @@ void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
 	struct stat st;
 	int fs = fstat(sfd->fd_local, &st);
 	if (fs == -1) {
-		wp_log(WP_ERROR, "Checking file size failed: %s",
-				strerror(errno));
+		wp_error("Checking file size failed: %s", strerror(errno));
 		return;
 	}
 	if ((size_t)st.st_size < new_size) {
-		wp_log(WP_ERROR,
-				"Trying to resize file larger (%d) than the actual file size (%d), ignoring",
+		wp_error("Trying to resize file larger (%d) than the actual file size (%d), ignoring",
 				(int)new_size, (int)st.st_size);
 		return;
 	}
@@ -1862,7 +1837,7 @@ static void *worker_thread_main(void *arg)
 	struct thread_data *data = arg;
 	struct fd_translation_map *map = data->map;
 
-	wp_log(WP_DEBUG, "Opening worker thread %d", data->index);
+	wp_debug("Opening worker thread %d", data->index);
 
 	/* The loop is globally locked by default, and only unlocked in
 	 * pthread_cond_wait. Yes, there are fancier and faster schemes.
@@ -1903,6 +1878,6 @@ static void *worker_thread_main(void *arg)
 	}
 	pthread_mutex_unlock(&map->work_state_mutex);
 
-	wp_log(WP_DEBUG, "Closing worker thread %d", data->index);
+	wp_debug("Closing worker thread %d", data->index);
 	return NULL;
 }
