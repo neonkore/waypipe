@@ -197,6 +197,7 @@ void destroy_video_data(struct shadow_fd *sfd)
 			av_freep(sfd->video_yuv_frame_data);
 		}
 		av_frame_free(&sfd->video_local_frame);
+		av_frame_free(&sfd->video_tmp_frame);
 		av_frame_free(&sfd->video_yuv_frame);
 		av_packet_free(&sfd->video_packet);
 	}
@@ -599,20 +600,32 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 	sfd->video_color_context = sws;
 }
 
+static enum AVPixelFormat get_decode_format(
+		AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts)
+{
+	struct shadow_fd *sfd = (struct shadow_fd *)ctx->opaque;
+	(void)sfd;
+
+	(void)ctx;
+	for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE;
+			p++) {
+		/* Prefer VAAPI output; YUV420P is the typical software
+		 * option */
+		if (*p == AV_PIX_FMT_VAAPI) {
+			return AV_PIX_FMT_VAAPI;
+		}
+	}
+	return AV_PIX_FMT_NONE;
+}
+
 void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	bool has_hw = init_hwcontext(rd) == 0;
-	(void)has_hw;
 
-	uint32_t drm_format = sfd->dmabuf_info.format;
-	int width = sfd->dmabuf_info.width;
-	int height = sfd->dmabuf_info.height;
-	int stride = sfd->dmabuf_info.strides[0];
-
-	enum AVPixelFormat avpixfmt = shm_to_av(drm_format);
+	enum AVPixelFormat avpixfmt = shm_to_av(sfd->dmabuf_info.format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat for %x",
-				drm_format);
+				sfd->dmabuf_info.format);
 		return;
 	}
 	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P /*AV_PIX_FMT_YUV420P*/;
@@ -626,9 +639,9 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 		return;
 	}
 
-	struct AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+	struct AVCodec *codec = avcodec_find_decoder_by_name(VIDEO_DECODER);
 	if (!codec) {
-		wp_error("Failed to find decoder for h264");
+		wp_error("Failed to find decoder \"" VIDEO_DECODER "\"");
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
@@ -637,53 +650,40 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	}
 
 	/* set context dimensions */
-	pad_video_mirror_size(
-			width, height, stride, &ctx->width, &ctx->height, NULL);
+	pad_video_mirror_size(sfd->dmabuf_info.width, sfd->dmabuf_info.height,
+			sfd->dmabuf_info.strides[0], &ctx->width, &ctx->height,
+			NULL);
 	ctx->pix_fmt = videofmt;
 	ctx->delay = 0;
 	ctx->thread_count = 1;
+	if (has_hw) {
+		ctx->hw_device_ctx = av_buffer_ref(rd->av_hwdevice_ref);
+		if (!ctx->hw_device_ctx) {
+			wp_error("Failed to reference hardware device context");
+		}
+		ctx->get_format = get_decode_format;
+	}
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
 	}
 
-	struct AVFrame *frame = av_frame_alloc();
-	if (!frame) {
-		wp_error("Could not allocate video frame");
-	}
-	frame->format = avpixfmt;
-	/* adopt padded sizes */
-	frame->width = ctx->width;
-	frame->height = ctx->height;
-	frame->linesize[0] = stride;
-
 	struct AVFrame *yuv_frame = av_frame_alloc();
-	/* match context dimensions */
-	yuv_frame->width = ctx->width;
-	yuv_frame->height = ctx->height;
-	yuv_frame->format = videofmt;
 	if (!yuv_frame) {
-		wp_error("Could not allocate video yuv_frame");
+		wp_error("Could not allocate yuv frame");
 	}
-
-	struct SwsContext *sws = sws_getContext(yuv_frame->width,
-			yuv_frame->height, videofmt, frame->width,
-			frame->height, avpixfmt, SWS_BILINEAR, NULL, NULL,
-			NULL);
-	if (!sws) {
-		wp_error("Could not create software color conversion context");
-	}
-
 	struct AVPacket *pkt = av_packet_alloc();
 	if (!pkt) {
 		wp_error("Could not allocate video packet");
 	}
 
-	sfd->video_local_frame = frame;
 	sfd->video_yuv_frame = yuv_frame;
-	sfd->video_yuv_frame_data = NULL; /* yuv_frame not allocated by us */
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
-	sfd->video_color_context = sws;
+	/* yuv_frame not allocated by us */
+	sfd->video_yuv_frame_data = NULL;
+	/* will be allocated on frame receipt */
+	sfd->video_local_frame = NULL;
+	sfd->video_color_context = NULL;
 }
 
 void collect_video_from_mirror(struct shadow_fd *sfd,
@@ -773,25 +773,50 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 	}
 }
 
-void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
+static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 {
+	(void)sfd;
+	struct AVCodecContext *ctx = sfd->video_context;
+
+	enum AVPixelFormat avpixfmt = shm_to_av(sfd->dmabuf_info.format);
+
+	struct AVFrame *frame = av_frame_alloc();
+	if (!frame) {
+		wp_error("Could not allocate video frame");
+	}
+	frame->format = avpixfmt;
+	/* adopt padded sizes */
+	frame->width = ctx->width;
+	frame->height = ctx->height;
+	frame->linesize[0] = sfd->dmabuf_info.strides[0];
 	// We unpack directly one mem_mirror
-	sfd->video_local_frame->data[0] = (uint8_t *)sfd->mem_mirror;
+	frame->data[0] = (uint8_t *)sfd->mem_mirror;
 	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-		sfd->video_local_frame->data[i] = NULL;
+		frame->data[i] = NULL;
 	}
 
+	struct SwsContext *sws = sws_getContext(cpu_frame->width,
+			cpu_frame->height, cpu_frame->format, frame->width,
+			frame->height, avpixfmt, SWS_BILINEAR, NULL, NULL,
+			NULL);
+	if (!sws) {
+		wp_error("Could not create software color conversion context");
+	}
+
+	sfd->video_local_frame = frame;
+	sfd->video_color_context = sws;
+}
+
+void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
+{
 	// padding, requires zerod overflow for read
 	sfd->video_packet->data = (uint8_t *)data;
 	sfd->video_packet->size = size;
 
 	int sendstat = avcodec_send_packet(
 			sfd->video_context, sfd->video_packet);
-	char errbuf[256];
-	strcpy(errbuf, "Unknown error");
 	if (sendstat < 0) {
-		av_strerror(sendstat, errbuf, sizeof(errbuf));
-		wp_error("Failed to send packet: %s", errbuf);
+		wp_error("Failed to send packet: %s", av_err2str(sendstat));
 	}
 
 	/* Receive all produced frames, ignoring all but the most recent */
@@ -799,14 +824,36 @@ void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 		int recvstat = avcodec_receive_frame(
 				sfd->video_context, sfd->video_yuv_frame);
 		if (recvstat == 0) {
+			struct AVFrame *cpu_frame = sfd->video_yuv_frame;
+			if (sfd->video_yuv_frame->format == AV_PIX_FMT_VAAPI) {
+				if (!sfd->video_tmp_frame) {
+					sfd->video_tmp_frame = av_frame_alloc();
+					if (!sfd->video_tmp_frame) {
+						wp_error("Failed to allocate temporary frame");
+					}
+				}
+
+				int tferr = av_hwframe_transfer_data(
+						sfd->video_tmp_frame,
+						sfd->video_yuv_frame, 0);
+				if (tferr < 0) {
+					wp_error("Failed to transfer hwframe data: %s",
+							av_err2str(tferr));
+				}
+				cpu_frame = sfd->video_tmp_frame;
+			}
+
+			if (!sfd->video_color_context) {
+				setup_color_conv(sfd, cpu_frame);
+			}
+
 			/* Handle frame immediately, since the next receive run
 			 * will clear it again */
 			if (sws_scale(sfd->video_color_context,
-					    (const uint8_t *const *)sfd
-							    ->video_yuv_frame
-							    ->data,
-					    sfd->video_yuv_frame->linesize, 0,
-					    sfd->video_yuv_frame->height,
+					    (const uint8_t *const *)
+							    cpu_frame->data,
+					    cpu_frame->linesize, 0,
+					    cpu_frame->height,
 					    sfd->video_local_frame->data,
 					    sfd->video_local_frame->linesize) <
 					0) {
@@ -828,10 +875,8 @@ void apply_video_packet(struct shadow_fd *sfd, size_t size, const char *data)
 			unmap_dmabuf(sfd->dmabuf_bo, handle);
 		} else {
 			if (recvstat != AVERROR(EAGAIN)) {
-				strcpy(errbuf, "Unknown error");
-				av_strerror(sendstat, errbuf, sizeof(errbuf));
 				wp_error("Failed to receive frame due to error: %s",
-						errbuf);
+						av_err2str(recvstat));
 			}
 			break;
 		}
