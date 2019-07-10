@@ -58,15 +58,16 @@ Requirements:
 
 ## Status
 
-This is just a prototype right now[0]. The main development location[1],
-command-line interface, and project name may yet change completely. Bug
-reports and patches are always welcome.
+This is usable, but very unstable right now[0]. The main development
+location[1], command-line interface, wire format, and project name may
+yet change completely. Bug reports and patches are always welcome.
 
 Any of the following will crash waypipe:
 
 * Different local/client and remote/server versions
-* Applications using unexpected protocols that pass file descriptors
 * Differing byte orders
+* Applications using unexpected protocols that pass file descriptors; file
+  bug reports for these
 
 [0] [https://mstoeckl.com/notes/gsoc/blog.html](https://mstoeckl.com/notes/gsoc/blog.html)
 [1] [https://gitlab.freedesktop.org/mstoeckl/waypipe/](https://gitlab.freedesktop.org/mstoeckl/waypipe/)
