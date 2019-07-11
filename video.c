@@ -235,7 +235,7 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd,
 {
 	VADisplay vadisp = rd->av_vadisplay;
 
-	unsigned long buffer_val = (unsigned long)sfd->fd_local;
+	uintptr_t buffer_val = (uintptr_t)sfd->fd_local;
 	uint32_t va_fourcc = drm_to_va_fourcc(sfd->dmabuf_info.format);
 	if (va_fourcc == 0) {
 		wp_error("Could not convert DRM format %x to VA fourcc",
@@ -458,6 +458,24 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	}
 }
 
+static bool pad_hardware_size(
+		int width, int height, int *new_width, int *new_height)
+{
+	/* VAAPI drivers often impose additional alignment restrictions; for
+	 * example, requiring that width be 16-aligned, or that tiled buffers be
+	 * 128-aligned. See also intel-vaapi-driver, i965_drv_video.c,
+	 * i965_suface_external_memory() [sic] ; */
+	*new_width = align(width, 16);
+	*new_height = align(height, 16);
+	if (width % 16 != 0) {
+		/* Something goes wrong with VAAPI/buffer state when the
+		 * width (or stride?) is not a multiple of 16, and GEM_MMAP
+		 * ioctls start failing */
+		return false;
+	}
+	return true;
+}
+
 int init_hwcontext(struct render_data *rd)
 {
 	if (rd->av_disabled) {
@@ -605,12 +623,14 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	}
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	configure_low_latency_enc_context(ctx, false);
-	/* see i965_drv_video.c, i965_suface_external_memory() [sic] ; to
-	 * map a frame, its dimensions must already be aligned. Tiling modes
-	 * have even stronger alignment restrictions */
-	ctx->width = sfd->dmabuf_info.width;   // - sfd->dmabuf_info.width % 16;
-	ctx->height = sfd->dmabuf_info.height; // - sfd->dmabuf_info.height %
-					       // 16;
+	if (!pad_hardware_size((int)sfd->dmabuf_info.width,
+			    (int)sfd->dmabuf_info.height, &ctx->width,
+			    &ctx->height)) {
+		wp_error("Video dimensions (WxH = %dx%d) not alignable to use hardware video encoding",
+				sfd->dmabuf_info.width,
+				sfd->dmabuf_info.height);
+		goto fail_alignment;
+	}
 
 	AVHWFramesConstraints *constraints =
 			av_hwdevice_get_hwframe_constraints(
@@ -746,6 +766,7 @@ fail_hwframe_init:
 	av_buffer_unref(&frame_ref);
 fail_frameref:
 fail_hwframe_constraints:
+fail_alignment:
 	avcodec_free_context(&ctx);
 
 	return -1;
@@ -884,19 +905,28 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 		wp_error("Failed to allocate context");
 	}
 
-	/* set context dimensions */
-	pad_video_mirror_size(sfd->dmabuf_info.width, sfd->dmabuf_info.height,
-			sfd->dmabuf_info.strides[0], &ctx->width, &ctx->height,
-			NULL);
-	ctx->pix_fmt = videofmt;
 	ctx->delay = 0;
 	ctx->thread_count = 1;
+	if (has_hw) {
+		/* If alignment permits, use hardware decoding */
+		has_hw = pad_hardware_size((int)sfd->dmabuf_info.width,
+				(int)sfd->dmabuf_info.height, &ctx->width,
+				&ctx->height);
+	}
+
 	if (has_hw) {
 		ctx->hw_device_ctx = av_buffer_ref(rd->av_hwdevice_ref);
 		if (!ctx->hw_device_ctx) {
 			wp_error("Failed to reference hardware device context");
 		}
 		ctx->get_format = get_decode_format;
+	} else {
+		ctx->pix_fmt = videofmt;
+		/* set context dimensions */
+		pad_video_mirror_size(sfd->dmabuf_info.width,
+				sfd->dmabuf_info.height,
+				sfd->dmabuf_info.strides[0], &ctx->width,
+				&ctx->height, NULL);
 	}
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
