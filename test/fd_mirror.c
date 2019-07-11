@@ -233,7 +233,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 		int (*update)(int fd, struct gbm_bo *bo, size_t sz, int seqno),
 		enum compression_mode comp_mode, int n_src_threads,
 		int n_dst_threads, struct render_data *rd,
-		struct dmabuf_slice_data *slice_data)
+		const struct dmabuf_slice_data *slice_data)
 {
 	struct fd_translation_map src_map;
 	setup_translation_map(&src_map, false, comp_mode, n_src_threads);
@@ -326,13 +326,19 @@ int main(int argc, char **argv)
 			.drm_fd = -1,
 			.dev = NULL,
 			.disabled = false,
+			.av_disabled = true,
+			.av_hwdevice_ref = NULL,
+			.av_drmdevice_ref = NULL,
+			.av_vadisplay = NULL,
+			.av_copy_config = 0,
 	};
 	bool has_dmabuf = TEST_2CPP_FORMAT != 0;
 	if (has_dmabuf && init_render_data(&rd) == -1) {
 		has_dmabuf = false;
 	}
 
-	struct dmabuf_slice_data slice_data = {.width = (uint32_t)test_width,
+	const struct dmabuf_slice_data slice_data = {
+			.width = (uint32_t)test_width,
 			.height = (uint32_t)test_height,
 			.format = TEST_2CPP_FORMAT,
 			.num_planes = 1,

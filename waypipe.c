@@ -154,7 +154,7 @@ static void log_handler(const char *file, int line, enum log_level level,
 	msg[nwri] = 0;
 
 	// single short writes are atomic for pipes, at least
-	write(STDERR_FILENO, msg, (size_t)nwri);
+	(void)write(STDERR_FILENO, msg, (size_t)nwri);
 }
 
 /* produces a random token with a low accidental collision probability */

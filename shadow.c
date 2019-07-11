@@ -493,7 +493,7 @@ static void uncompress_buffer(struct fd_translation_map *map, size_t isize,
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, fdcat_t type,
-		size_t file_sz, struct dmabuf_slice_data *info)
+		size_t file_sz, const struct dmabuf_slice_data *info)
 {
 	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
 	if (sfd) {

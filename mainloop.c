@@ -971,6 +971,10 @@ int main_interface_loop(int chanfd, int progfd,
 			.disabled = config->no_gpu,
 			.av_disabled = config->no_gpu ||
 				       !config->prefer_hwvideo,
+			.av_hwdevice_ref = NULL,
+			.av_drmdevice_ref = NULL,
+			.av_vadisplay = NULL,
+			.av_copy_config = 0,
 	};
 	setup_translation_map(&g.map, display_side, config->compression,
 			config->n_worker_threads);

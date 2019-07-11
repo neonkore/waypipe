@@ -72,7 +72,7 @@ static void atomic_logger(const char *file, int line, enum log_level level,
 	msg[nwri++] = '\n';
 	msg[nwri] = 0;
 
-	write(STDOUT_FILENO, msg, (size_t)nwri);
+	(void)write(STDOUT_FILENO, msg, (size_t)nwri);
 	(void)level;
 }
 
@@ -103,7 +103,9 @@ int main(int argc, char **argv)
 	}
 	lseek(fd, 0, SEEK_SET);
 	char *buf = malloc(len);
-	read(fd, buf, len);
+	if (read(fd, buf, len) == -1) {
+		return EXIT_FAILURE;
+	}
 	close(fd);
 	printf("Loaded %ld bytes\n", len);
 

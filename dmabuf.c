@@ -36,7 +36,7 @@ int init_render_data(struct render_data *data)
 }
 void cleanup_render_data(struct render_data *data) { (void)data; }
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		struct dmabuf_slice_data *info)
+		const struct dmabuf_slice_data *info)
 {
 	(void)rd;
 	(void)fd;
@@ -58,7 +58,7 @@ int get_unique_dmabuf_handle(
 	return -1;
 }
 struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
-		struct dmabuf_slice_data *info)
+		const struct dmabuf_slice_data *info)
 {
 	(void)rd;
 	(void)size;
@@ -177,7 +177,7 @@ static long get_dmabuf_fd_size(int fd)
 }
 
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		struct dmabuf_slice_data *info)
+		const struct dmabuf_slice_data *info)
 {
 	ssize_t endp = get_dmabuf_fd_size(fd);
 	if (endp == -1) {
@@ -269,7 +269,7 @@ int get_unique_dmabuf_handle(
 }
 
 struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
-		struct dmabuf_slice_data *info)
+		const struct dmabuf_slice_data *info)
 {
 	struct gbm_bo *bo;
 	if (!info || info->num_planes == 0) {
