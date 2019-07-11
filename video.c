@@ -211,14 +211,8 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd)
 	unsigned long buffer_val = (unsigned long)sfd->fd_local;
 
 	VASurfaceAttribExternalBuffers buffer_desc;
-	/* so, we create a vaSurface from the existing buffer
-	 * structure, hence won't need to deallocate at all. All
-	 * additional surfaces written into will also be DMABUF
-	 * surfaces; we guarantee disjointness by the client only
-	 * updating a surface after release */
 	buffer_desc.num_buffers = 1;
 	buffer_desc.buffers = &buffer_val;
-	/* only very few surface types supported */
 	buffer_desc.pixel_format = VA_FOURCC_BGRX;
 	buffer_desc.flags = 0;
 	buffer_desc.width = sfd->video_context->width;
@@ -410,7 +404,7 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	 * be efficient anyway.
 	 *
 	 * Hopefully libswscale doesn't add sanity checks for stride vs.
-	 *width...
+	 * width...
 	 **/
 	int m = 2;
 	int nwidth = align(width, m);
@@ -520,8 +514,7 @@ void cleanup_hwcontext(struct render_data *rd)
 static void configure_low_latency_enc_context(
 		struct AVCodecContext *ctx, bool sw)
 {
-	// "time" is only meaningful in terms of the frames
-	// provided
+	// "time" is only meaningful in terms of the frames provided
 	ctx->time_base = (AVRational){1, 25};
 	ctx->framerate = (AVRational){25, 1};
 
@@ -750,12 +743,6 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 		return;
 	}
 
-	// Try to set up a video encoding and a video decoding
-	// stream with AVCodec, although transmissions in each
-	// direction are relatively independent. TODO: use
-	// hardware support only if available.
-
-	/* note: "libx264rgb" should, if compiled in, support RGB directly */
 	struct AVCodec *codec = avcodec_find_encoder_by_name(VIDEO_SW_ENCODER);
 	if (!codec) {
 		wp_error("Failed to find encoder for h264");
@@ -771,13 +758,6 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 			NULL);
 	ctx->pix_fmt = videofmt;
 	configure_low_latency_enc_context(ctx, true);
-
-	bool near_perfect = false;
-	if (near_perfect && av_opt_set(ctx->priv_data, "crf", "0", 0) != 0) {
-		wp_error("Failed to set x264 crf");
-	}
-
-	// option: crf = 0
 
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
@@ -825,18 +805,16 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 static enum AVPixelFormat get_decode_format(
 		AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts)
 {
-	struct shadow_fd *sfd = (struct shadow_fd *)ctx->opaque;
-	(void)sfd;
-
 	(void)ctx;
 	for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE;
 			p++) {
-		/* Prefer VAAPI output; YUV420P is the typical software
-		 * option */
+		/* Prefer VAAPI output, if available. */
 		if (*p == AV_PIX_FMT_VAAPI) {
 			return AV_PIX_FMT_VAAPI;
 		}
 	}
+	/* YUV420P is the typical software option, but this function is only
+	 * called when VAAPI is already available */
 	return AV_PIX_FMT_NONE;
 }
 
@@ -850,7 +828,7 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 				sfd->dmabuf_info.format);
 		return;
 	}
-	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P /*AV_PIX_FMT_YUV420P*/;
+	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
 
 	if (sws_isSupportedInput(avpixfmt) == 0) {
 		wp_error("source pixel format %x not supported", avpixfmt);
@@ -953,8 +931,6 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		return;
 	} else if (recvstat == AVERROR(EAGAIN)) {
 		wp_error("Packet needs more input");
-		// Clearly, the solution is to resend the
-		// original frame ? but _lag_
 	}
 	if (recvstat == 0) {
 		struct AVPacket *pkt = sfd->video_packet;
@@ -988,7 +964,6 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		struct transfer *tf = setup_single_block_transfer(transfers,
 				blocks, sizeof(struct dmabuf_slice_data),
 				(const char *)&sfd->dmabuf_info);
-		// Q: use a subtype 'FDC_VIDEODMABUF ?'
 		tf->type = sfd->type;
 		tf->obj_id = sfd->remote_id;
 		tf->special.block_meta = (uint32_t)sfd->buffer_size;
@@ -1011,7 +986,7 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 	frame->width = ctx->width;
 	frame->height = ctx->height;
 	frame->linesize[0] = sfd->dmabuf_info.strides[0];
-	// We unpack directly one mem_mirror
+	// We unpack directly mem_mirror
 	frame->data[0] = (uint8_t *)sfd->mem_mirror;
 	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
 		frame->data[i] = NULL;
