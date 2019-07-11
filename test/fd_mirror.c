@@ -297,6 +297,22 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	return pass;
 }
 
+/* to avoid warnings when the driver dmabuf size constraints require
+ * significant alignment, the width/height are already 64 aligned */
+static const size_t test_width = 256;
+static const size_t test_height = 320;
+static const size_t test_cpp = 2;
+static const size_t test_size = test_width * test_height * test_cpp;
+static const struct dmabuf_slice_data slice_data = {
+		.width = (uint32_t)test_width,
+		.height = (uint32_t)test_height,
+		.format = TEST_2CPP_FORMAT,
+		.num_planes = 1,
+		.modifier = 0,
+		.offsets = {0, 0, 0, 0},
+		.strides = {(uint32_t)(test_width * test_cpp), 0, 0, 0},
+		.using_planes = {true, false, false, false}};
+
 log_handler_func_t log_funcs[2] = {NULL, test_log_handler};
 int main(int argc, char **argv)
 {
@@ -309,43 +325,19 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	/* to avoid warnings when the driver dmabuf size constraints require
-	 * significant alignment, the width/height are already 64 aligned */
-	size_t test_width = 256;
-	size_t test_height = 320;
-	size_t test_cpp = 2;
-
-	size_t test_size = test_width * test_height * test_cpp;
 	uint8_t *test_pattern = malloc(test_size);
 	for (size_t i = 0; i < test_size; i++) {
 		test_pattern[i] = (uint8_t)i;
 	}
 
-	struct render_data rd = {
-			.drm_node_path = NULL,
-			.drm_fd = -1,
-			.dev = NULL,
-			.disabled = false,
-			.av_disabled = true,
-			.av_hwdevice_ref = NULL,
-			.av_drmdevice_ref = NULL,
-			.av_vadisplay = NULL,
-			.av_copy_config = 0,
-	};
+	struct render_data *rd = calloc(1, sizeof(struct render_data));
+	rd->drm_fd = -1;
+	rd->av_disabled = true;
+
 	bool has_dmabuf = TEST_2CPP_FORMAT != 0;
-	if (has_dmabuf && init_render_data(&rd) == -1) {
+	if (has_dmabuf && init_render_data(rd) == -1) {
 		has_dmabuf = false;
 	}
-
-	const struct dmabuf_slice_data slice_data = {
-			.width = (uint32_t)test_width,
-			.height = (uint32_t)test_height,
-			.format = TEST_2CPP_FORMAT,
-			.num_planes = 1,
-			.modifier = 0,
-			.offsets = {0, 0, 0, 0},
-			.strides = {(uint32_t)(test_width * test_cpp), 0, 0, 0},
-			.using_planes = {true, false, false, false}};
 
 	bool all_success = true;
 	srand(0);
@@ -371,7 +363,7 @@ int main(int argc, char **argv)
 
 				bool pass = test_mirror(file_fd, test_size,
 						update_file, comp_modes[c], gt,
-						rt, &rd, &slice_data);
+						rt, rd, &slice_data);
 
 				printf("  FILE comp=%d src_thread=%d dst_thread=%d, %s\n",
 						(int)c, gt, rt,
@@ -379,12 +371,13 @@ int main(int argc, char **argv)
 				all_success &= pass;
 
 				if (has_dmabuf) {
-					struct gbm_bo *bo = make_dmabuf(&rd,
+					struct gbm_bo *bo = make_dmabuf(rd,
 							test_size, &slice_data);
 					if (!bo) {
 						has_dmabuf = false;
 						continue;
 					}
+
 					void *map_handle = NULL;
 					void *data = map_dmabuf(
 							bo, true, &map_handle);
@@ -394,7 +387,7 @@ int main(int argc, char **argv)
 						continue;
 					}
 					memcpy(data, test_pattern, test_size);
-					unmap_dmabuf(bo, &map_handle);
+					unmap_dmabuf(bo, map_handle);
 
 					int dmafd = export_dmabuf(bo);
 					if (dmafd == -1) {
@@ -407,7 +400,7 @@ int main(int argc, char **argv)
 							test_size,
 							update_dmabuf,
 							comp_modes[c], gt, rt,
-							&rd, &slice_data);
+							rd, &slice_data);
 
 					printf("DMABUF comp=%d src_thread=%d dst_thread=%d, %s\n",
 							(int)c, gt, rt,
@@ -419,7 +412,8 @@ int main(int argc, char **argv)
 		}
 	}
 
-	cleanup_render_data(&rd);
+	cleanup_render_data(rd);
+	free(rd);
 	free(test_pattern);
 
 	printf("All pass: %c\n", all_success ? 'Y' : 'n');
