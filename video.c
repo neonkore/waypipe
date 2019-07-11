@@ -195,7 +195,7 @@ static void video_log_callback(
 void setup_video_logging()
 {
 	if (log_funcs[WP_DEBUG]) {
-		av_log_set_level(AV_LOG_VERBOSE);
+		av_log_set_level(AV_LOG_INFO);
 	} else {
 		av_log_set_level(AV_LOG_WARNING);
 	}
@@ -204,19 +204,53 @@ void setup_video_logging()
 
 #ifdef HAS_VAAPI
 
-static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd)
+static uint32_t drm_to_va_fourcc(uint32_t drm_fourcc)
+{
+	switch (drm_fourcc) {
+	/* At the moment, Intel/AMD VAAPI implementations only support
+	 * various YUY configurations and RGB32. (No other RGB variants) */
+	case DRM_FORMAT_XRGB8888:
+		return VA_FOURCC_BGRX;
+	case DRM_FORMAT_XBGR8888:
+		return VA_FOURCC_RGBX;
+	case DRM_FORMAT_RGBX8888:
+		return VA_FOURCC_XBGR;
+	case DRM_FORMAT_BGRX8888:
+		return VA_FOURCC_XRGB;
+	}
+	return 0;
+}
+static uint32_t va_fourcc_to_rt(uint32_t va_fourcc)
+{
+	switch (va_fourcc) {
+	case VA_FOURCC_BGRX:
+	case VA_FOURCC_RGBX:
+		return VA_RT_FORMAT_RGB32;
+	}
+	return 0;
+}
+
+static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd,
+		uint32_t width, uint32_t height)
 {
 	VADisplay vadisp = rd->av_vadisplay;
 
 	unsigned long buffer_val = (unsigned long)sfd->fd_local;
+	uint32_t va_fourcc = drm_to_va_fourcc(sfd->dmabuf_info.format);
+	if (va_fourcc == 0) {
+		wp_error("Could not convert DRM format %x to VA fourcc",
+				sfd->dmabuf_info.format);
+		return -1;
+	}
+	uint32_t rt_format = va_fourcc_to_rt(va_fourcc);
 
 	VASurfaceAttribExternalBuffers buffer_desc;
 	buffer_desc.num_buffers = 1;
 	buffer_desc.buffers = &buffer_val;
-	buffer_desc.pixel_format = VA_FOURCC_BGRX;
+	buffer_desc.pixel_format = va_fourcc;
 	buffer_desc.flags = 0;
-	buffer_desc.width = sfd->video_context->width;
-	buffer_desc.height = sfd->video_context->height;
+	buffer_desc.width = width;
+	buffer_desc.height = height;
 	buffer_desc.data_size = sfd->buffer_size;
 	buffer_desc.num_planes = 1;
 	buffer_desc.offsets[0] = sfd->dmabuf_info.offsets[0];
@@ -226,7 +260,7 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd)
 	attribs[0].type = VASurfaceAttribPixelFormat;
 	attribs[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
 	attribs[0].value.type = VAGenericValueTypeInteger;
-	attribs[0].value.value.i = VA_FOURCC_RGBX;
+	attribs[0].value.value.i = 0;
 	attribs[1].type = VASurfaceAttribMemoryType;
 	attribs[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
 	attribs[1].value.type = VAGenericValueTypeInteger;
@@ -240,9 +274,9 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd)
 	sfd->video_va_context = 0;
 	sfd->video_va_pipeline = 0;
 
-	VAStatus stat = vaCreateSurfaces(vadisp, VA_RT_FORMAT_RGB32,
-			buffer_desc.width, buffer_desc.height,
-			&sfd->video_va_surface, 1, attribs, 3);
+	VAStatus stat = vaCreateSurfaces(vadisp, rt_format, buffer_desc.width,
+			buffer_desc.height, &sfd->video_va_surface, 1, attribs,
+			3);
 	if (stat != VA_STATUS_SUCCESS) {
 		wp_error("Create surface failed: %s", vaErrorStr(stat));
 		sfd->video_va_surface = 0;
@@ -574,8 +608,9 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	/* see i965_drv_video.c, i965_suface_external_memory() [sic] ; to
 	 * map a frame, its dimensions must already be aligned. Tiling modes
 	 * have even stronger alignment restrictions */
-	ctx->width = sfd->dmabuf_info.width - sfd->dmabuf_info.width % 16;
-	ctx->height = sfd->dmabuf_info.height - sfd->dmabuf_info.height % 16;
+	ctx->width = sfd->dmabuf_info.width;   // - sfd->dmabuf_info.width % 16;
+	ctx->height = sfd->dmabuf_info.height; // - sfd->dmabuf_info.height %
+					       // 16;
 
 	AVHWFramesConstraints *constraints =
 			av_hwdevice_get_hwframe_constraints(
@@ -630,7 +665,7 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	/* todo: multiplanar support */
 	framedesc->nb_objects = 1;
 	framedesc->objects[0].format_modifier = sfd->dmabuf_info.modifier;
-	framedesc->objects[0].fd = dup(sfd->fd_local);
+	framedesc->objects[0].fd = sfd->fd_local;
 	framedesc->objects[0].size = sfd->buffer_size;
 	framedesc->nb_layers = 1;
 	framedesc->layers[0].format = sfd->dmabuf_info.format;
@@ -876,6 +911,14 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 		wp_error("Could not allocate video packet");
 	}
 
+	if (ctx->hw_device_ctx) {
+#ifdef HAS_VAAPI
+		if (rd->av_vadisplay) {
+			setup_vaapi_pipeline(sfd, rd, ctx->width, ctx->height);
+		}
+#endif
+	}
+
 	sfd->video_yuv_frame = yuv_frame;
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
@@ -1024,18 +1067,12 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 		if (recvstat == 0) {
 			struct AVFrame *cpu_frame = sfd->video_yuv_frame;
 #if HAS_VAAPI
-			if (rd->av_vadisplay &&
+			if (sfd->video_va_surface &&
 					sfd->video_yuv_frame->format ==
 							AV_PIX_FMT_VAAPI) {
-				if (!sfd->video_va_surface) {
-					setup_vaapi_pipeline(sfd, rd);
-				}
-				/* if setup successful, run conversion */
-				if (sfd->video_va_surface) {
-					run_vaapi_conversion(sfd, rd,
-							sfd->video_yuv_frame);
-					continue;
-				}
+				run_vaapi_conversion(
+						sfd, rd, sfd->video_yuv_frame);
+				continue;
 			}
 #else
 			(void)rd;
