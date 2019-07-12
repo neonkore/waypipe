@@ -151,14 +151,19 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 		return AV_PIX_FMT_NV12;
 	case DRM_FORMAT_NV21:
 		return AV_PIX_FMT_NV21;
+	case DRM_FORMAT_YVU410:
 	case DRM_FORMAT_YUV410:
 		return AV_PIX_FMT_YUV410P;
+	case DRM_FORMAT_YVU411:
 	case DRM_FORMAT_YUV411:
 		return AV_PIX_FMT_YUV411P;
+	case DRM_FORMAT_YVU420:
 	case DRM_FORMAT_YUV420:
 		return AV_PIX_FMT_YUV420P;
+	case DRM_FORMAT_YVU422:
 	case DRM_FORMAT_YUV422:
 		return AV_PIX_FMT_YUV422P;
+	case DRM_FORMAT_YVU444:
 	case DRM_FORMAT_YUV444:
 		return AV_PIX_FMT_YUV444P;
 
@@ -174,6 +179,18 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 	default:
 		return AV_PIX_FMT_NONE;
 	}
+}
+static bool needs_vu_flip(uint32_t drm_format)
+{
+	switch (drm_format) {
+	case DRM_FORMAT_YVU410:
+	case DRM_FORMAT_YVU411:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_YVU422:
+	case DRM_FORMAT_YVU444:
+		return true;
+	}
+	return false;
 }
 
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
@@ -227,7 +244,8 @@ static uint32_t drm_to_va_fourcc(uint32_t drm_fourcc)
 {
 	switch (drm_fourcc) {
 	/* At the moment, Intel/AMD VAAPI implementations only support
-	 * various YUY configurations and RGB32. (No other RGB variants) */
+	 * various YUY configurations and RGB32. (No other RGB variants).
+	 * See also libavutil / hwcontext_vaapi.c / vaapi_drm_format_map[] */
 	case DRM_FORMAT_XRGB8888:
 		return VA_FOURCC_BGRX;
 	case DRM_FORMAT_XBGR8888:
@@ -793,9 +811,15 @@ fail_alignment:
 static void setup_avframe_entries(struct AVFrame *frame,
 		struct dmabuf_slice_data *info, uint8_t *buffer)
 {
+	bool vu_flip = needs_vu_flip(info->format);
 	for (int i = 0; i < (int)info->num_planes; i++) {
-		frame->linesize[i] = (int)info->strides[i];
-		frame->data[i] = buffer + info->offsets[i];
+		int j = i;
+		if (vu_flip && i == 1)
+			j = 2;
+		if (vu_flip && i == 2)
+			j = 1;
+		frame->linesize[i] = (int)info->strides[j];
+		frame->data[i] = buffer + info->offsets[j];
 	}
 	for (int i = (int)info->num_planes; i < AV_NUM_DATA_POINTERS; i++) {
 		frame->data[i] = NULL;
