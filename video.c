@@ -110,6 +110,9 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 	/* The avpixel formats are specified with reversed endianness relative
 	 * to DRM formats */
 	switch (format) {
+	case 0:
+		return AV_PIX_FMT_BGR0;
+
 	case DRM_FORMAT_C8:
 		/* indexed */
 		return AV_PIX_FMT_NONE;
@@ -144,17 +147,33 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 	case DRM_FORMAT_XBGR2101010:
 		return AV_PIX_FMT_NONE;
 
+	case DRM_FORMAT_NV12:
+		return AV_PIX_FMT_NV12;
+	case DRM_FORMAT_NV21:
+		return AV_PIX_FMT_NV21;
+	case DRM_FORMAT_YUV410:
+		return AV_PIX_FMT_YUV410P;
+	case DRM_FORMAT_YUV411:
+		return AV_PIX_FMT_YUV411P;
+	case DRM_FORMAT_YUV420:
+		return AV_PIX_FMT_YUV420P;
+	case DRM_FORMAT_YUV422:
+		return AV_PIX_FMT_YUV422P;
+	case DRM_FORMAT_YUV444:
+		return AV_PIX_FMT_YUV444P;
+
+	case DRM_FORMAT_YUYV:
+		return AV_PIX_FMT_NONE;
+	case DRM_FORMAT_YVYU:
+		return AV_PIX_FMT_UYVY422;
+	case DRM_FORMAT_UYVY:
+		return AV_PIX_FMT_YVYU422;
+	case DRM_FORMAT_VYUY:
+		return AV_PIX_FMT_YUYV422;
+
 	default:
 		return AV_PIX_FMT_NONE;
 	}
-}
-
-static enum AVPixelFormat shm_to_av(uint32_t format)
-{
-	if (format == 0) {
-		return AV_PIX_FMT_BGR0;
-	}
-	return drm_to_av(format);
 }
 
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
@@ -217,6 +236,8 @@ static uint32_t drm_to_va_fourcc(uint32_t drm_fourcc)
 		return VA_FOURCC_XBGR;
 	case DRM_FORMAT_BGRX8888:
 		return VA_FOURCC_XRGB;
+	case DRM_FORMAT_NV12:
+		return VA_FOURCC_NV12;
 	}
 	return 0;
 }
@@ -226,6 +247,8 @@ static uint32_t va_fourcc_to_rt(uint32_t va_fourcc)
 	case VA_FOURCC_BGRX:
 	case VA_FOURCC_RGBX:
 		return VA_RT_FORMAT_RGB32;
+	case VA_FOURCC_NV12:
+		return VA_RT_FORMAT_YUV420;
 	}
 	return 0;
 }
@@ -252,9 +275,11 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd,
 	buffer_desc.width = width;
 	buffer_desc.height = height;
 	buffer_desc.data_size = sfd->buffer_size;
-	buffer_desc.num_planes = 1;
-	buffer_desc.offsets[0] = sfd->dmabuf_info.offsets[0];
-	buffer_desc.pitches[0] = sfd->dmabuf_info.strides[0];
+	buffer_desc.num_planes = (int)sfd->dmabuf_info.num_planes;
+	for (int i = 0; i < (int)sfd->dmabuf_info.num_planes; i++) {
+		buffer_desc.offsets[i] = sfd->dmabuf_info.offsets[i];
+		buffer_desc.pitches[i] = sfd->dmabuf_info.strides[i];
+	}
 
 	VASurfaceAttrib attribs[3];
 	attribs[0].type = VASurfaceAttribPixelFormat;
@@ -602,16 +627,6 @@ static void configure_low_latency_enc_context(
 
 static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 {
-	int nplanes = av_pix_fmt_count_planes(
-			drm_to_av(sfd->dmabuf_info.format));
-	if (nplanes != 1) {
-		wp_error("Equivalent AV format %s has too many (%d) planes",
-				av_get_pix_fmt_name(drm_to_av(
-						sfd->dmabuf_info.format)),
-				nplanes);
-		return -1;
-	}
-
 	/* NV12 is the preferred format for Intel VAAPI; see also
 	 * intel-vaapi-driver/src/i965_drv_video.c . Packed formats like
 	 * YUV420P typically don't work. */
@@ -688,12 +703,15 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	framedesc->objects[0].fd = sfd->fd_local;
 	framedesc->objects[0].size = sfd->buffer_size;
 	framedesc->nb_layers = 1;
+	framedesc->layers[0].nb_planes = sfd->dmabuf_info.num_planes;
 	framedesc->layers[0].format = sfd->dmabuf_info.format;
-	framedesc->layers[0].planes[0].object_index = 0;
-	framedesc->layers[0].planes[0].offset = sfd->dmabuf_info.offsets[0];
-	framedesc->layers[0].planes[0].pitch = sfd->dmabuf_info.strides[0];
-	framedesc->layers[0].nb_planes = av_pix_fmt_count_planes(
-			drm_to_av(sfd->dmabuf_info.format));
+	for (int i = 0; i < (int)sfd->dmabuf_info.num_planes; i++) {
+		framedesc->layers[0].planes[i].object_index = 0;
+		framedesc->layers[0].planes[i].offset =
+				sfd->dmabuf_info.offsets[i];
+		framedesc->layers[0].planes[i].pitch =
+				sfd->dmabuf_info.strides[i];
+	}
 
 	AVFrame *local_frame = av_frame_alloc();
 	if (!local_frame) {
@@ -772,6 +790,18 @@ fail_alignment:
 	return -1;
 }
 
+static void setup_avframe_entries(struct AVFrame *frame,
+		struct dmabuf_slice_data *info, uint8_t *buffer)
+{
+	for (int i = 0; i < (int)info->num_planes; i++) {
+		frame->linesize[i] = (int)info->strides[i];
+		frame->data[i] = buffer + info->offsets[i];
+	}
+	for (int i = (int)info->num_planes; i < AV_NUM_DATA_POINTERS; i++) {
+		frame->data[i] = NULL;
+	}
+}
+
 void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	bool has_hw = init_hwcontext(rd) == 0;
@@ -781,7 +811,7 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 		return;
 	}
 
-	enum AVPixelFormat avpixfmt = shm_to_av(sfd->dmabuf_info.format);
+	enum AVPixelFormat avpixfmt = drm_to_av(sfd->dmabuf_info.format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat	for %x",
 				sfd->dmabuf_info.format);
@@ -825,11 +855,12 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 		wp_error("Could not allocate video frame");
 		return;
 	}
+	setup_avframe_entries(
+			frame, &sfd->dmabuf_info, (uint8_t *)sfd->mem_mirror);
 	frame->format = avpixfmt;
 	/* adopt padded sizes */
 	frame->width = ctx->width;
 	frame->height = ctx->height;
-	frame->linesize[0] = sfd->dmabuf_info.strides[0];
 
 	struct AVFrame *yuv_frame = av_frame_alloc();
 	yuv_frame->width = ctx->width;
@@ -878,7 +909,7 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	bool has_hw = init_hwcontext(rd) == 0;
 
-	enum AVPixelFormat avpixfmt = shm_to_av(sfd->dmabuf_info.format);
+	enum AVPixelFormat avpixfmt = drm_to_av(sfd->dmabuf_info.format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat for %x",
 				sfd->dmabuf_info.format);
@@ -973,11 +1004,6 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 		memcpy(sfd->mem_mirror, data, sfd->buffer_size);
 		unmap_dmabuf(sfd->dmabuf_bo, handle);
 
-		sfd->video_local_frame->data[0] = (uint8_t *)sfd->mem_mirror;
-		for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-			sfd->video_local_frame->data[i] = NULL;
-		}
-
 		if (sws_scale(sfd->video_color_context,
 				    (const uint8_t *const *)sfd
 						    ->video_local_frame->data,
@@ -1048,7 +1074,7 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 	(void)sfd;
 	struct AVCodecContext *ctx = sfd->video_context;
 
-	enum AVPixelFormat avpixfmt = shm_to_av(sfd->dmabuf_info.format);
+	enum AVPixelFormat avpixfmt = drm_to_av(sfd->dmabuf_info.format);
 
 	struct AVFrame *frame = av_frame_alloc();
 	if (!frame) {
@@ -1058,12 +1084,8 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 	/* adopt padded sizes */
 	frame->width = ctx->width;
 	frame->height = ctx->height;
-	frame->linesize[0] = sfd->dmabuf_info.strides[0];
-	// We unpack directly mem_mirror
-	frame->data[0] = (uint8_t *)sfd->mem_mirror;
-	for (int i = 1; i < AV_NUM_DATA_POINTERS; i++) {
-		frame->data[i] = NULL;
-	}
+	setup_avframe_entries(
+			frame, &sfd->dmabuf_info, (uint8_t *)sfd->mem_mirror);
 
 	struct SwsContext *sws = sws_getContext(cpu_frame->width,
 			cpu_frame->height, cpu_frame->format, frame->width,

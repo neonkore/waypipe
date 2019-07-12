@@ -193,6 +193,7 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		// fd
 		data.modifier = info->modifier;
 		data.num_fds = 0;
+		uint32_t simple_format = 0;
 		for (unsigned int i = 0; i < info->num_planes; i++) {
 			if (info->using_planes[i]) {
 				data.fds[data.num_fds] = fd;
@@ -201,11 +202,18 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 				data.offsets[data.num_fds] =
 						(int)info->offsets[i];
 				data.num_fds++;
+				if (!simple_format) {
+					simple_format = dmabuf_get_simple_format_for_plane(
+							info->format, i);
+				}
 			}
+		}
+		if (!simple_format) {
+			simple_format = info->format;
 		}
 		data.width = info->width;
 		data.height = info->height;
-		data.format = info->format;
+		data.format = simple_format;
 	} else {
 		data.num_fds = 1;
 		data.fds[0] = fd;
@@ -286,8 +294,8 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		}
 	} else {
 		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
-		// assuming the format is a very standard one which can be
-		// created by gbm_bo;
+		uint32_t simple_format = dmabuf_get_simple_format_for_plane(
+				info->format, 0);
 
 		/* Whether just size and modifiers suffice to replicate
 		 * a surface is driver dependent, and requires actual testing
@@ -304,7 +312,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		 * the size of the buffer contents.
 		 */
 		bo = gbm_bo_create_with_modifiers(rd->dev, info->width,
-				info->height, info->format, modifiers, 2);
+				info->height, simple_format, modifiers, 2);
 		if (!bo) {
 			wp_error("Failed to make dmabuf (with modifier %lx): %s",
 					info->modifier, strerror(errno));
@@ -330,7 +338,13 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 				gbm_bo_destroy(bo);
 				bo = gbm_bo_create_with_modifiers(rd->dev,
 						info->width, nheight,
-						info->format, modifiers, 2);
+						simple_format, modifiers, 2);
+				if (!bo) {
+					wp_error("Failed to make extra-sized dmabuf (with modifier %lx): %s",
+							info->modifier,
+							strerror(errno));
+					return NULL;
+				}
 				int nfd = gbm_bo_get_fd(bo);
 				long nsize = get_dmabuf_fd_size(nfd);
 				close(nfd);
@@ -411,14 +425,19 @@ static const struct multiplanar_info plane_table[] = {
 
 uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 {
+	const uint32_t by_cpp[] = {0, GBM_FORMAT_R8, GBM_FORMAT_GR88,
+			GBM_FORMAT_RGB888, GBM_BO_FORMAT_ARGB8888};
 	for (int i = 0; plane_table[i].format; i++) {
 		if (plane_table[i].format == format) {
 			int cpp = plane_table[i].planes[plane].cpp;
-			const uint32_t by_cpp[] = {0, GBM_FORMAT_R8,
-					GBM_FORMAT_GR88, GBM_FORMAT_RGB888,
-					GBM_BO_FORMAT_ARGB8888};
 			return by_cpp[cpp];
 		}
+	}
+	if (format == GBM_FORMAT_YUYV || format == GBM_FORMAT_YVYU ||
+			format == GBM_FORMAT_UYVY ||
+			format == GBM_FORMAT_VYUY ||
+			format == GBM_FORMAT_AYUV) {
+		return by_cpp[4];
 	}
 	return format;
 }

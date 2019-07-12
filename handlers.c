@@ -1216,6 +1216,13 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 					params->add[1].offset,
 					params->add[2].offset,
 					params->add[3].offset}};
+	bool all_same_fds = true;
+	for (int i = 1; i < params->nplanes; i++) {
+		if (params->add[i].fd != params->add[0].fd) {
+			all_same_fds = false;
+		}
+	}
+
 	for (int i = 0; i < params->nplanes; i++) {
 		memset(info.using_planes, 0, sizeof(info.using_planes));
 		for (int k = 0; k < min(params->nplanes, 4); k++) {
@@ -1224,9 +1231,6 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 				info.modifier = params->add[k].modifier;
 			}
 		}
-		/* replace the format with something the driver can
-		 * probably handle */
-		info.format = dmabuf_get_simple_format_for_plane(format, i);
 
 #if !defined(__DragonFly__) && !defined(__FreeBSD__)
 		size_t fdsz = 0;
@@ -1240,10 +1244,9 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 
 		fdcat_t res_type = FDC_DMABUF;
 		if (ctx->g->config->video_if_possible) {
-			// TODO: multiplanar support
-			if (params->nplanes == 1 &&
-					video_supports_dmabuf_format(format,
-							info.modifier)) {
+			// TODO: multibuffer support
+			if (all_same_fds && video_supports_dmabuf_format(format,
+							    info.modifier)) {
 				res_type = ctx->on_display_side ? FDC_DMAVID_IW
 								: FDC_DMAVID_IR;
 			}
