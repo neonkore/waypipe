@@ -51,6 +51,12 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	(void)new_height;
 	(void)new_min_size;
 }
+int init_hwcontext(struct render_data *rd)
+{
+	(void)rd;
+	return -1;
+}
+void cleanup_hwcontext(struct render_data *rd) { (void)rd; }
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
 void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 {
@@ -62,21 +68,17 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	(void)sfd;
 	(void)rd;
 }
-void collect_video_from_mirror(struct shadow_fd *sfd,
-		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
-		bool first)
+void collect_video_from_mirror(
+		struct shadow_fd *sfd, struct transfer_data *transfers)
 {
 	(void)sfd;
 	(void)transfers;
-	(void)blocks;
-	(void)first;
 }
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
-		size_t size, const char *data)
+		const struct bytebuf *data)
 {
 	(void)rd;
 	(void)sfd;
-	(void)size;
 	(void)data;
 }
 
@@ -1014,9 +1016,8 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	sfd->video_color_context = NULL;
 }
 
-void collect_video_from_mirror(struct shadow_fd *sfd,
-		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
-		bool first)
+void collect_video_from_mirror(
+		struct shadow_fd *sfd, struct transfer_data *transfers)
 {
 	if (sfd->video_color_context) {
 		/* If using software encoding, need to convert to YUV */
@@ -1057,39 +1058,23 @@ void collect_video_from_mirror(struct shadow_fd *sfd,
 	}
 	if (recvstat == 0) {
 		struct AVPacket *pkt = sfd->video_packet;
-		buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
-				&transfers->size, (void **)&transfers->data);
-		buf_ensure_size(blocks->count + 1 + first,
-				sizeof(struct bytebuf), &blocks->size,
-				(void **)&blocks->data);
+		struct wmsg_basic *header =
+				calloc(1, sizeof(struct wmsg_basic));
+		header->size_and_type = transfer_header(
+				sizeof(struct wmsg_basic) + pkt->buf->size,
+				WMSG_SEND_DMAVID_PACKET);
+		header->remote_id = sfd->remote_id;
 
-		struct transfer *tf = &transfers->data[transfers->count++];
-		tf->type = sfd->type;
-		tf->obj_id = sfd->remote_id;
-		tf->special.block_meta = (uint32_t)sfd->buffer_size;
-		tf->nblocks = 1 + first;
-		tf->subtransfer_idx = blocks->count;
-		if (first) {
-			struct bytebuf *header = &blocks->data[blocks->count++];
-			header->size = sizeof(struct dmabuf_slice_data);
-			header->data = (char *)&sfd->dmabuf_info;
-		}
-		free(sfd->video_buffer);
-		sfd->video_buffer = (char *)malloc(align(pkt->buf->size, 8));
-		memcpy(sfd->video_buffer, pkt->buf->data,
-				(size_t)pkt->buf->size);
-		struct bytebuf *bb = &blocks->data[blocks->count++];
-		bb->size = (size_t)pkt->buf->size;
-		bb->data = (char *)sfd->video_buffer;
+		size_t padded_len = alignu(pkt->buf->size, 16);
+		uint8_t *data = malloc(padded_len);
+		memset(data + pkt->buf->size, 0, padded_len - pkt->buf->size);
+		memcpy(data, pkt->buf->data, pkt->buf->size);
+
+		transfer_add(transfers, sizeof(struct wmsg_basic), header,
+				true);
+		transfer_add(transfers, padded_len, data, true);
 
 		av_packet_unref(pkt);
-	} else if (first) {
-		struct transfer *tf = setup_single_block_transfer(transfers,
-				blocks, sizeof(struct dmabuf_slice_data),
-				(const char *)&sfd->dmabuf_info);
-		tf->type = sfd->type;
-		tf->obj_id = sfd->remote_id;
-		tf->special.block_meta = (uint32_t)sfd->buffer_size;
 	}
 }
 
@@ -1124,11 +1109,11 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 }
 
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
-		size_t size, const char *data)
+		const struct bytebuf *data)
 {
 	// padding, requires zerod overflow for read
-	sfd->video_packet->data = (uint8_t *)data;
-	sfd->video_packet->size = size;
+	sfd->video_packet->data = (uint8_t *)data->data;
+	sfd->video_packet->size = (int)data->size;
 
 	int sendstat = avcodec_send_packet(
 			sfd->video_context, sfd->video_packet);

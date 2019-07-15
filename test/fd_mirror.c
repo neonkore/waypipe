@@ -38,13 +38,13 @@
 #include <sys/mman.h>
 
 static const enum compression_mode comp_modes[] = {
+		COMP_NONE,
 #ifdef HAS_LZ4
 		COMP_LZ4,
 #endif
 #ifdef HAS_ZSTD
 		COMP_ZSTD,
 #endif
-		COMP_NONE,
 };
 
 #ifdef HAS_DMABUF
@@ -108,23 +108,23 @@ static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 	return (int)(end - start);
 }
 
-static void combine_transfer_blocks(struct bytebuf_stack *blocks)
+static struct bytebuf combine_transfer_blocks(struct transfer_data *td)
 {
 	size_t net_size = 0;
-	for (int i = 0; i < blocks->count; i++) {
-		net_size += blocks->data[i].size;
+	for (int i = td->start; i < td->end; i++) {
+		net_size += td->data[i].iov_len;
 	}
+
 	struct bytebuf ret_block;
 	ret_block.size = net_size;
 	ret_block.data = malloc(net_size);
 	size_t pos = 0;
-	for (int i = 0; i < blocks->count; i++) {
-		memcpy(ret_block.data + pos, blocks->data[i].data,
-				blocks->data[i].size);
-		pos += blocks->data[i].size;
+	for (int i = td->start; i < td->end; i++) {
+		memcpy(ret_block.data + pos, td->data[i].iov_base,
+				td->data[i].iov_len);
+		pos += td->data[i].iov_len;
 	}
-	blocks->data[0] = ret_block;
-	blocks->count = 1;
+	return ret_block;
 }
 
 static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
@@ -180,46 +180,62 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 	return pass;
 }
 
+static void cleanup_transfer(struct transfer_data *td)
+{
+
+	for (int i = td->start; i < td->end; i++) {
+		if (td->heap_allocated[i]) {
+			free(td->data[i].iov_base);
+		}
+	}
+	free(td->heap_allocated);
+	free(td->data);
+}
+
 static bool test_transfer(struct fd_translation_map *src_map,
 		struct fd_translation_map *dst_map, int rid, int ndiff,
 		struct render_data *render_data)
 {
-
-	struct transfer_stack transfers;
-	transfers.size = 1;
-	transfers.count = 0;
-	transfers.data = calloc(1, sizeof(struct transfer));
-	struct bytebuf_stack blocks;
-	blocks.size = 1;
-	blocks.count = 0;
-	blocks.data = calloc(1, sizeof(struct bytebuf));
+	struct transfer_data transfer_data;
+	memset(&transfer_data, 0, sizeof(struct transfer_data));
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
-	collect_update(src_map, src_shadow, &transfers, &blocks);
+	collect_update(src_map, src_shadow, &transfer_data);
 
 	if (ndiff == 0) {
-		free(transfers.data);
-		free(blocks.data);
-		if (transfers.count > 0) {
-			wp_error("Collecting updates gave a transfer when none was expected",
-					transfers.count);
+		long ns = 0;
+		for (int i = transfer_data.start; i < transfer_data.end; i++) {
+			ns += transfer_data.data[i].iov_len;
+		}
+		cleanup_transfer(&transfer_data);
+		if (transfer_data.end > 0) {
+			wp_error("Collecting updates gave a transfer (%ld bytes, %d blocks) when none was expected",
+					ns, transfer_data.end);
 			return false;
 		}
 		return true;
 	}
-	if (transfers.count != 1) {
+	if (transfer_data.end == 0) {
 		wp_error("Collecting updates gave a unexpected number (%d) of transfers",
-				transfers.count);
-		free(transfers.data);
-		free(blocks.data);
+				transfer_data.end);
+		cleanup_transfer(&transfer_data);
 		return false;
 	}
+	struct bytebuf res = combine_transfer_blocks(&transfer_data);
+	cleanup_transfer(&transfer_data);
 
-	combine_transfer_blocks(&blocks);
-	apply_update(dst_map, render_data, &transfers.data[0], &blocks.data[0]);
-	free(blocks.data[0].data);
-	free(transfers.data);
-	free(blocks.data);
+	size_t start = 0;
+	while (start < res.size) {
+		struct bytebuf tmp;
+		tmp.data = &res.data[start];
+		uint32_t hb = ((uint32_t *)tmp.data)[0];
+		int32_t xid = ((int32_t *)tmp.data)[1];
+		tmp.size = alignu(transfer_size(hb), 16);
+		apply_update(dst_map, render_data, transfer_type(hb), xid,
+				&tmp);
+		start += tmp.size;
+	}
+	free(res.data);
 
 	/* first round, this only exists after the transfer */
 	struct shadow_fd *dst_shadow = get_shadow_for_rid(dst_map, rid);
@@ -344,7 +360,7 @@ int main(int argc, char **argv)
 	for (size_t c = 0; c < sizeof(comp_modes) / sizeof(comp_modes[0]);
 			c++) {
 		for (int gt = 1; gt <= 5; gt++) {
-			for (int rt = 1; rt <= 3; rt++) {
+			for (int rt = 1; rt <= 5; rt++) {
 				int file_fd = open("test/file",
 						O_CREAT | O_RDWR | O_TRUNC,
 						0644);

@@ -123,8 +123,6 @@ int run_server(const char *socket_path, const char *wayland_display,
 		close(wayland_socket);
 	}
 
-	wp_debug("Server main!");
-
 	int retcode = EXIT_SUCCESS;
 	if (oneshot) {
 		int chanfd = connect_to_socket(socket_path);

@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 
 #ifdef HAS_USDT
 #include <sys/sdt.h>
@@ -118,11 +119,6 @@ struct bytebuf {
 	char *data;
 };
 
-struct bytebuf_stack {
-	struct bytebuf *data;
-	int size, count;
-};
-
 typedef void *VADisplay;
 typedef unsigned int VAGenericID;
 typedef VAGenericID VAConfigID;
@@ -167,6 +163,8 @@ struct thread_data {
 	 * existing buffer */
 	struct bytebuf cd_dst;
 	size_t cd_actual_size;
+	size_t cd_start;
+	size_t cd_end;
 	struct comp_ctx comp_ctx;
 };
 enum compression_mode {
@@ -228,6 +226,98 @@ typedef enum {
 } fdcat_t;
 bool fdcat_ispipe(fdcat_t t);
 
+enum wmsg_type {
+	/* Send over a set of Wayland protocol messages. Preceding messages
+	 * must create or update file descriptors and inject file descriptors
+	 * to the queue.
+	 *
+	 * TODO: use extra bits to make parsing more consistent between systems;
+	 * i.e, to ensure that # of file descriptors consumed is the same */
+	WMSG_PROTOCOL, // just header uint32, then protocol messages
+	/* Inject file descriptors into the receiver's buffer, for use by the
+	 * protocol parser */
+	WMSG_INJECT_RIDS, // just header uint32, then fds
+	/* Create a new shared memory file of the given size */
+	WMSG_OPEN_FILE, // wmsg_open_file
+	/* Provide a new (larger) size for the file buffer */
+	WMSG_EXTEND_FILE, // wmsg_open_file
+	/* Create a new DMABUF with the given size and dmabuf_slice_data */
+	WMSG_OPEN_DMABUF, // wmsg_open_dmabuf
+	/* Fill the region of the file with the folllowing data. The data should
+	 * be compressed according to the selected compression option */
+	WMSG_BUFFER_FILL, // wmsg_buffer_fill
+	/* Apply a diff to the file. The diff contents may be compressed. */
+	WMSG_BUFFER_DIFF, // wmsg_buffer_diff
+	/* Create a new pipe, with the given remote R/W status */
+	WMSG_OPEN_IR_PIPE, // wmsg_basic
+	WMSG_OPEN_IW_PIPE, // wmsg_basic
+	WMSG_OPEN_RW_PIPE, // wmsg_basic
+	/* Transfer data to the pipe */
+	WMSG_PIPE_TRANSFER, // wmsg_basic
+	/* No more data will be transferred to this pipe. */
+	WMSG_PIPE_HANGUP, // wmsg_basic
+	/* Create a DMABUF (with following data parameters) that will be used
+	 * to produce/consume video frames. */
+	WMSG_OPEN_DMAVID_SRC, // wmsg_open_dmabuf
+	WMSG_OPEN_DMAVID_DST, // wmsg_open_dmabuf
+	/* Send a packet of video data to the destination */
+	WMSG_SEND_DMAVID_PACKET, // wmsg_basic
+	/* Acknowledge that a given number of messages has been received, so
+	 * that the sender of those messages no longer needs to store them
+	 * for replaying in case of reconnection */
+	WMSG_ACK_NBLOCKS, // wmsg_ack
+};
+const char *wmsg_type_to_str(enum wmsg_type tp);
+struct wmsg_open_file {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t file_size;
+	uint32_t pad4;
+};
+struct wmsg_open_dmabuf {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t file_size;
+	uint32_t pad4;
+	/* following this, provide struct dmabuf_slice_data */
+};
+struct wmsg_buffer_fill {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t start; // [start, end), in bytes of zone to be written
+	uint32_t end;
+	/* following this, the possibly-compressed data */
+};
+struct wmsg_buffer_diff {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t diff_size; // in bytes, when uncompressed
+	uint32_t pad_bytes; // number of trailing compression bytes
+	/* following this, the possibly-compressed diff  data */
+};
+struct wmsg_basic {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t pad3;
+	uint32_t pad4;
+};
+struct wmsg_ack {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t messages_received;
+	uint32_t pad4;
+};
+/* size: the number of bytes in the message, /excluding/ trailing padding. */
+inline uint32_t transfer_header(size_t size, enum wmsg_type type)
+{
+	return ((uint32_t)size << 5) | (uint32_t)type;
+}
+inline size_t transfer_size(uint32_t header) { return (size_t)header >> 5; }
+inline enum wmsg_type transfer_type(uint32_t header)
+{
+	return (enum wmsg_type)(header & ((1u << 5) - 1));
+}
+
 struct pipe_buffer {
 	char *data;
 	ssize_t size;
@@ -242,10 +332,10 @@ struct dmabuf_slice_data {
 	uint32_t width;
 	uint32_t height;
 	uint32_t format;
-	uint32_t num_planes;
-	uint64_t modifier;
+	int32_t num_planes;
 	uint32_t offsets[4];
 	uint32_t strides[4];
+	uint64_t modifier;
 	// to which planes is the matching dmabuf assigned?
 	uint8_t using_planes[4];
 };
@@ -339,7 +429,7 @@ struct shadow_fd {
 	size_t compress_space;
 
 	// File data
-	bool has_been_extended;
+	size_t remote_bufsize; // used to check for and send file extensions
 	char file_shm_buf_name[256];
 
 	// Pipe data
@@ -372,30 +462,22 @@ struct shadow_fd {
 	VABufferID video_va_pipeline;
 };
 
-#define FILE_SIZE_EXTEND_FLAG (1u << 31)
-#define FILE_SIZE_SIZE_MASK ((1u << 31) - 1)
-struct transfer {
-	fdcat_t type;
-	int obj_id;
-	// type-specific extra data
-	union {
-		int pipeclose;
-		/* top bit: file size video flag;
-		 * next bit: is this an 'extend' message for shared memory bufs
-		 * lower 30, the size of the transfer when uncompressed */
-		uint32_t block_meta;
-		int raw; // < for obviously type-independent cases
-	} special;
-
-	int nblocks;
-	// each subtransfer must include space up to the next 8-byte boundary.
-	// this is an index into the array of blocks
-	int subtransfer_idx;
-};
-
-struct transfer_stack {
-	struct transfer *data;
-	int size, count;
+/* A structure tracking data blocks to transfer. Users should ensure that each
+ * group of consecutive messages is 16-aligned, so that the headers make sense.
+ */
+struct transfer_data {
+	/* Data to be writtenveed */
+	struct iovec *data;
+	/* Whether or not to deallocate each iovec contents after sending */
+	bool *heap_allocated;
+	/* start: next block to write. end: just after last block to write;
+	 * size: number of iovec blocks */
+	int start, end, size;
+	/* How much of the block at 'start' has been written */
+	int partial_write_amt;
+	/* A short buffer filled with zeros, to provide padding when the source
+	 * buffer is insufficiently large/shouldn't be modified. */
+	char zeros[16];
 };
 
 struct wp_interface;
@@ -474,6 +556,9 @@ struct globals {
 	struct message_tracker tracker;
 };
 
+bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
+		bool is_heap_allocated);
+
 int main_interface_loop(int chanfd, int progfd,
 		const struct main_config *config, bool display_side);
 
@@ -498,11 +583,11 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
-		struct transfer_stack *transfers, struct bytebuf_stack *blocks);
-/** Apply a file update to the translation map, creating an entry when there is
- * none */
+		struct transfer_data *transfers);
+/** Apply a data update message to an element in the translation map, creating
+ * an entry when there is none */
 void apply_update(struct fd_translation_map *map, struct render_data *render,
-		const struct transfer *transf, const struct bytebuf *block);
+		enum wmsg_type type, int remote_id, const struct bytebuf *msg);
 /** Get the shadow structure associated to a remote id, or NULL if it dne */
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 
@@ -543,8 +628,6 @@ void decref_transferred_fds(
 		struct fd_translation_map *map, int nfds, int fds[]);
 void decref_transferred_rids(
 		struct fd_translation_map *map, int nids, int ids[]);
-struct transfer *setup_single_block_transfer(struct transfer_stack *transfers,
-		struct bytebuf_stack *blocks, size_t size, const char *data);
 
 /** If sfd->type == FDC_FILE, increase the size of the backing data to support
  * at least new_size, and mark the new part of underlying file as dirty */
@@ -627,11 +710,10 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd);
 void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
 /** the video frame to be transferred should already have been transferred into
  * `sfd->mem_mirror`. */
-void collect_video_from_mirror(struct shadow_fd *sfd,
-		struct transfer_stack *transfers, struct bytebuf_stack *blocks,
-		bool first);
+void collect_video_from_mirror(
+		struct shadow_fd *sfd, struct transfer_data *transfers);
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
-		size_t size, const char *data);
+		const struct bytebuf *data);
 /** All return pointers can be NULL. Determines how much extra space or
  * padded width/height is needed for a video frame */
 void pad_video_mirror_size(int width, int height, int stride, int *new_width,

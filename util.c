@@ -197,3 +197,55 @@ int buf_ensure_size(int count, size_t obj_size, int *space, void **data)
 	}
 	return -1;
 }
+
+static const char *wmsg_types[] = {
+		"WMSG_PROTOCOL",
+		"WMSG_INJECT_RIDS",
+		"WMSG_OPEN_FILE",
+		"WMSG_EXTEND_FILE",
+		"WMSG_OPEN_DMABUF",
+		"WMSG_BUFFER_FILL",
+		"WMSG_BUFFER_DIFF",
+		"WMSG_OPEN_IR_PIPE",
+		"WMSG_OPEN_IW_PIPE",
+		"WMSG_OPEN_RW_PIPE",
+		"WMSG_PIPE_TRANSFER",
+		"WMSG_PIPE_HANGUP",
+		"WMSG_OPEN_DMAVID_SRC",
+		"WMSG_OPEN_DMAVID_DST",
+		"WMSG_SEND_DMAVID_PACKET",
+		"WMSG_ACK_NBLOCKS",
+};
+const char *wmsg_type_to_str(enum wmsg_type tp)
+{
+	if (tp >= sizeof(wmsg_types) / sizeof(wmsg_types[0])) {
+		return "???";
+	}
+	return wmsg_types[tp];
+}
+
+bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
+		bool is_heap_allocated)
+{
+	if (size == 0) {
+		return true;
+	}
+	int sz2 = transfers->size;
+	if (buf_ensure_size(transfers->end + 1, sizeof(*transfers->data),
+			    &transfers->size,
+			    (void **)&transfers->data) == -1) {
+		wp_error("Resize of transfer data failed");
+		return false;
+	}
+	if (buf_ensure_size(transfers->end + 1,
+			    sizeof(*transfers->heap_allocated), &sz2,
+			    (void **)&transfers->heap_allocated) == -1) {
+		wp_error("Resize of heap_allocated failed");
+		return false;
+	}
+	transfers->data[transfers->end].iov_len = size;
+	transfers->data[transfers->end].iov_base = data;
+	transfers->heap_allocated[transfers->end] = is_heap_allocated;
+	transfers->end++;
+	return true;
+}

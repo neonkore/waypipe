@@ -371,6 +371,7 @@ static size_t compress_bufsize(struct fd_translation_map *map, size_t max_input)
 	}
 	return 0;
 }
+
 /* With the selected compression method, compress the buffer
  * {isize,ibuf}, possibly modifying {msize,mbuf}, and setting
  * {wsize,wbuf} to indicate the result */
@@ -418,6 +419,7 @@ static void compress_buffer(struct fd_translation_map *map,
 		}
 		*wsize = (size_t)ws;
 		*wbuf = mbuf;
+
 		break;
 	}
 #endif
@@ -522,7 +524,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 
 	wp_debug("Creating new shadow buffer for local fd %d", fd);
 	if (sfd->type == FDC_FILE) {
-		if (file_sz > FILE_SIZE_SIZE_MASK) {
+		if (file_sz >= UINT32_MAX / 2) {
 			wp_error("Failed to create shadow structure, file size %ld too large to transfer",
 					(uint64_t)file_sz);
 			return sfd;
@@ -819,26 +821,6 @@ void apply_diff(size_t size, char *__restrict__ target1,
 	}
 }
 
-struct transfer *setup_single_block_transfer(struct transfer_stack *transfers,
-		struct bytebuf_stack *blocks, size_t size, const char *data)
-{
-	buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
-			&transfers->size, (void **)&transfers->data);
-	buf_ensure_size(blocks->count + 1, sizeof(struct bytebuf),
-			&blocks->size, (void **)&blocks->data);
-
-	struct transfer *tf = &transfers->data[transfers->count++];
-	tf->type = FDC_UNKNOWN;
-	tf->obj_id = 0;
-	tf->special.raw = 0;
-	tf->nblocks = 1;
-	tf->subtransfer_idx = blocks->count;
-	struct bytebuf *bl = &blocks->data[blocks->count++];
-	bl->size = size;
-	bl->data = (char *)data;
-	return tf;
-}
-
 /* Construct and optionally compress a diff between sfd->mem_mirror and
  * the actual memmap'd data */
 static void worker_run_compresseddiff(struct fd_translation_map *map,
@@ -881,23 +863,35 @@ static void worker_run_compresseddiff(struct fd_translation_map *map,
 /* Compress data for sfd->mem_mirror */
 static void worker_run_compressblock(struct fd_translation_map *map,
 		struct comp_ctx *ctx, int index, int nthreads,
-		struct bytebuf *dst, size_t *actual_size)
+		struct bytebuf *dst, size_t *actual_start, size_t *actual_end)
 {
 	DTRACE_PROBE1(waypipe, worker_comp_enter, index);
 
 	struct shadow_fd *sfd = map->thread_target;
 
+	size_t region_start = sfd->remote_bufsize;
+	size_t region_end = sfd->buffer_size;
+
 	/* Allocate a disjoint target interval to each worker */
-	size_t source_start =
-			align(((size_t)index * sfd->buffer_size) / nthreads, 8);
-	size_t source_end = align(
-			(((size_t)index + 1) * sfd->buffer_size) / nthreads, 8);
+	size_t source_start = region_start +
+			      ((size_t)index * (region_end - region_start)) /
+					      nthreads;
+	size_t source_end =
+			region_start +
+			((size_t)(index + 1) * (region_end - region_start)) /
+					nthreads;
+
+	/* extend to nearest boundary */
+	source_start = source_start - source_start % 8;
+	source_end = align(source_end, 8);
+
 	source_end = min(sfd->buffer_size, source_end);
 
 	size_t comp_step = compress_bufsize(
 			map, align(ceildiv(sfd->buffer_size, nthreads) + 8, 8));
 
-	*actual_size = source_end - source_start;
+	*actual_start = source_start;
+	*actual_end = source_end;
 
 	dst->size = 0;
 	dst->data = NULL;
@@ -933,14 +927,14 @@ static void wait_thread_task(struct fd_translation_map *map)
 /* Optionally compress the data in mem_mirror, and set up the initial
  * transfer blocks */
 static void add_initial_compressed_block(struct fd_translation_map *map,
-		struct shadow_fd *sfd, struct transfer_stack *transfers,
-		struct bytebuf_stack *blocks)
+		struct shadow_fd *sfd, struct transfer_data *transfers)
 {
 	// new transfer, we send file contents verbatim
-	bool use_threads =
-			(int32_t)sfd->buffer_size > map->comp_thread_threshold;
+	bool use_threads = (int32_t)(sfd->buffer_size - sfd->remote_bufsize) >
+			   map->comp_thread_threshold;
 
-	size_t cd_actual_size0;
+	size_t cd_start0;
+	size_t cd_end0;
 	struct bytebuf cd_dst0;
 	if (use_threads) {
 		queue_thread_task(map, sfd, THREADTASK_COMPRESSBLOCK);
@@ -948,53 +942,39 @@ static void add_initial_compressed_block(struct fd_translation_map *map,
 		map->thread_target = sfd;
 	}
 	worker_run_compressblock(map, &map->comp_ctx, 0,
-			use_threads ? map->nthreads : 1, &cd_dst0,
-			&cd_actual_size0);
+			use_threads ? map->nthreads : 1, &cd_dst0, &cd_start0,
+			&cd_end0);
 	if (use_threads) {
 		wait_thread_task(map);
 	}
 
-	buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
-			&transfers->size, (void **)&transfers->data);
-	buf_ensure_size(blocks->count + map->nthreads + 1,
-			sizeof(struct bytebuf), &blocks->size,
-			(void **)&blocks->data);
-
-	struct transfer *tf = &transfers->data[transfers->count++];
-	tf->type = sfd->type;
-	tf->obj_id = sfd->remote_id;
-	tf->nblocks = 0;
-	tf->subtransfer_idx = blocks->count;
-	tf->special.block_meta = 0;
-	if (sfd->type == FDC_DMABUF) {
-		/* Add metadata section to ensure proper remote
-		 * initialization
-		 */
-		struct bytebuf meta = {.data = (char *)&sfd->dmabuf_info,
-				.size = sizeof(struct dmabuf_slice_data)};
-		blocks->data[blocks->count++] = meta;
-		tf->nblocks++;
-	}
-	if (cd_actual_size0) {
-		tf->special.block_meta += cd_actual_size0;
-		blocks->data[blocks->count++] = cd_dst0;
-		tf->nblocks++;
-	}
-	if (use_threads) {
-		for (int i = 0; i < map->nthreads - 1; i++) {
-			if (map->threads[i].cd_actual_size) {
-				tf->special.block_meta +=
-						map->threads[i].cd_actual_size;
-				blocks->data[blocks->count++] =
-						map->threads[i].cd_dst;
-				tf->nblocks++;
-			}
+	for (int i = 0; i < (use_threads ? map->nthreads : 1); i++) {
+		size_t start = i > 0 ? map->threads[i - 1].cd_start : cd_start0;
+		size_t end = i > 0 ? map->threads[i - 1].cd_end : cd_end0;
+		struct bytebuf dst =
+				i > 0 ? map->threads[i - 1].cd_dst : cd_dst0;
+		if (dst.size == 0) {
+			continue;
 		}
+
+		struct wmsg_buffer_fill *header =
+				calloc(1, sizeof(struct wmsg_buffer_fill));
+		size_t packet_len = sizeof(struct wmsg_buffer_fill) + dst.size;
+		header->size_and_type =
+				transfer_header(packet_len, WMSG_BUFFER_FILL);
+		header->remote_id = sfd->remote_id;
+		header->end = (uint32_t)end;
+		header->start = (uint32_t)start;
+		transfer_add(transfers, sizeof(struct wmsg_buffer_fill), header,
+				true);
+		transfer_add(transfers, dst.size, dst.data, false);
+		transfer_add(transfers, alignu(packet_len, 16) - packet_len,
+				transfers->zeros, false);
 	}
 }
 static void add_updated_diff_block(struct fd_translation_map *map,
-		struct shadow_fd *sfd, struct transfer_stack *transfers,
-		struct bytebuf_stack *blocks, int total_damaged_area)
+		struct shadow_fd *sfd, struct transfer_data *transfers,
+		int total_damaged_area)
 {
 	DTRACE_PROBE2(waypipe, diffcomp_start, total_damaged_area,
 			sfd->buffer_size);
@@ -1014,49 +994,37 @@ static void add_updated_diff_block(struct fd_translation_map *map,
 		wait_thread_task(map);
 	}
 
-	size_t actual_diff_size = cd_actual_size0;
-	if (use_threads) {
-		for (int i = 0; i < map->nthreads - 1; i++) {
-			if (map->threads[i].cd_actual_size) {
-				actual_diff_size +=
-						map->threads[i].cd_actual_size;
-			}
+	uint64_t actual_diff_size = 0;
+
+	for (int i = 0; i < (use_threads ? map->nthreads : 1); i++) {
+		size_t asize = i > 0 ? map->threads[i - 1].cd_actual_size
+				     : cd_actual_size0;
+		struct bytebuf dst =
+				i > 0 ? map->threads[i - 1].cd_dst : cd_dst0;
+		if (dst.size == 0) {
+			continue;
 		}
+
+		struct wmsg_buffer_diff *header =
+				calloc(1, sizeof(struct wmsg_buffer_diff));
+		size_t packet_len = sizeof(struct wmsg_buffer_diff) + dst.size;
+		header->size_and_type =
+				transfer_header(packet_len, WMSG_BUFFER_DIFF);
+		header->remote_id = sfd->remote_id;
+		header->diff_size = (uint32_t)asize;
+		transfer_add(transfers, sizeof(struct wmsg_buffer_diff), header,
+				true);
+		transfer_add(transfers, dst.size, dst.data, false);
+		transfer_add(transfers, alignu(packet_len, 16) - packet_len,
+				transfers->zeros, false);
+
+		actual_diff_size += asize;
 	}
 
-	if (actual_diff_size > 0) {
-		/* Only make the transfer if there were changes */
-		buf_ensure_size(transfers->count + 1, sizeof(struct transfer),
-				&transfers->size, (void **)&transfers->data);
-		buf_ensure_size(blocks->count + map->nthreads,
-				sizeof(struct bytebuf), &blocks->size,
-				(void **)&blocks->data);
-
-		struct transfer *tf = &transfers->data[transfers->count++];
-		tf->type = sfd->type;
-		tf->obj_id = sfd->remote_id;
-		tf->nblocks = 0;
-		tf->subtransfer_idx = blocks->count;
-		tf->special.block_meta = (uint32_t)actual_diff_size;
-
-		if (cd_actual_size0) {
-			blocks->data[blocks->count++] = cd_dst0;
-			tf->nblocks++;
-		}
-		if (use_threads) {
-			for (int i = 0; i < map->nthreads - 1; i++) {
-				if (map->threads[i].cd_actual_size) {
-					blocks->data[blocks->count++] =
-							map->threads[i].cd_dst;
-					tf->nblocks++;
-				}
-			}
-		}
-	}
 	reset_damage(&sfd->damage);
 	DTRACE_PROBE1(waypipe, diffcomp_end, actual_diff_size);
-	wp_debug("Diff+comp construction end: %ld/%ld",
-			(uint64_t)actual_diff_size, (uint64_t)sfd->buffer_size);
+	wp_debug("Diff+comp construction end: %ld/%ld", actual_diff_size,
+			(uint64_t)sfd->buffer_size);
 }
 
 static void get_max_diff_space_usage(struct fd_translation_map *map,
@@ -1071,8 +1039,36 @@ static void get_max_diff_space_usage(struct fd_translation_map *map,
 			compress_bufsize(map, slice_size));
 }
 
+static void add_dmabuf_create_request(struct transfer_data *transfers,
+		struct shadow_fd *sfd, enum wmsg_type variant)
+{
+	size_t actual_len = sizeof(struct wmsg_open_dmabuf) +
+			    sizeof(struct dmabuf_slice_data);
+	size_t padded_len = alignu(actual_len, 16);
+
+	uint8_t *data = calloc(1, padded_len);
+	struct wmsg_open_dmabuf *header = (struct wmsg_open_dmabuf *)data;
+	header->file_size = sfd->buffer_size;
+	header->remote_id = sfd->remote_id;
+	header->size_and_type = transfer_header(actual_len, variant);
+	memcpy(data + sizeof(struct wmsg_open_dmabuf), &sfd->dmabuf_info,
+			sizeof(struct dmabuf_slice_data));
+	transfer_add(transfers, padded_len, data, true);
+}
+static void add_file_create_request(
+		struct transfer_data *transfers, struct shadow_fd *sfd)
+{
+	struct wmsg_open_file *header =
+			calloc(1, sizeof(struct wmsg_open_file));
+	header->file_size = sfd->buffer_size;
+	header->remote_id = sfd->remote_id;
+	header->size_and_type = transfer_header(
+			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
+	transfer_add(transfers, sizeof(struct wmsg_open_file), header, true);
+}
+
 void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
-		struct transfer_stack *transfers, struct bytebuf_stack *blocks)
+		struct transfer_data *transfers)
 {
 	if (sfd->type == FDC_FILE) {
 		if (!sfd->is_dirty) {
@@ -1101,25 +1097,31 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 									  1)
 							: NULL;
 
-			add_initial_compressed_block(
-					map, sfd, transfers, blocks);
+			sfd->remote_bufsize = 0;
+
+			add_file_create_request(transfers, sfd);
+			add_initial_compressed_block(map, sfd, transfers);
+			sfd->remote_bufsize = sfd->buffer_size;
+			return;
 		}
 
-		if (sfd->has_been_extended) {
-			sfd->has_been_extended = false;
+		if (sfd->remote_bufsize != sfd->buffer_size) {
+			struct wmsg_open_file *header = calloc(
+					1, sizeof(struct wmsg_open_file));
+			header->file_size = sfd->buffer_size;
+			header->remote_id = sfd->remote_id;
+			header->size_and_type = transfer_header(
+					sizeof(struct wmsg_open_file),
+					WMSG_EXTEND_FILE);
+			transfer_add(transfers, sizeof(struct wmsg_open_file),
+					header, true);
 
-			buf_ensure_size(transfers->count + 1,
-					sizeof(struct transfer),
-					&transfers->size,
-					(void **)&transfers->data);
-			struct transfer *tf =
-					&transfers->data[transfers->count++];
-			tf->type = sfd->type;
-			tf->obj_id = sfd->remote_id;
-			tf->nblocks = 0;
-			tf->subtransfer_idx = -1;
-			tf->special.block_meta = FILE_SIZE_EXTEND_FLAG |
-						 (uint32_t)sfd->buffer_size;
+			memcpy(sfd->mem_mirror + sfd->remote_bufsize,
+					sfd->mem_local + sfd->remote_bufsize,
+					sfd->buffer_size - sfd->remote_bufsize);
+
+			add_initial_compressed_block(map, sfd, transfers);
+			sfd->remote_bufsize = sfd->buffer_size;
 		}
 
 		int total_area = get_damage_area(&sfd->damage);
@@ -1140,7 +1142,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 						calloc(sfd->compress_space, 1);
 			}
 		}
-		add_updated_diff_block(map, sfd, transfers, blocks, total_area);
+		add_updated_diff_block(map, sfd, transfers, total_area);
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
@@ -1162,6 +1164,9 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 									  1)
 							: NULL;
 			first = true;
+
+			add_dmabuf_create_request(
+					transfers, sfd, WMSG_OPEN_DMABUF);
 		}
 		void *handle = NULL;
 		if (!sfd->dmabuf_bo) {
@@ -1177,8 +1182,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// only touching data once
 			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
 
-			add_initial_compressed_block(
-					map, sfd, transfers, blocks);
+			add_initial_compressed_block(map, sfd, transfers);
 		} else {
 			if (!sfd->diff_buffer) {
 				// This can happen in
@@ -1198,7 +1202,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			damage_everything(&sfd->damage);
 			sfd->mem_local = data;
 
-			add_updated_diff_block(map, sfd, transfers, blocks,
+			add_updated_diff_block(map, sfd, transfers,
 					(int)sfd->buffer_size);
 			sfd->mem_local = NULL;
 		}
@@ -1216,65 +1220,85 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			// ^ was not previously able to create buffer
 			return;
 		}
-		collect_video_from_mirror(sfd, transfers, blocks,
-				sfd->video_frameno == 0);
+		if (sfd->video_frameno == 0) {
+			add_dmabuf_create_request(
+					transfers, sfd, WMSG_OPEN_DMAVID_DST);
+		}
+		collect_video_from_mirror(sfd, transfers);
 	} else if (sfd->type == FDC_DMAVID_IW) {
 		sfd->is_dirty = false;
 		if (sfd->video_frameno == -1) {
-			/* first time only, send just the needed DMABUF info
-			 * header */
-			struct transfer *tf = setup_single_block_transfer(
-					transfers, blocks,
-					sizeof(struct dmabuf_slice_data),
-					(const char *)&sfd->dmabuf_info);
-			tf->type = sfd->type;
-			tf->obj_id = sfd->remote_id;
-			tf->special.block_meta = (uint32_t)sfd->buffer_size;
+			add_dmabuf_create_request(
+					transfers, sfd, WMSG_OPEN_DMAVID_SRC);
 			sfd->video_frameno++;
 		}
 	} else if (fdcat_ispipe(sfd->type)) {
 		// Pipes always update, no matter what the message
-		// stream indicates. Hence no sfd->is_dirty flag check
-		if (sfd->pipe_recv.used > 0 || sfd->pipe_onlyhere ||
-				(sfd->pipe_lclosed && !sfd->pipe_rclosed)) {
-			sfd->pipe_onlyhere = false;
-			wp_debug("Adding update to pipe RID=%d, with %ld bytes, close %c",
-					sfd->remote_id, sfd->pipe_recv.used,
-					(sfd->pipe_lclosed &&
-							!sfd->pipe_rclosed)
-							? 'Y'
-							: 'n');
-			struct transfer *tf = setup_single_block_transfer(
-					transfers, blocks, sfd->pipe_recv.used,
-					sfd->pipe_recv.data);
-			tf->type = sfd->type;
-			tf->obj_id = sfd->remote_id;
-			if (sfd->pipe_lclosed && !sfd->pipe_rclosed) {
-				tf->special.pipeclose = 1;
-				sfd->pipe_rclosed = true;
-				close(sfd->pipe_fd);
-				sfd->pipe_fd = -2;
+		// stream indicates.
+		if (sfd->pipe_onlyhere) {
+			struct wmsg_basic *createh =
+					calloc(1, sizeof(struct wmsg_basic));
+			enum wmsg_type type;
+			if (sfd->type == FDC_PIPE_IR) {
+				type = WMSG_OPEN_IW_PIPE;
+			} else if (sfd->type == FDC_PIPE_IW) {
+				type = WMSG_OPEN_IR_PIPE;
 			} else {
-				tf->special.pipeclose = 0;
+				type = WMSG_OPEN_RW_PIPE;
 			}
-			// clear
+			createh->size_and_type = transfer_header(
+					sizeof(struct wmsg_basic), type);
+			createh->remote_id = sfd->remote_id;
+			transfer_add(transfers, sizeof(struct wmsg_basic),
+					createh, true);
+			sfd->pipe_onlyhere = false;
+		}
+
+		if (sfd->pipe_recv.used > 0) {
+			struct wmsg_basic *header =
+					calloc(1, sizeof(struct wmsg_basic));
+			size_t msgsz = sizeof(struct wmsg_basic) +
+				       sfd->pipe_recv.used;
+			header->size_and_type = transfer_header(
+					msgsz, WMSG_PIPE_TRANSFER);
+			header->remote_id = sfd->remote_id;
+			transfer_add(transfers, sizeof(struct wmsg_basic),
+					header, true);
+			transfer_add(transfers, sfd->pipe_recv.used,
+					sfd->pipe_recv.data, false);
+			transfer_add(transfers, alignu(msgsz, 16) - msgsz,
+					transfers->zeros, false);
 			sfd->pipe_recv.used = 0;
+		}
+
+		if (sfd->pipe_lclosed && !sfd->pipe_rclosed) {
+			struct wmsg_basic *hanguph =
+					calloc(1, sizeof(struct wmsg_basic));
+			hanguph->size_and_type = transfer_header(
+					sizeof(struct wmsg_basic),
+					WMSG_PIPE_HANGUP);
+			hanguph->remote_id = sfd->remote_id;
+			transfer_add(transfers, sizeof(struct wmsg_basic),
+					hanguph, true);
+
+			sfd->pipe_rclosed = true;
+			close(sfd->pipe_fd);
+			sfd->pipe_fd = -2;
 		}
 	}
 }
 
 void create_from_update(struct fd_translation_map *map,
-		struct render_data *render, const struct transfer *transf,
-		const struct bytebuf *block)
+		struct render_data *render, enum wmsg_type type, int remote_id,
+		const struct bytebuf *msg)
 {
 
-	wp_debug("Introducing new fd, remoteid=%d", transf->obj_id);
+	wp_debug("Introducing new fd, remoteid=%d", remote_id);
 	struct shadow_fd *sfd = calloc(1, sizeof(struct shadow_fd));
 	sfd->next = map->list;
 	map->list = sfd;
-	sfd->remote_id = transf->obj_id;
+	sfd->remote_id = remote_id;
 	sfd->fd_local = -1;
-	sfd->type = transf->type;
 	sfd->is_dirty = false;
 	reset_damage(&sfd->damage);
 	/* Start the object reference at one, so that, if it is owned by
@@ -1282,10 +1306,14 @@ void create_from_update(struct fd_translation_map *map,
 	 * fd has at least be transferred over the Wayland connection */
 	sfd->refcount_transfer = 1;
 	sfd->refcount_protocol = 0;
-	if (sfd->type == FDC_FILE) {
+	if (type == WMSG_OPEN_FILE) {
+		const struct wmsg_open_file header =
+				*(const struct wmsg_open_file *)msg->data;
+
+		sfd->type = FDC_FILE;
 		sfd->mem_local = NULL;
-		sfd->buffer_size = (size_t)(transf->special.block_meta &
-					    FILE_SIZE_SIZE_MASK);
+		sfd->buffer_size = header.file_size;
+		sfd->remote_bufsize = sfd->buffer_size;
 		sfd->mem_mirror = calloc(
 				(size_t)align((int)sfd->buffer_size, 8), 1);
 
@@ -1296,16 +1324,6 @@ void create_from_update(struct fd_translation_map *map,
 				sfd->compress_space
 						? calloc(sfd->compress_space, 1)
 						: NULL;
-
-		size_t act_size = 0;
-		const char *act_buffer = NULL;
-		uncompress_buffer(map, block->size, block->data,
-				sfd->buffer_size, sfd->compress_buffer,
-				&act_size, &act_buffer);
-
-		// The first time only, the transfer data is a
-		// direct copy of the source
-		memcpy(sfd->mem_mirror, act_buffer, act_size);
 
 		// The PID should be unique during the lifetime of the
 		// program
@@ -1329,9 +1347,10 @@ void create_from_update(struct fd_translation_map *map,
 				PROT_READ | PROT_WRITE, MAP_SHARED,
 				sfd->fd_local, 0);
 		memcpy(sfd->mem_local, sfd->mem_mirror, sfd->buffer_size);
-	} else if (fdcat_ispipe(sfd->type)) {
+	} else if (type == WMSG_OPEN_RW_PIPE || type == WMSG_OPEN_IW_PIPE ||
+			type == WMSG_OPEN_IR_PIPE) {
 		int pipedes[2];
-		if (transf->type == FDC_PIPE_RW) {
+		if (type == WMSG_OPEN_RW_PIPE) {
 			if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipedes) ==
 					-1) {
 				wp_error("Failed to create a socketpair: %s",
@@ -1348,12 +1367,12 @@ void create_from_update(struct fd_translation_map *map,
 
 		/* We pass 'fd_local' to the client, although we only
 		 * read and write from pipe_fd if it exists. */
-		if (transf->type == FDC_PIPE_IW) {
+		if (type == WMSG_OPEN_IR_PIPE) {
 			// Read end is 0; the other process writes
 			sfd->fd_local = pipedes[1];
 			sfd->pipe_fd = pipedes[0];
 			sfd->type = FDC_PIPE_IR;
-		} else if (transf->type == FDC_PIPE_IR) {
+		} else if (type == WMSG_OPEN_IW_PIPE) {
 			// Write end is 1; the other process reads
 			sfd->fd_local = pipedes[0];
 			sfd->pipe_fd = pipedes[1];
@@ -1375,23 +1394,26 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->pipe_recv.size = 16384;
 		sfd->pipe_recv.data = calloc((size_t)sfd->pipe_recv.size, 1);
 		sfd->pipe_onlyhere = false;
-	} else if (transf->type == FDC_DMAVID_IR) {
+	} else if (type == WMSG_OPEN_DMAVID_DST) {
 		/* remote read data, this side writes data */
+		const struct wmsg_open_dmabuf header =
+				*(const struct wmsg_open_dmabuf *)msg->data;
+
 		sfd->type = FDC_DMAVID_IW;
-		sfd->buffer_size = (size_t)(transf->special.block_meta &
-					    FILE_SIZE_SIZE_MASK);
+		sfd->buffer_size = header.file_size;
 
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
 			return;
 		}
-		memcpy(&sfd->dmabuf_info, block->data,
+		memcpy(&sfd->dmabuf_info,
+				msg->data + sizeof(struct wmsg_open_dmabuf),
 				sizeof(struct dmabuf_slice_data));
 		sfd->dmabuf_bo = make_dmabuf(
 				render, sfd->buffer_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
-			wp_error("FDC_DMAVID_IW: RID=%d make_dmabuf failure, bs=%d (%d)",
-					sfd->remote_id, (int)block->size,
+			wp_error("FDC_DMAVID_IW: RID=%d make_dmabuf failure, sz=%d (%d)",
+					sfd->remote_id, (int)sfd->buffer_size,
 					sizeof(struct dmabuf_slice_data));
 			return;
 		}
@@ -1406,30 +1428,23 @@ void create_from_update(struct fd_translation_map *map,
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
 		setup_video_decode(sfd, render);
-
-		// Apply first frame, if available
-		if (block->size > sizeof(struct dmabuf_slice_data)) {
-			apply_video_packet(sfd, render,
-					block->size - sizeof(struct dmabuf_slice_data),
-					block->data + sizeof(struct dmabuf_slice_data));
-		} else {
-			memset(sfd->mem_mirror, 213, sfd->buffer_size);
-		}
-
-	} else if (transf->type == FDC_DMAVID_IW) {
+	} else if (type == WMSG_OPEN_DMAVID_SRC) {
 		/* remote writes data, this side reads data */
 		sfd->type = FDC_DMAVID_IR;
-
-		sfd->buffer_size = (size_t)(transf->special.block_meta &
-					    FILE_SIZE_SIZE_MASK);
+		const struct wmsg_open_dmabuf header =
+				*(const struct wmsg_open_dmabuf *)msg->data;
+		sfd->buffer_size = header.file_size;
 
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
 			return;
 		}
-		struct dmabuf_slice_data *info =
-				(struct dmabuf_slice_data *)block->data;
-		sfd->dmabuf_bo = make_dmabuf(render, sfd->buffer_size, info);
+
+		memcpy(&sfd->dmabuf_info,
+				msg->data + sizeof(struct wmsg_open_dmabuf),
+				sizeof(struct dmabuf_slice_data));
+		sfd->dmabuf_bo = make_dmabuf(
+				render, sfd->buffer_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			wp_error("FDC_DMAVID_IR: RID=%d make_dmabuf failure",
 					sfd->remote_id);
@@ -1446,34 +1461,23 @@ void create_from_update(struct fd_translation_map *map,
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
 		setup_video_encode(sfd, render);
-
-	} else if (sfd->type == FDC_DMABUF) {
-		sfd->buffer_size = (size_t)(transf->special.block_meta &
-					    FILE_SIZE_SIZE_MASK);
+	} else if (type == WMSG_OPEN_DMABUF) {
+		sfd->type = FDC_DMABUF;
+		const struct wmsg_open_dmabuf header =
+				*(const struct wmsg_open_dmabuf *)msg->data;
+		sfd->buffer_size = header.file_size;
 		size_t diff_space = 0;
 		get_max_diff_space_usage(map, sfd->buffer_size, &diff_space,
 				&sfd->compress_space);
 		sfd->compress_buffer = calloc(sfd->compress_space, 1);
 
-		memcpy(&sfd->dmabuf_info, block->data,
+		memcpy(&sfd->dmabuf_info,
+				msg->data + sizeof(struct wmsg_open_dmabuf),
 				sizeof(struct dmabuf_slice_data));
-		const char *contents = NULL;
-		size_t contents_size = sfd->buffer_size;
-
 		sfd->mem_mirror = calloc(sfd->buffer_size, 1);
-		const char *compressed_contents =
-				block->data + sizeof(struct dmabuf_slice_data);
-
-		size_t szcheck = 0;
-		uncompress_buffer(map,
-				block->size - sizeof(struct dmabuf_slice_data),
-				compressed_contents, sfd->buffer_size,
-				sfd->compress_buffer, &szcheck, &contents);
-
-		memcpy(sfd->mem_mirror, contents, sfd->buffer_size);
 
 		wp_debug("Creating remote DMAbuf of %d bytes",
-				(int)contents_size);
+				(int)sfd->buffer_size);
 		// Create mirror from first transfer
 		// The file can only actually be created when we know
 		// what type it is?
@@ -1483,25 +1487,11 @@ void create_from_update(struct fd_translation_map *map,
 		}
 
 		sfd->dmabuf_bo = make_dmabuf(
-				render, contents_size, &sfd->dmabuf_info);
+				render, sfd->buffer_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			sfd->fd_local = -1;
 			return;
 		}
-
-		void *handle = NULL;
-		// unfortunately, there is no easy way to estimate the writeable
-		// region
-		void *dst = map_dmabuf(sfd->dmabuf_bo, true, &handle);
-		if (!dst) {
-			wp_error("Failed to map dmabuf to write initial data");
-			destroy_dmabuf(sfd->dmabuf_bo);
-			sfd->dmabuf_bo = NULL;
-			return;
-		}
-		memcpy(dst, contents, contents_size);
-		unmap_dmabuf(sfd->dmabuf_bo, handle);
-
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 	} else {
 		wp_error("Creating unknown file type updates");
@@ -1540,86 +1530,141 @@ static void increase_buffer_sizes(struct fd_translation_map *map,
 }
 
 void apply_update(struct fd_translation_map *map, struct render_data *render,
-		const struct transfer *transf, const struct bytebuf *block)
+		enum wmsg_type type, int remote_id, const struct bytebuf *msg)
 {
-	struct shadow_fd *sfd = get_shadow_for_rid(map, transf->obj_id);
-	if (!sfd) {
-		create_from_update(map, render, transf, block);
+	if (type == WMSG_OPEN_FILE || type == WMSG_OPEN_DMABUF ||
+			type == WMSG_OPEN_IR_PIPE ||
+			type == WMSG_OPEN_IW_PIPE ||
+			type == WMSG_OPEN_RW_PIPE ||
+			type == WMSG_OPEN_DMAVID_SRC ||
+			type == WMSG_OPEN_DMAVID_DST) {
+		create_from_update(map, render, type, remote_id, msg);
 		return;
 	}
 
-	if (sfd->type == FDC_FILE) {
-		if (transf->type != sfd->type) {
-			wp_error("Transfer type mismatch %s %s",
-					fdcat_to_str(transf->type),
-					fdcat_to_str(sfd->type));
-		}
-		uint32_t m_size = transf->special.block_meta &
-				  FILE_SIZE_SIZE_MASK;
-		if (transf->special.block_meta & FILE_SIZE_EXTEND_FLAG) {
-			/* Zero-extend the buffer to have the new size */
-			if (ftruncate(sfd->fd_local, m_size) == -1) {
-				wp_error("Failed to resize file buffer: %s",
-						strerror(errno));
-			}
-			increase_buffer_sizes(map, sfd, m_size);
-
+	struct shadow_fd *sfd = get_shadow_for_rid(map, remote_id);
+	if (!sfd) {
+		wp_error("shadow structure for RID=%d was not available",
+				remote_id);
+		return;
+	}
+	if (type == WMSG_EXTEND_FILE) {
+		if (sfd->type != FDC_FILE) {
+			wp_error("Trying to extend RID=%d, type=%s, which is not a file",
+					remote_id, fdcat_to_str(sfd->type));
 			return;
 		}
 
+		const struct wmsg_open_file *header =
+				(const struct wmsg_open_file *)msg->data;
+		if (ftruncate(sfd->fd_local, header->file_size) == -1) {
+			wp_error("Failed to resize file buffer: %s",
+					strerror(errno));
+		}
+		increase_buffer_sizes(map, sfd, header->file_size);
+	} else if (type == WMSG_BUFFER_FILL) {
+		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
+			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
+					remote_id, fdcat_to_str(sfd->type));
+			return;
+		}
+		const struct wmsg_buffer_fill *header =
+				(const struct wmsg_buffer_fill *)msg->data;
+		size_t sz = transfer_size(header->size_and_type);
+
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		uncompress_buffer(map, block->size, block->data, m_size,
+		uncompress_buffer(map, sz - sizeof(struct wmsg_buffer_fill),
+				msg->data + sizeof(struct wmsg_buffer_fill),
+				header->end - header->start,
 				sfd->compress_buffer, &act_size, &act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff
 		// expansion
-		if (act_size > sfd->buffer_size + 8 * 128) {
-			wp_error("Transfer size mismatch %ld %ld", act_size,
-					sfd->buffer_size);
+		if (header->end > sfd->buffer_size) {
+			wp_error("Transfer end overflow %ld > %ld",
+					(uint64_t)header->end,
+					(uint64_t)sfd->buffer_size);
 		}
-		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
-				act_size, act_buffer);
-	} else if (sfd->type == FDC_DMABUF) {
-		if (!sfd->dmabuf_bo) {
-			wp_error("Applying update to nonexistent dma buffer object rid=%d",
-					sfd->remote_id);
+		if (act_size != header->end - header->start) {
+			wp_error("Transfer size mismatch %ld %ld",
+					(uint64_t)act_size,
+					(uint64_t)(header->end -
+							header->start));
+		}
+		memcpy(sfd->mem_mirror + header->start, act_buffer,
+				header->end - header->start);
+
+		void *handle = NULL;
+		if (sfd->type == FDC_DMABUF) {
+			sfd->mem_local = map_dmabuf(
+					sfd->dmabuf_bo, true, &handle);
+			if (!sfd->mem_local) {
+				return;
+			}
+		}
+		memcpy(sfd->mem_local + header->start, act_buffer,
+				header->end - header->start);
+
+		if (sfd->type == FDC_DMABUF) {
+			sfd->mem_local = NULL;
+			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
+				return;
+			}
+		}
+	} else if (type == WMSG_BUFFER_DIFF) {
+		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
+			wp_error("Trying to apply diff to RID=%d, type=%s, which is not a buffer-type",
+					remote_id, fdcat_to_str(sfd->type));
 			return;
 		}
+		const struct wmsg_buffer_diff *header =
+				(const struct wmsg_buffer_diff *)msg->data;
+		size_t sz = transfer_size(header->size_and_type);
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		uncompress_buffer(map, block->size, block->data,
-				transf->special.block_meta,
-				sfd->compress_buffer, &act_size, &act_buffer);
+		uncompress_buffer(map, sz - sizeof(struct wmsg_buffer_diff),
+				msg->data + sizeof(struct wmsg_buffer_diff),
+				header->diff_size, sfd->compress_buffer,
+				&act_size, &act_buffer);
 
-		wp_debug("Applying dmabuf damage");
+		// `memsize+8*remote_nthreads` is the worst-case diff
+		// expansion
+		if (act_size != header->diff_size) {
+			wp_error("Transfer size mismatch %ld %ld", act_size,
+					header->diff_size);
+		}
+
 		void *handle = NULL;
-		void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
-		if (!data) {
-			return;
+		if (sfd->type == FDC_DMABUF) {
+			sfd->mem_local = map_dmabuf(
+					sfd->dmabuf_bo, true, &handle);
+			if (!sfd->mem_local) {
+				return;
+			}
 		}
-		apply_diff(sfd->buffer_size, sfd->mem_mirror, data, act_size,
-				act_buffer);
-		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
-			// there was an issue unmapping;
-			// unmap_dmabuf will log error
-			return;
+		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
+				act_size, act_buffer);
+		if (sfd->type == FDC_DMABUF) {
+			sfd->mem_local = NULL;
+			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
+				return;
+			}
 		}
-	} else if (fdcat_ispipe(sfd->type)) {
-		bool rw_match = sfd->type == FDC_PIPE_RW &&
-				transf->type == FDC_PIPE_RW;
-		bool iw_match = sfd->type == FDC_PIPE_IW &&
-				transf->type == FDC_PIPE_IR;
-		bool ir_match = sfd->type == FDC_PIPE_IR &&
-				transf->type == FDC_PIPE_IW;
-		if (!rw_match && !iw_match && !ir_match) {
-			wp_error("Transfer type contramismatch %s %s",
-					fdcat_to_str(transf->type),
-					fdcat_to_str(sfd->type));
+	} else if (type == WMSG_PIPE_TRANSFER) {
+		if (sfd->type != FDC_PIPE_IW && sfd->type != FDC_PIPE_RW) {
+			wp_error("Trying to write data to RID=%d, type=%s, which is not a writable pipe",
+					remote_id, fdcat_to_str(sfd->type));
+			return;
 		}
 
-		ssize_t netsize = sfd->pipe_send.used + (ssize_t)block->size;
+		const struct wmsg_basic *header =
+				(const struct wmsg_basic *)msg->data;
+		size_t sz = transfer_size(header->size_and_type);
+		size_t transfer_size = sz - sizeof(struct wmsg_basic);
+
+		ssize_t netsize = sfd->pipe_send.used + (ssize_t)transfer_size;
 		if (sfd->pipe_send.size <= 1024) {
 			sfd->pipe_send.size = 1024;
 		}
@@ -1632,35 +1677,41 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 		} else {
 			sfd->pipe_send.data = calloc(sfd->pipe_send.size, 1);
 		}
-		memcpy(sfd->pipe_send.data + sfd->pipe_send.used, block->data,
-				block->size);
-		sfd->pipe_send.used += (ssize_t)block->size;
+		memcpy(sfd->pipe_send.data + sfd->pipe_send.used,
+				msg->data + sizeof(struct wmsg_basic),
+				transfer_size);
+		sfd->pipe_send.used = netsize;
 
 		// The pipe itself will be flushed/or closed later by
 		// flush_writable_pipes
 		sfd->pipe_writable = true;
-
-		if (transf->special.pipeclose) {
-			sfd->pipe_rclosed = true;
+	} else if (type == WMSG_PIPE_HANGUP) {
+		if (sfd->type != FDC_PIPE_IW && sfd->type != FDC_PIPE_RW) {
+			wp_error("Trying to hang up the pipe RID=%d, type=%s, which is not a writable pipe",
+					remote_id, fdcat_to_str(sfd->type));
+			return;
 		}
-	} else if (sfd->type == FDC_DMAVID_IW) {
+		sfd->pipe_rclosed = true;
+	} else if (type == WMSG_SEND_DMAVID_PACKET) {
+		if (sfd->type != FDC_DMAVID_IW) {
+			wp_error("Trying to send video packet to RID=%d, type=%s, which is not a video output buffer",
+					remote_id, fdcat_to_str(sfd->type));
+			return;
+		}
 		if (!sfd->dmabuf_bo) {
 			wp_error("Applying update to nonexistent dma buffer object rid=%d",
 					sfd->remote_id);
 			return;
 		}
-		if (transf->type != FDC_DMAVID_IR) {
-			wp_error("Transfer type mismatch, got %s, expected %s, at rid=%d",
-					fdcat_to_str(transf->type),
-					fdcat_to_str(FDC_DMAVID_IR),
-					sfd->remote_id);
-			return;
-		}
-
-		apply_video_packet(sfd, render, block->size, block->data);
-	} else if (sfd->type == FDC_DMAVID_IR) {
-		wp_error("Did not expect any messages updating a read-only video channel, rid=%d",
-				sfd->remote_id);
+		const struct wmsg_basic *header =
+				(const struct wmsg_basic *)msg->data;
+		size_t sz = transfer_size(header->size_and_type);
+		struct bytebuf data = {
+				.data = msg->data + sizeof(struct wmsg_basic),
+				.size = sz - sizeof(struct wmsg_basic)};
+		apply_video_packet(sfd, render, &data);
+	} else {
+		wp_error("Unexpected update type: %s", wmsg_type_to_str(type));
 	}
 }
 
@@ -1906,26 +1957,16 @@ void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
 		return;
 	}
 
-	size_t old_size = sfd->buffer_size;
 	increase_buffer_sizes(map, sfd, new_size);
 
-	sfd->has_been_extended = true;
+	// leave `sfd->remote_bufsize` unchanged, and mark dirty
 	sfd->is_dirty = true;
-	struct ext_interval fresh = {
-			.start = (int)old_size,
-			.width = (int)(new_size - old_size),
-			.rep = 1,
-			.stride = 0,
-	};
-	merge_damage_records(&sfd->damage, 1, &fresh);
 }
 
 static void *worker_thread_main(void *arg)
 {
 	struct thread_data *data = arg;
 	struct fd_translation_map *map = data->map;
-
-	wp_debug("Opening worker thread %d", data->index);
 
 	/* The loop is globally locked by default, and only unlocked in
 	 * pthread_cond_wait. Yes, there are fancier and faster schemes.
@@ -1950,8 +1991,8 @@ static void *worker_thread_main(void *arg)
 			} else if (task == THREADTASK_COMPRESSBLOCK) {
 				worker_run_compressblock(map, &data->comp_ctx,
 						data->index, map->nthreads,
-						&data->cd_dst,
-						&data->cd_actual_size);
+						&data->cd_dst, &data->cd_start,
+						&data->cd_end);
 			}
 			pthread_mutex_lock(&map->work_state_mutex);
 
@@ -1965,7 +2006,5 @@ static void *worker_thread_main(void *arg)
 				&map->work_state_mutex);
 	}
 	pthread_mutex_unlock(&map->work_state_mutex);
-
-	wp_debug("Closing worker thread %d", data->index);
 	return NULL;
 }
