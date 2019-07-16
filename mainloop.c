@@ -299,12 +299,31 @@ struct chan_msg_state {
 	char *cmsg_buffer;
 };
 
-static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
-		bool display_side)
+struct cross_state {
+	/* Which was the last received message received from the other
+	 * application, for which acknowledgement was sent? */
+	uint32_t last_acked_msgno;
+	/* Which was the last message number received from the other
+	 * application? */
+	uint32_t last_received_msgno;
+	/* Which was the last message number sent to the other application which
+	 * was acknowledged by that side? */
+	uint32_t last_confirmed_msgno;
+};
+
+static int interpret_chanmsg(struct chan_msg_state *cmsg,
+		struct cross_state *cxs, struct globals *g, bool display_side)
 {
 	uint32_t size_and_type = ((uint32_t *)cmsg->cmsg_buffer)[0];
 	size_t unpadded_size = transfer_size(size_and_type);
 	enum wmsg_type type = transfer_type(size_and_type);
+	if (type == WMSG_ACK_NBLOCKS) {
+		struct wmsg_ack *ackm = (struct wmsg_ack *)cmsg->cmsg_buffer;
+		cxs->last_confirmed_msgno = ackm->messages_received;
+		return 0;
+	} else {
+		cxs->last_received_msgno++;
+	}
 
 	if (type == WMSG_INJECT_RIDS) {
 		const int32_t *fds = &((const int32_t *)cmsg->cmsg_buffer)[1];
@@ -370,8 +389,9 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg, struct globals *g,
 	}
 	return 0;
 }
-static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
-		bool display_side, struct globals *g)
+static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
+		struct cross_state *cxs, int chanfd, bool display_side,
+		struct globals *g)
 {
 	// Read header, then read main contents
 	if (cmsg->cmsg_size == 0) {
@@ -423,7 +443,8 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg, int chanfd,
 		}
 		if (cmsg->cmsg_end == cmsg->cmsg_size) {
 			DTRACE_PROBE(waypipe, channel_read_end);
-			if (interpret_chanmsg(cmsg, g, display_side) == -1) {
+			if (interpret_chanmsg(cmsg, cxs, g, display_side) ==
+					-1) {
 				return -1;
 			}
 			free(cmsg->cmsg_buffer);
@@ -485,26 +506,45 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	}
 	return 0;
 }
-static int advance_chanmsg_transfer(struct globals *g, int chanfd, int progfd,
-		bool display_side, struct chan_msg_state *cmsg,
-		bool any_changes)
+static int advance_chanmsg_transfer(struct globals *g,
+		struct chan_msg_state *cmsg, struct cross_state *cxs,
+		bool display_side, int chanfd, int progfd, bool any_changes)
 {
 	if (!any_changes) {
 		return 0;
 	}
 	if (cmsg->state == CM_WAITING_FOR_CHANNEL) {
-		return advance_chanmsg_chanread(cmsg, chanfd, display_side, g);
+		return advance_chanmsg_chanread(
+				cmsg, cxs, chanfd, display_side, g);
 	} else {
 		return advance_chanmsg_progwrite(cmsg, progfd, display_side, g);
 	}
 }
 
-static int advance_waymsg_chanwrite(
-		struct way_msg_state *wmsg, int chanfd, bool display_side)
+static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
+		struct cross_state *ctx, int chanfd, bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
-	// Waiting for channel write to complete
 	struct transfer_data *td = &wmsg->transfers;
+	// First, clear out any transfers that are no longer needed
+	int k = 0;
+	for (int i = 0; i < td->start; i++) {
+		if (td->msgno[i] > ctx->last_confirmed_msgno) {
+			break;
+		}
+		if (td->data[i].iov_base != &td->zeros) {
+			free(td->data[i].iov_base);
+		}
+		td->data[i].iov_base = NULL;
+		td->data[i].iov_len = 0;
+		k = i;
+	}
+	memmove(td->msgno, td->msgno + k, (td->end - k) * sizeof(td->msgno[0]));
+	memmove(td->data, td->data + k, (td->end - k) * sizeof(td->data[0]));
+	td->start -= k;
+	td->end -= k;
+
+	// Waiting for channel write to complete
 	while (td->start < td->end) {
 		/* Advance the current element by amount actually written */
 		char *orig_base = td->data[td->start].iov_base;
@@ -545,12 +585,6 @@ static int advance_waymsg_chanwrite(
 				uwr = 0;
 			} else {
 				/* Block completed */
-				if (td->data[td->start].iov_base !=
-						&td->zeros) {
-					free(td->data[td->start].iov_base);
-				}
-				td->data[td->start].iov_len = 0;
-				td->data[td->start].iov_base = NULL;
 				td->partial_write_amt = 0;
 				uwr -= left;
 				td->start++;
@@ -559,11 +593,16 @@ static int advance_waymsg_chanwrite(
 	}
 	if (td->start == td->end) {
 		DTRACE_PROBE(waypipe, channel_write_end);
-		wp_debug("The %d-byte message from %s to channel has been written",
-				wmsg->total_written, progdesc);
+		int unacked_bytes = 0;
+		for (int i = 0; i < td->end; i++) {
+			unacked_bytes += td->data[i].iov_len;
+		}
 
-		td->start = 0;
-		td->end = 0;
+		wp_debug("Sent %d-byte message from %s to channel; %d-bytes in flight",
+				wmsg->total_written, progdesc, unacked_bytes);
+
+		/* do not delete the used transfers yet; we need a remote
+		 * acknowledgement */
 		td->partial_write_amt = 0;
 		wmsg->total_written = 0;
 		wmsg->state = WM_WAITING_FOR_PROGRAM;
@@ -571,8 +610,8 @@ static int advance_waymsg_chanwrite(
 	return 0;
 }
 static int advance_waymsg_progread(struct way_msg_state *wmsg,
-		struct globals *g, int progfd, bool display_side,
-		bool progsock_readable)
+		struct cross_state *cxs, struct globals *g, int progfd,
+		bool display_side, bool progsock_readable)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// We have data to read from programs/pipes
@@ -702,6 +741,18 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		wmsg->dbuffer_carryover_start = 0;
 	}
 
+	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
+		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
+		ackm->size_and_type = transfer_header(
+				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
+		ackm->messages_received = cxs->last_received_msgno;
+		cxs->last_acked_msgno = cxs->last_received_msgno;
+		/* To avoid infinite regress, receive acknowledgement
+		 * messages do not themselves increase the message counters. */
+		transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack), ackm,
+				wmsg->transfers.last_msgno);
+	}
+
 	if (wmsg->transfers.end > wmsg->transfers.start) {
 		size_t net_bytes = 0;
 		for (int i = wmsg->transfers.start; i < wmsg->transfers.end;
@@ -718,15 +769,18 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	}
 	return 0;
 }
-static int advance_waymsg_transfer(struct globals *g, int chanfd, int progfd,
-		bool display_side, struct way_msg_state *wmsg,
+static int advance_waymsg_transfer(struct globals *g,
+		struct way_msg_state *wmsg, struct cross_state *cxs,
+		bool display_side, int chanfd, int progfd,
+
 		bool progsock_readable)
 {
 	if (wmsg->state == WM_WAITING_FOR_CHANNEL) {
-		return advance_waymsg_chanwrite(wmsg, chanfd, display_side);
+		return advance_waymsg_chanwrite(
+				wmsg, cxs, chanfd, display_side);
 	} else {
-		return advance_waymsg_progread(wmsg, g, progfd, display_side,
-				progsock_readable);
+		return advance_waymsg_progread(wmsg, cxs, g, progfd,
+				display_side, progsock_readable);
 	}
 }
 
@@ -811,6 +865,11 @@ int main_interface_loop(int chanfd, int progfd,
 	init_message_tracker(&g.tracker);
 	setup_video_logging();
 
+	struct cross_state cross_data = {
+			.last_acked_msgno = 0,
+			.last_received_msgno = 0,
+	};
+
 	while (!shutdown_flag) {
 		struct pollfd *pfds = NULL;
 		int psize = 2 + count_npipes(&g.map);
@@ -832,7 +891,15 @@ int main_interface_loop(int chanfd, int progfd,
 		bool check_read = way_msg.state == WM_WAITING_FOR_PROGRAM;
 		int npoll = 2 + fill_with_pipes(&g.map, pfds + 2, check_read);
 
-		int r = poll(pfds, (nfds_t)npoll, -1);
+		bool own_msg_pending =
+				(cross_data.last_acked_msgno !=
+						cross_data.last_received_msgno) &&
+				way_msg.state == WM_WAITING_FOR_PROGRAM;
+		/* To coalesce acknowledgements, we wait for a minimum amount */
+		int min_ack_delay = 20;
+
+		int r = poll(pfds, (nfds_t)npoll,
+				own_msg_pending ? min_ack_delay : -1);
 		if (r == -1) {
 			free(pfds);
 			if (errno == EINTR) {
@@ -860,12 +927,14 @@ int main_interface_loop(int chanfd, int progfd,
 
 		// Q: randomize the order of these?, to highlight
 		// accidental dependencies?
-		if (advance_chanmsg_transfer(&g, chanfd, progfd, display_side,
-				    &chan_msg, chanmsg_active) == -1) {
+		if (advance_chanmsg_transfer(&g, &chan_msg, &cross_data,
+				    display_side, chanfd, progfd,
+				    chanmsg_active) == -1) {
 			break;
 		}
-		if (advance_waymsg_transfer(&g, chanfd, progfd, display_side,
-				    &way_msg, progsock_readable) == -1) {
+		if (advance_waymsg_transfer(&g, &way_msg, &cross_data,
+				    display_side, chanfd, progfd,
+				    progsock_readable) == -1) {
 			break;
 		}
 		// Periodic maintenance. It doesn't matter who does this
@@ -880,7 +949,7 @@ int main_interface_loop(int chanfd, int progfd,
 	free(way_msg.fds.data);
 	free(way_msg.rbuffer);
 	free(way_msg.dbuffer_edited);
-	for (int i = way_msg.transfers.start; i < way_msg.transfers.end; i++) {
+	for (int i = 0; i < way_msg.transfers.end; i++) {
 		if (way_msg.transfers.data[i].iov_base !=
 				way_msg.transfers.zeros) {
 			free(way_msg.transfers.data[i].iov_base);

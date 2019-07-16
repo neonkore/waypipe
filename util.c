@@ -225,7 +225,7 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 }
 
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
-		int msgno)
+		uint32_t msgno)
 {
 	if (size == 0) {
 		return true;
@@ -248,7 +248,8 @@ bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 	transfers->end++;
 	return true;
 }
-bool transfer_zeropad(struct transfer_data *transfers, size_t size, int msgno)
+bool transfer_zeropad(
+		struct transfer_data *transfers, size_t size, uint32_t msgno)
 {
 	return transfer_add(transfers, size, transfers->zeros, msgno);
 }

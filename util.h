@@ -303,8 +303,8 @@ struct wmsg_basic {
 };
 struct wmsg_ack {
 	uint32_t size_and_type;
-	int32_t remote_id;
 	uint32_t messages_received;
+	uint32_t pad3;
 	uint32_t pad4;
 };
 /* size: the number of bytes in the message, /excluding/ trailing padding. */
@@ -472,14 +472,14 @@ struct transfer_data {
 	struct iovec *data;
 	/* Matching vector indicating to which message the corresponding data
 	 * block belongs. */
-	int *msgno;
+	uint32_t *msgno;
 	/* start: next block to write. end: just after last block to write;
 	 * size: number of iovec blocks */
 	int start, end, size;
 	/* How much of the block at 'start' has been written */
 	int partial_write_amt;
 	/* The most recent message number */
-	int last_msgno;
+	uint32_t last_msgno;
 };
 
 struct wp_interface;
@@ -559,8 +559,9 @@ struct globals {
 };
 
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
-		int msgno);
-bool transfer_zeropad(struct transfer_data *transfers, size_t size, int msgno);
+		uint32_t msgno);
+bool transfer_zeropad(
+		struct transfer_data *transfers, size_t size, uint32_t msgno);
 
 int main_interface_loop(int chanfd, int progfd,
 		const struct main_config *config, bool display_side);
