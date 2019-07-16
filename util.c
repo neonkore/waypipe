@@ -225,7 +225,7 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 }
 
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
-		bool is_heap_allocated)
+		int msgno)
 {
 	if (size == 0) {
 		return true;
@@ -237,15 +237,18 @@ bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 		wp_error("Resize of transfer data failed");
 		return false;
 	}
-	if (buf_ensure_size(transfers->end + 1,
-			    sizeof(*transfers->heap_allocated), &sz2,
-			    (void **)&transfers->heap_allocated) == -1) {
-		wp_error("Resize of heap_allocated failed");
+	if (buf_ensure_size(transfers->end + 1, sizeof(*transfers->msgno), &sz2,
+			    (void **)&transfers->msgno) == -1) {
+		wp_error("Resize of transfer data failed");
 		return false;
 	}
 	transfers->data[transfers->end].iov_len = size;
 	transfers->data[transfers->end].iov_base = data;
-	transfers->heap_allocated[transfers->end] = is_heap_allocated;
+	transfers->msgno[transfers->end] = msgno;
 	transfers->end++;
 	return true;
+}
+bool transfer_zeropad(struct transfer_data *transfers, size_t size, int msgno)
+{
+	return transfer_add(transfers, size, transfers->zeros, msgno);
 }

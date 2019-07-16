@@ -184,12 +184,12 @@ static void cleanup_transfer(struct transfer_data *td)
 {
 
 	for (int i = td->start; i < td->end; i++) {
-		if (td->heap_allocated[i]) {
+		if (td->data[i].iov_base != &td->zeros) {
 			free(td->data[i].iov_base);
 		}
 	}
-	free(td->heap_allocated);
 	free(td->data);
+	free(td->msgno);
 }
 
 static bool test_transfer(struct fd_translation_map *src_map,

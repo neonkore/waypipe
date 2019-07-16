@@ -427,9 +427,6 @@ struct shadow_fd {
 	char *mem_local;
 	/* exact mirror of the contents, albeit allocated with overrun space */
 	char *mem_mirror;
-	char *diff_buffer;     // target buffer for uncompressed diff
-	char *compress_buffer; // target buffer for compressed diff
-	size_t compress_space;
 
 	// File data
 	size_t remote_bufsize; // used to check for and send file extensions
@@ -457,7 +454,6 @@ struct shadow_fd {
 	void *video_yuv_frame_data;
 	struct AVPacket *video_packet;
 	struct SwsContext *video_color_context;
-	char *video_buffer;
 	int64_t video_frameno;
 
 	VASurfaceID video_va_surface;
@@ -469,18 +465,21 @@ struct shadow_fd {
  * group of consecutive messages is 16-aligned, so that the headers make sense.
  */
 struct transfer_data {
+	/* A short buffer filled with zeros, to provide padding when the source
+	 * buffer is insufficiently large/shouldn't be modified. */
+	char zeros[16];
 	/* Data to be writtenveed */
 	struct iovec *data;
-	/* Whether or not to deallocate each iovec contents after sending */
-	bool *heap_allocated;
+	/* Matching vector indicating to which message the corresponding data
+	 * block belongs. */
+	int *msgno;
 	/* start: next block to write. end: just after last block to write;
 	 * size: number of iovec blocks */
 	int start, end, size;
 	/* How much of the block at 'start' has been written */
 	int partial_write_amt;
-	/* A short buffer filled with zeros, to provide padding when the source
-	 * buffer is insufficiently large/shouldn't be modified. */
-	char zeros[16];
+	/* The most recent message number */
+	int last_msgno;
 };
 
 struct wp_interface;
@@ -560,7 +559,8 @@ struct globals {
 };
 
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
-		bool is_heap_allocated);
+		int msgno);
+bool transfer_zeropad(struct transfer_data *transfers, size_t size, int msgno);
 
 int main_interface_loop(int chanfd, int progfd,
 		const struct main_config *config, bool display_side);

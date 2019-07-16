@@ -1071,8 +1071,10 @@ void collect_video_from_mirror(
 		memcpy(data, pkt->buf->data, pkt->buf->size);
 
 		transfer_add(transfers, sizeof(struct wmsg_basic), header,
-				true);
-		transfer_add(transfers, padded_len, data, true);
+				transfers->last_msgno);
+		transfer_add(transfers, padded_len, data,
+				transfers->last_msgno);
+		transfers->last_msgno++;
 
 		av_packet_unref(pkt);
 	}

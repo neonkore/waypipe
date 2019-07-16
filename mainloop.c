@@ -545,7 +545,8 @@ static int advance_waymsg_chanwrite(
 				uwr = 0;
 			} else {
 				/* Block completed */
-				if (td->heap_allocated[td->start]) {
+				if (td->data[td->start].iov_base !=
+						&td->zeros) {
 					free(td->data[td->start].iov_base);
 				}
 				td->data[td->start].iov_len = 0;
@@ -648,20 +649,18 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		/* Inject file descriptors and parse the protocol after
 		 * collecting the updates produced from them */
 		if (wmsg->rbuffer_count > 0) {
-			uint32_t *protoh = calloc(1, sizeof(uint32_t));
 			size_t act_size =
 					wmsg->rbuffer_count * sizeof(int32_t) +
 					sizeof(uint32_t);
-			*protoh = transfer_header(act_size, WMSG_INJECT_RIDS);
-
-			transfer_add(&wmsg->transfers, sizeof(uint32_t), protoh,
-					true);
-			transfer_add(&wmsg->transfers,
-					wmsg->rbuffer_count * sizeof(int32_t),
-					wmsg->rbuffer, false);
-			transfer_add(&wmsg->transfers,
-					alignu(act_size, 16) - act_size,
-					wmsg->transfers.zeros, false);
+			size_t pad_size = alignu(act_size, 16);
+			uint32_t *msg = malloc(pad_size);
+			msg[0] = transfer_header(act_size, WMSG_INJECT_RIDS);
+			memcpy(&msg[1], wmsg->rbuffer,
+					wmsg->rbuffer_count * sizeof(int32_t));
+			memset(&msg[1 + wmsg->rbuffer_count], 0,
+					pad_size - act_size);
+			transfer_add(&wmsg->transfers, pad_size, msg,
+					wmsg->transfers.last_msgno++);
 
 			decref_transferred_rids(&g->map, wmsg->rbuffer_count,
 					wmsg->rbuffer);
@@ -670,19 +669,19 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		if (dst.zone_end > 0) {
 			wp_debug("We are transferring a data buffer with %ld bytes",
 					dst.zone_end);
-			uint32_t *protoh = calloc(1, sizeof(uint32_t));
 			size_t act_size = dst.zone_end + sizeof(uint32_t);
-			*protoh = transfer_header(act_size, WMSG_PROTOCOL);
+			uint32_t protoh = transfer_header(
+					act_size, WMSG_PROTOCOL);
 
-			transfer_add(&wmsg->transfers, sizeof(uint32_t), protoh,
-					true);
-			uint8_t *copy_proto = malloc(dst.zone_end);
-			memcpy(copy_proto, dst.data, dst.zone_end);
-			transfer_add(&wmsg->transfers, dst.zone_end, copy_proto,
-					true);
-			transfer_add(&wmsg->transfers,
-					alignu(act_size, 16) - act_size,
-					wmsg->transfers.zeros, false);
+			uint8_t *copy_proto = malloc(alignu(act_size, 16));
+			memcpy(copy_proto, &protoh, sizeof(uint32_t));
+			memcpy(copy_proto + sizeof(uint32_t), dst.data,
+					dst.zone_end);
+			memset(copy_proto + sizeof(uint32_t) + dst.zone_end, 0,
+					alignu(act_size, 16) - act_size);
+			transfer_add(&wmsg->transfers, alignu(act_size, 16),
+					copy_proto,
+					wmsg->transfers.last_msgno++);
 		}
 
 		// Introduce carryover data
@@ -882,12 +881,13 @@ int main_interface_loop(int chanfd, int progfd,
 	free(way_msg.rbuffer);
 	free(way_msg.dbuffer_edited);
 	for (int i = way_msg.transfers.start; i < way_msg.transfers.end; i++) {
-		if (way_msg.transfers.heap_allocated[i]) {
+		if (way_msg.transfers.data[i].iov_base !=
+				way_msg.transfers.zeros) {
 			free(way_msg.transfers.data[i].iov_base);
 		}
 	}
+	free(way_msg.transfers.msgno);
 	free(way_msg.transfers.data);
-	free(way_msg.transfers.heap_allocated);
 	// We do not free chan_msg.dbuffer, as it is a subset of
 	// cmsg_buffer
 	free(chan_msg.tfbuffer);
