@@ -28,7 +28,7 @@ def safe_cleanup(process):
         if process.poll() is None:
             # certain weston client programs appear to initiate shutdown proceedings correctly; however, they appear to wait for a frame beforehand, and the headless weston doesn't ask for additional frames
             process.send_signal(signal.SIGINT)
-            time.sleep(0.01)
+            time.sleep(0.1)
     try:
         process.wait(100)
     except subprocess.TimeoutExpired:
