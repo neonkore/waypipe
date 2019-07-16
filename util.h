@@ -308,12 +308,15 @@ struct wmsg_ack {
 	uint32_t pad4;
 };
 /* size: the number of bytes in the message, /excluding/ trailing padding. */
-inline uint32_t transfer_header(size_t size, enum wmsg_type type)
+static inline uint32_t transfer_header(size_t size, enum wmsg_type type)
 {
 	return ((uint32_t)size << 5) | (uint32_t)type;
 }
-inline size_t transfer_size(uint32_t header) { return (size_t)header >> 5; }
-inline enum wmsg_type transfer_type(uint32_t header)
+static inline size_t transfer_size(uint32_t header)
+{
+	return (size_t)header >> 5;
+}
+static inline enum wmsg_type transfer_type(uint32_t header)
 {
 	return (enum wmsg_type)(header & ((1u << 5) - 1));
 }
