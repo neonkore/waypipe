@@ -784,13 +784,14 @@ static int advance_waymsg_transfer(struct globals *g,
 	}
 }
 
-int main_interface_loop(int chanfd, int progfd,
+int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_nonblocking(chanfd) == -1) {
 		wp_error("Error making channel connection nonblocking: %s",
 				strerror(errno));
+		close(linkfd);
 		close(chanfd);
 		close(progfd);
 		return EXIT_FAILURE;
@@ -798,6 +799,15 @@ int main_interface_loop(int chanfd, int progfd,
 	if (set_nonblocking(progfd) == -1) {
 		wp_error("Error making %s connection nonblocking: %s", progdesc,
 				strerror(errno));
+		close(linkfd);
+		close(chanfd);
+		close(progfd);
+		return EXIT_FAILURE;
+	}
+	if (set_nonblocking(linkfd) == -1) {
+		wp_error("Error making %s connection nonblocking: %s", progdesc,
+				strerror(errno));
+		close(linkfd);
 		close(chanfd);
 		close(progfd);
 		return EXIT_FAILURE;
@@ -966,5 +976,6 @@ int main_interface_loop(int chanfd, int progfd,
 	free(chan_msg.dbuffer_edited);
 	close(chanfd);
 	close(progfd);
+	close(linkfd);
 	return EXIT_SUCCESS;
 }

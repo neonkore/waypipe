@@ -83,7 +83,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 
 	saddr.sun_family = AF_UNIX;
 	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sock == -1) {
 		wp_error("Error creating socket: %s", strerror(errno));
 		return -1;
@@ -138,6 +138,35 @@ int connect_to_socket(const char *socket_path)
 	return chanfd;
 }
 
+int send_one_fd(int socket, int fd)
+{
+	union {
+		char buf[CMSG_SPACE(sizeof(int))];
+		struct cmsghdr align;
+	} uc;
+	memset(uc.buf, 0, sizeof(uc.buf));
+	struct cmsghdr *frst = (struct cmsghdr *)(uc.buf);
+	frst->cmsg_level = SOL_SOCKET;
+	frst->cmsg_type = SCM_RIGHTS;
+	*((int *)CMSG_DATA(frst)) = fd;
+	frst->cmsg_len = CMSG_LEN(sizeof(int));
+
+	struct iovec the_iovec;
+	the_iovec.iov_len = 1;
+	uint8_t dummy_data = 1;
+	the_iovec.iov_base = &dummy_data;
+	struct msghdr msg;
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_iov = &the_iovec;
+	msg.msg_iovlen = 1;
+	msg.msg_flags = 0;
+	msg.msg_control = uc.buf;
+	msg.msg_controllen = CMSG_SPACE(sizeof(int));
+
+	return (int)sendmsg(socket, &msg, 0);
+}
+
 void test_log_handler(const char *file, int line, enum log_level level,
 		const char *fmt, ...)
 {
@@ -150,29 +179,43 @@ void test_log_handler(const char *file, int line, enum log_level level,
 	printf("\n");
 }
 
-bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options)
+bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options,
+		struct conn_map *map)
 {
 	bool found = false;
 	while (1) {
 		int stat;
 		pid_t r = waitpid((pid_t)-1, &stat, options);
-		if (r > 0) {
-			wp_debug("Child process %d has died", r);
-			if (r == target_pid) {
-				target_pid = 0;
-				*status = stat;
-				found = true;
-			}
-			continue;
-		}
-
-		if (r == -1 && (errno == ECHILD || errno == EINTR)) {
+		if (r == 0 || (r == -1 && (errno == ECHILD ||
+							  errno == EINTR))) {
 			// Valid exit reasons, not an error
 			errno = 0;
+			return found;
 		} else if (r == -1) {
 			wp_error("waitpid failed: %s", strerror(errno));
+			return found;
 		}
-		return found;
+
+		wp_debug("Child process %d has died", r);
+		if (map) {
+			/* Clean out all entries matching that pid */
+			int iw = 0;
+			for (int ir = 0; ir < map->count; ir++) {
+				map->data[iw] = map->data[ir];
+				if (map->data[ir].pid != r) {
+					iw++;
+				} else {
+					close(map->data[ir].linkfd);
+				}
+			}
+			map->count = iw;
+		}
+
+		if (r == target_pid) {
+			target_pid = 0;
+			*status = stat;
+			found = true;
+		}
 	}
 }
 

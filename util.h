@@ -73,13 +73,24 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
 /** Connect to the socket at the given path, returning created fd if
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
-
+/** A type to help keep track of the connection handling processes */
+struct conn_addr {
+	uint64_t token;
+	pid_t pid;
+	int linkfd;
+};
+struct conn_map {
+	struct conn_addr *data;
+	int count, size;
+};
 /** A useful helper routine for lists and stacks. `count` is the number of
  * objects that will be needed; `obj_size` their side; `size_t` the number
  * of objects that the malloc'd data can contain, and `data` the list buffer
  * itself. If count < space, resize the list and update space. Returns -1 on
  * allocation failure */
 int buf_ensure_size(int count, size_t obj_size, int *space, void **data);
+/** sendmsg a file descriptor over socket */
+int send_one_fd(int socket, int fd);
 
 enum log_level { WP_DEBUG = 0, WP_ERROR = 1 };
 typedef void (*log_handler_func_t)(const char *file, int line,
@@ -106,11 +117,12 @@ extern log_handler_func_t log_funcs[2];
 	if (log_funcs[WP_DEBUG])                                               \
 	(*log_funcs[WP_DEBUG])(WAYPIPE__FILE__, __LINE__, WP_DEBUG, __VA_ARGS__)
 
-/** Run waitpid in a loop until there are no more
- * zombies to clean up. If the target_pid was one of the
- * completed processes, set status, return true. The
- * `options` flag will be passed to waitpid */
-bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options);
+/** Run waitpid in a loop until there are no more zombies to clean up. If the
+ * target_pid was one of the completed processes, set status, return true. The
+ * `options` flag will be passed to waitpid. If `map` is not NULL, remove
+ * entries in the connection map which were closed */
+bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options,
+		struct conn_map *map);
 
 /** A helper type, since very often buffers and their sizes are passed together
  * (or returned together) as arguments */
@@ -563,7 +575,10 @@ bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 bool transfer_zeropad(
 		struct transfer_data *transfers, size_t size, uint32_t msgno);
 
-int main_interface_loop(int chanfd, int progfd,
+/* chanfd: connected socket to channel
+ * progfd: connected socket to Wayland program
+ * linkfd: optional connected socket providing new chanfds */
+int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side);
 
 void setup_translation_map(struct fd_translation_map *map, bool display_side,

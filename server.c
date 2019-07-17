@@ -34,13 +34,353 @@
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Generate a token with a very low accidental collision probability */
+static uint64_t get_random_token(uint64_t last_token)
+{
+	struct timespec tp;
+	clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
+	uint64_t pid = (uint64_t)getpid();
+	uint64_t base = last_token + 1;
+	base += ((uint64_t)tp.tv_sec * 1000000000uL + (uint64_t)tp.tv_nsec) *
+		0x1000uL;
+	base += pid;
+	/* /dev/urandom isn't always available, e.g., when using chroot */
+	int devrand = open("/dev/urandom", O_RDONLY);
+	if (devrand != -1) {
+		errno = 0;
+		uint64_t offset = 0;
+		read(devrand, &offset, sizeof(offset));
+		close(devrand);
+		base += offset;
+	}
+	return base;
+}
+
+static int run_single_server_reconnector(
+		int control_pipe, int linkfd, uint64_t token)
+{
+	int retcode = EXIT_SUCCESS;
+	while (!shutdown_flag) {
+		struct pollfd pf[2];
+		pf[0].fd = control_pipe;
+		pf[0].events = POLLIN;
+		pf[0].revents = 0;
+		pf[1].fd = linkfd;
+		pf[1].events = 0;
+		pf[1].revents = 0;
+
+		int r = poll(pf, 2, -1);
+		if (r == -1 && errno == EINTR) {
+			continue;
+		} else if (r == -1) {
+			retcode = EXIT_FAILURE;
+			break;
+		} else if (r == 0) {
+			// Nothing to read
+			continue;
+		}
+
+		if (pf[1].revents & POLLHUP) {
+			/* Hang up, main thread has closed its link */
+			break;
+		}
+		if (pf[0].revents & POLLIN) {
+			/* It is extremely unlikely that a signal would
+			 * interrupt a read of properly sized socketpath */
+			char path[4096];
+			ssize_t amt = read(
+					control_pipe, path, sizeof(path) - 1);
+			if (amt == -1) {
+				wp_error("Failed to read from control pipe: %s",
+						strerror(errno));
+				retcode = EXIT_FAILURE;
+				break;
+			}
+			path[amt] = '\0';
+			if (strlen(path) < 108) {
+				wp_error("New socket path: %s", path);
+				int new_conn = connect_to_socket(path);
+				if (new_conn == -1) {
+					wp_error("Socket path \"%s\" was invalid: %s",
+							path, strerror(errno));
+					/* Socket path was invalid */
+					continue;
+				}
+				if (write(new_conn, &token, sizeof(token)) !=
+						sizeof(token)) {
+					wp_error("Failed to write to new connection: %s",
+							strerror(errno));
+					close(new_conn);
+					continue;
+				}
+
+				if (send_one_fd(linkfd, new_conn) == -1) {
+					wp_error("Failed to send new connection to subprocess: %s",
+							strerror(errno));
+				}
+				close(new_conn);
+			}
+		}
+	}
+	close(control_pipe);
+	close(linkfd);
+	return retcode;
+}
+
+static int run_single_server(int control_pipe, const char *socket_path,
+		bool unlink_at_end, int server_link,
+		const struct main_config *config)
+{
+	int chanfd = connect_to_socket(socket_path);
+	if (chanfd == -1) {
+		goto fail_srv;
+	}
+	/* Only unlink the socket if it actually was a socket */
+	if (unlink_at_end) {
+		unlink(socket_path);
+	}
+
+	uint64_t token = get_random_token(0);
+	if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
+		wp_error("Failed to write connection token to socket");
+		goto fail_cfd;
+	}
+
+	int linkfds[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
+		wp_error("Failed to create socketpair: %s", strerror(errno));
+		goto fail_cfd;
+	}
+
+	if (control_pipe != -1) {
+		pid_t reco_pid = fork();
+		if (reco_pid == -1) {
+			wp_debug("Fork failure");
+			close(linkfds[0]);
+			close(linkfds[1]);
+			goto fail_cfd;
+		} else if (reco_pid == 0) {
+			close(chanfd);
+			close(linkfds[0]);
+			close(server_link);
+			int rc = run_single_server_reconnector(
+					control_pipe, linkfds[1], token);
+			exit(rc);
+		}
+	}
+
+	close(linkfds[1]);
+	return main_interface_loop(
+			chanfd, server_link, linkfds[0], config, false);
+
+fail_cfd:
+	close(chanfd);
+fail_srv:
+	close(server_link);
+	return EXIT_FAILURE;
+}
+
+static int handle_new_server_connection(const char *current_sockpath,
+		int control_pipe, int wdisplay_socket, int appfd,
+		struct conn_map *connmap, const struct main_config *config,
+		uint64_t new_token)
+{
+	if (buf_ensure_size(connmap->count + 1, sizeof(struct conn_addr),
+			    &connmap->size, (void **)&connmap->data) == -1) {
+		wp_error("Failed to allocate memory to track new connection");
+		goto fail_appfd;
+	}
+
+	int chanfd = connect_to_socket(current_sockpath);
+	if (chanfd == -1) {
+		goto fail_appfd;
+	}
+	if (write(chanfd, &new_token, sizeof(new_token)) != sizeof(new_token)) {
+		wp_error("Failed to write connection token: %s",
+				strerror(errno));
+		goto fail_chanfd;
+	}
+
+	int linksocks[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linksocks) == -1) {
+		wp_error("Socketpair for process link failed: %s",
+				strerror(errno));
+		goto fail_chanfd;
+	}
+
+	pid_t npid = fork();
+	if (npid == 0) {
+		// Run forked process, with the only shared state being the
+		// new channel socket
+		close(wdisplay_socket);
+		close(control_pipe);
+		close(linksocks[0]);
+		int rc = main_interface_loop(
+				chanfd, appfd, linksocks[1], config, false);
+		exit(rc);
+	} else if (npid == -1) {
+		wp_debug("Fork failure");
+		close(linksocks[0]);
+		close(linksocks[1]);
+		goto fail_chanfd;
+	}
+
+	// This process no longer needs the application connection
+	close(chanfd);
+	close(appfd);
+	close(linksocks[1]);
+
+	connmap->data[connmap->count++] = (struct conn_addr){
+			.token = new_token,
+			.pid = npid,
+			.linkfd = linksocks[0],
+	};
+
+	return 0;
+fail_chanfd:
+	close(chanfd);
+fail_appfd:
+	close(appfd);
+	return -1;
+}
+
+static int update_connections(char current_sockpath[static 110],
+		const char *path, struct conn_map *connmap, bool unlink_at_end)
+{
+	/* TODO: what happens if there's a partial failure? */
+	for (int i = 0; i < connmap->count; i++) {
+		int chanfd = connect_to_socket(path);
+		if (chanfd == -1) {
+			wp_error("Failed to connect to socket at \"%s\": %s",
+					path, strerror(errno));
+			return -1;
+		}
+		uint64_t token = connmap->data[i].token;
+		if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
+			wp_error("Failed to write token to replacement connection: %s",
+					strerror(errno));
+			close(chanfd);
+			return -1;
+		}
+		if (send_one_fd(connmap->data[i].linkfd, chanfd) == -1) {
+			// TODO: what happens if data has changed?
+			close(chanfd);
+			return -1;
+		}
+	}
+	/* If switching connections succeeded, adopt the new socket */
+	if (unlink_at_end) {
+		unlink(current_sockpath);
+	}
+	strncpy(current_sockpath, path, 109);
+	return 0;
+}
+
+static int run_multi_server(int control_pipe, const char *socket_path,
+		bool unlink_at_end, int wdisplay_socket,
+		const struct main_config *config, pid_t child_pid)
+{
+	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
+	char current_sockpath[110];
+	current_sockpath[sizeof(current_sockpath) - 1] = 0;
+	strncpy(current_sockpath, socket_path, sizeof(current_sockpath) - 1);
+
+	struct pollfd pfs[2];
+	pfs[0].fd = wdisplay_socket;
+	pfs[0].events = POLLIN;
+	pfs[0].revents = 0;
+	pfs[1].fd = control_pipe;
+	pfs[1].events = POLLIN;
+	pfs[1].revents = 0;
+	int retcode = EXIT_SUCCESS;
+	uint64_t last_token = 0;
+	while (!shutdown_flag) {
+		int status = -1;
+		if (wait_for_pid_and_clean(
+				    child_pid, &status, WNOHANG, &connmap)) {
+			child_pid = 0;
+			wp_debug("Child program has died, exiting");
+			retcode = WEXITSTATUS(status);
+			break;
+		}
+
+		int r = poll(pfs, 1 + (control_pipe != -1), -1);
+		if (r == -1) {
+			if (errno == EINTR) {
+				// If SIGCHLD, we will check the child.
+				// If SIGINT, the loop ends
+				continue;
+			}
+			fprintf(stderr, "Poll failed: %s", strerror(errno));
+			retcode = EXIT_FAILURE;
+			break;
+		} else if (r == 0) {
+			continue;
+		}
+		if (pfs[1].revents & POLLIN) {
+			char path[4096];
+			ssize_t amt = read(
+					control_pipe, path, sizeof(path) - 1);
+			if (amt == -1) {
+				wp_error("Failed to read from control pipe: %s",
+						strerror(errno));
+			} else {
+				path[amt] = '\0';
+				if (strlen(path) <= 108) {
+					update_connections(current_sockpath,
+							path, &connmap,
+							unlink_at_end);
+				}
+			}
+		}
+
+		if (pfs[0].revents & POLLIN) {
+			int appfd = accept(wdisplay_socket, NULL, NULL);
+			if (appfd == -1) {
+				if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					// The wakeup may have been
+					// spurious
+					continue;
+				}
+				wp_error("Connection failure: %s",
+						strerror(errno));
+				retcode = EXIT_FAILURE;
+				break;
+			} else {
+				last_token = get_random_token(last_token);
+				if (handle_new_server_connection(
+						    current_sockpath,
+						    control_pipe,
+						    wdisplay_socket, appfd,
+						    &connmap, config,
+						    last_token) == -1) {
+					retcode = EXIT_FAILURE;
+					break;
+				}
+			}
+		}
+	}
+	if (unlink_at_end) {
+		unlink(current_sockpath);
+	}
+	close(wdisplay_socket);
+
+	for (int i = 0; i < connmap.count; i++) {
+		close(connmap.data[i].linkfd);
+	}
+	free(connmap.data);
+	return retcode;
+}
+
 int run_server(const char *socket_path, const char *wayland_display,
-		const struct main_config *config, bool oneshot,
-		bool unlink_at_end, const char *application,
+		const char *control_path, const struct main_config *config,
+		bool oneshot, bool unlink_at_end, const char *application,
 		char *const app_argv[])
 {
 	wp_debug("I'm a server on %s, running: %s", socket_path, app_argv[0]);
@@ -123,104 +463,40 @@ int run_server(const char *socket_path, const char *wayland_display,
 		close(wayland_socket);
 	}
 
-	int retcode = EXIT_SUCCESS;
-	if (oneshot) {
-		int chanfd = connect_to_socket(socket_path);
-		if (unlink_at_end) {
-			unlink(socket_path);
-		}
-
-		wp_debug("Oneshot connected");
-		if (chanfd != -1) {
-			retcode = main_interface_loop(
-					chanfd, server_link, config, false);
+	int control_pipe = -1;
+	if (control_path) {
+		if (mkfifo(control_path, 0644) == -1) {
+			wp_error("Failed to make a control FIFO at %s: %s",
+					control_path, strerror(errno));
 		} else {
-			retcode = EXIT_FAILURE;
-		}
-		close(server_link);
-
-		wp_debug("Waiting for child process");
-	} else {
-		// Poll loop - 1s poll, either child dies, or we have a
-		// connection
-		struct pollfd pf;
-		pf.fd = wdisplay_socket;
-		pf.events = POLLIN;
-		pf.revents = 0;
-		while (!shutdown_flag) {
-			int status = -1;
-			if (wait_for_pid_and_clean(pid, &status, WNOHANG)) {
-				pid = 0;
-				wp_debug("Child program has died, exiting");
-				retcode = WEXITSTATUS(status);
-				break;
-			}
-
-			int r = poll(&pf, 1, -1);
-			if (r == -1) {
-				if (errno == EINTR) {
-					// If SIGCHLD, we will check the child.
-					// If SIGINT, the loop ends
-					continue;
-				}
-				fprintf(stderr, "Poll failed: %s",
-						strerror(errno));
-				retcode = EXIT_FAILURE;
-				break;
-			} else if (r == 0) {
-				continue;
-			}
-
-			int appfd = accept(wdisplay_socket, NULL, NULL);
-			if (appfd == -1) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK) {
-					// The wakeup may have been spurious
-					continue;
-				}
-				wp_error("Connection failure: %s",
-						strerror(errno));
-				retcode = EXIT_FAILURE;
-				break;
-			} else {
-
-				pid_t npid = fork();
-				if (npid == 0) {
-					// Run forked process, with the only
-					// shared state being the new channel
-					// socket
-					close(wdisplay_socket);
-					int chanfd = connect_to_socket(
-							socket_path);
-					if (chanfd != -1) {
-						return main_interface_loop(
-								chanfd, appfd,
-								config, false);
-					} else {
-						return EXIT_FAILURE;
-					}
-				} else if (npid == -1) {
-					wp_debug("Fork failure");
-					retcode = EXIT_FAILURE;
-					break;
-				} else {
-					// This process no longer needs the
-					// application connection
-					close(appfd);
-				}
-				continue;
+			control_pipe = open(
+					control_path, O_RDONLY | O_NONBLOCK);
+			if (control_pipe == -1) {
+				wp_error("Failed to open created FIFO for reading: %s",
+						control_path, strerror(errno));
 			}
 		}
-		if (unlink_at_end) {
-			unlink(socket_path);
-		}
-		unlink(display_path);
-		close(wdisplay_socket);
-
-		// Wait for child processes to exit
-		wp_debug("Waiting for child handlers and program");
 	}
+
+	int retcode = EXIT_SUCCESS;
+	/* These functions will close server_link and wdisplay_socket */
+	if (oneshot) {
+		retcode = run_single_server(control_pipe, socket_path,
+				unlink_at_end, server_link, config);
+	} else {
+		retcode = run_multi_server(control_pipe, socket_path,
+				unlink_at_end, wdisplay_socket, config, pid);
+	}
+	if (control_pipe != -1) {
+		unlink(control_path);
+	}
+
+	// Wait for child processes to exit
+	wp_debug("Waiting for child handlers and program");
+
 	int status = -1;
-	if (wait_for_pid_and_clean(pid, &status, shutdown_flag ? WNOHANG : 0)) {
+	if (wait_for_pid_and_clean(
+			    pid, &status, shutdown_flag ? WNOHANG : 0, NULL)) {
 		wp_debug("Child program has died, exiting");
 		retcode = WEXITSTATUS(status);
 	}

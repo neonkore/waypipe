@@ -87,6 +87,294 @@ static int get_display_path(char path[static MAX_SOCKETPATH_LEN])
 	return 0;
 }
 
+static int run_single_client_reconnector(
+		int channelsock, int linkfd, uint64_t conn_id)
+{
+	int retcode = EXIT_SUCCESS;
+	while (!shutdown_flag) {
+		struct pollfd pf[2];
+		pf[0].fd = channelsock;
+		pf[0].events = POLLIN;
+		pf[0].revents = 0;
+		pf[1].fd = linkfd;
+		pf[1].events = 0;
+		pf[1].revents = 0;
+
+		int r = poll(pf, 2, -1);
+		if (r == -1 && errno == EINTR) {
+			continue;
+		} else if (r == -1) {
+			retcode = EXIT_FAILURE;
+			break;
+		} else if (r == 0) {
+			// Nothing to read
+			continue;
+		}
+
+		if (pf[1].revents & POLLHUP) {
+			/* Hang up, main thread has closed its link */
+			break;
+		}
+		if (pf[0].revents & POLLIN) {
+			int newclient = accept(channelsock, NULL, NULL);
+			if (newclient == -1) {
+				if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					// The wakeup may have been spurious
+					continue;
+				}
+				wp_error("Connection failure: %s",
+						strerror(errno));
+				retcode = EXIT_FAILURE;
+				break;
+			} else {
+				uint64_t new_conn = 0;
+				if (read(newclient, &new_conn,
+						    sizeof(new_conn)) !=
+						sizeof(new_conn)) {
+					wp_error("Failed to get connection id");
+					retcode = EXIT_FAILURE;
+					close(newclient);
+					break;
+				}
+				if (new_conn != conn_id) {
+					close(newclient);
+					continue;
+				}
+				if (send_one_fd(linkfd, newclient) == -1) {
+					wp_error("Failed to get connection id");
+					retcode = EXIT_FAILURE;
+					close(newclient);
+					break;
+				}
+				close(newclient);
+			}
+		}
+	}
+	close(channelsock);
+	close(linkfd);
+	return retcode;
+}
+
+static int run_single_client(int channelsock, pid_t eol_pid,
+		const struct main_config *config, int disp_fd)
+{
+	/* To support reconnection attempts, this mode creates a child
+	 * reconnection watcher process, linked via socketpair */
+	int retcode = EXIT_SUCCESS;
+	int chanclient = -1;
+	uint64_t conn_id = (uint64_t)-1;
+	while (!shutdown_flag) {
+		int status = -1;
+		if (wait_for_pid_and_clean(eol_pid, &status, WNOHANG, NULL)) {
+			eol_pid = 0; // < in case eol_pid is recycled
+
+			wp_debug("Child (ssh) died, exiting");
+			// Copy the exit code
+			retcode = WEXITSTATUS(status);
+			break;
+		}
+
+		struct pollfd cs;
+		cs.fd = channelsock;
+		cs.events = POLLIN;
+		cs.revents = 0;
+		int r = poll(&cs, 1, -1);
+		if (r == -1) {
+			if (errno == EINTR) {
+				// If SIGCHLD, we will check the child.
+				// If SIGINT, the loop ends
+				continue;
+			}
+			retcode = EXIT_FAILURE;
+			break;
+		} else if (r == 0) {
+			// Nothing to read
+			continue;
+		}
+
+		chanclient = accept(channelsock, NULL, NULL);
+		if (chanclient == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				// The wakeup may have been spurious
+				continue;
+			}
+			wp_error("Connection failure: %s", strerror(errno));
+			retcode = EXIT_FAILURE;
+			break;
+		} else {
+			if (read(chanclient, &conn_id, sizeof(conn_id)) !=
+					sizeof(conn_id)) {
+				wp_error("Failed to get connection id");
+				retcode = EXIT_FAILURE;
+				close(chanclient);
+				chanclient = -1;
+			}
+			break;
+		}
+	}
+	if (retcode == EXIT_FAILURE || shutdown_flag || chanclient == -1) {
+		return retcode;
+	}
+
+	/* Fork a reconnection handler */
+	int linkfds[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
+		wp_error("Failed to create socketpair: %s", strerror(errno));
+		close(chanclient);
+		return EXIT_FAILURE;
+	}
+
+	pid_t reco_pid = fork();
+	if (reco_pid == -1) {
+		wp_debug("Fork failure");
+		close(chanclient);
+		return EXIT_FAILURE;
+	} else if (reco_pid == 0) {
+		close(linkfds[0]);
+		close(chanclient);
+		close(disp_fd);
+		int rc = run_single_client_reconnector(
+				channelsock, linkfds[1], conn_id);
+		exit(rc);
+	}
+	close(linkfds[1]);
+	close(channelsock);
+
+	return main_interface_loop(
+			chanclient, disp_fd, linkfds[0], config, true);
+}
+
+static int handle_new_client_connection(int channelsock, int chanclient,
+		struct conn_map *connmap, const struct main_config *config,
+		const char disp_path[static MAX_SOCKETPATH_LEN])
+{
+
+	uint64_t conn_id;
+	if (read(chanclient, &conn_id, sizeof(conn_id)) != sizeof(conn_id)) {
+		wp_error("Failed to get connection id");
+		goto fail_cc;
+	}
+	for (int i = 0; i < connmap->count; i++) {
+		if (connmap->data[i].token == conn_id) {
+			if (send_one_fd(connmap->data[i].linkfd, chanclient) ==
+					-1) {
+				wp_error("Failed to send new connection fd to subprocess: %s",
+						strerror(errno));
+				goto fail_cc;
+			}
+			close(chanclient);
+			return 0;
+		}
+	}
+	if (buf_ensure_size(connmap->count + 1, sizeof(struct conn_addr),
+			    &connmap->size, (void **)&connmap->data) == -1) {
+		wp_error("Failed to allocate space to track connection");
+		goto fail_cc;
+	}
+	int linkfds[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
+		wp_error("Failed to create socketpair: %s", strerror(errno));
+		goto fail_cc;
+	}
+
+	pid_t npid = fork();
+	if (npid == 0) {
+		// Run forked process, with the only
+		// shared state being the new channel
+		// socket
+		close(channelsock);
+		close(linkfds[0]);
+
+		int dfd = connect_to_socket(disp_path);
+		if (dfd == -1) {
+			return EXIT_FAILURE;
+		}
+		// ignore retcode ?
+		main_interface_loop(chanclient, dfd, linkfds[1], config, true);
+		close(dfd);
+
+		exit(EXIT_SUCCESS);
+	} else if (npid == -1) {
+		wp_debug("Fork failure");
+		goto fail_ps;
+	}
+	// Remove connection from this process
+	close(chanclient);
+	connmap->data[connmap->count++] = (struct conn_addr){
+			.linkfd = linkfds[0], .token = conn_id, .pid = npid};
+
+	return 0;
+fail_ps:
+	close(linkfds[0]);
+fail_cc:
+	close(chanclient);
+	return -1;
+}
+
+static int run_multi_client(int channelsock, pid_t eol_pid,
+		const struct main_config *config,
+		const char disp_path[static MAX_SOCKETPATH_LEN])
+{
+	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
+
+	struct pollfd cs;
+	cs.fd = channelsock;
+	cs.events = POLLIN;
+	cs.revents = 0;
+	int retcode = EXIT_SUCCESS;
+	while (!shutdown_flag) {
+		int status = -1;
+		if (wait_for_pid_and_clean(
+				    eol_pid, &status, WNOHANG, &connmap)) {
+			eol_pid = 0; // < in case eol_pid is recycled
+
+			wp_debug("Child (ssh) died, exiting");
+			// Copy the exit code
+			retcode = WEXITSTATUS(status);
+			break;
+		}
+
+		int r = poll(&cs, 1, -1);
+		if (r == -1) {
+			if (errno == EINTR) {
+				// If SIGCHLD, we will check the child.
+				// If SIGINT, the loop ends
+				continue;
+			}
+			retcode = EXIT_FAILURE;
+			break;
+		} else if (r == 0) {
+			// Nothing to read
+			continue;
+		}
+
+		int chanclient = accept(channelsock, NULL, NULL);
+		if (chanclient == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				// The wakeup may have been spurious
+				continue;
+			}
+			wp_error("Connection failure: %s", strerror(errno));
+			retcode = EXIT_FAILURE;
+			break;
+		} else {
+			if (handle_new_client_connection(channelsock,
+					    chanclient, &connmap, config,
+					    disp_path) == -1) {
+				retcode = EXIT_FAILURE;
+				break;
+			}
+		}
+	}
+
+	for (int i = 0; i < connmap.count; i++) {
+		close(connmap.data[i].linkfd);
+	}
+	free(connmap.data);
+	close(channelsock);
+	return retcode;
+}
+
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool via_socket, pid_t eol_pid)
 {
@@ -141,96 +429,21 @@ int run_client(const char *socket_path, const struct main_config *config,
 		return EXIT_FAILURE;
 	}
 
-	int retcode = EXIT_SUCCESS;
-
-	/* A large fraction of the logic here is needed if we run in
-	 * 'ssh' mode, but the ssh invocation itself fails while we
-	 * are waiting for a socket accept */
-	struct pollfd cs;
-	cs.fd = channelsock;
-	cs.events = POLLIN;
-	cs.revents = 0;
-	while (!shutdown_flag) {
-		int status = -1;
-		if (wait_for_pid_and_clean(eol_pid, &status, WNOHANG)) {
-			eol_pid = 0; // < in case eol_pid is recycled
-
-			wp_debug("Child (ssh) died, exiting");
-			// Copy the exit code
-			retcode = WEXITSTATUS(status);
-			break;
-		}
-
-		int r = poll(&cs, 1, -1);
-		if (r == -1) {
-			if (errno == EINTR) {
-				// If SIGCHLD, we will check the child.
-				// If SIGINT, the loop ends
-				continue;
-			}
-			retcode = EXIT_FAILURE;
-			break;
-		} else if (r == 0) {
-			// Nothing to read
-			continue;
-		}
-
-		int chanclient = accept(channelsock, NULL, NULL);
-		if (chanclient == -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				// The wakeup may have been spurious
-				continue;
-			}
-			wp_error("Connection failure: %s", strerror(errno));
-			retcode = EXIT_FAILURE;
-			break;
-		} else {
-			if (oneshot) {
-				retcode = main_interface_loop(chanclient,
-						dispfd, config, true);
-				break;
-			} else {
-				pid_t npid = fork();
-				if (npid == 0) {
-					// Run forked process, with the only
-					// shared state being the new channel
-					// socket
-					close(channelsock);
-
-					int dfd = connect_to_socket(disp_path);
-					if (dfd == -1) {
-						return EXIT_FAILURE;
-					}
-					// ignore retcode ?
-					main_interface_loop(chanclient, dfd,
-							config, true);
-					close(dfd);
-
-					// exit path?
-					return EXIT_SUCCESS;
-				} else if (npid == -1) {
-					wp_debug("Fork failure");
-					retcode = EXIT_FAILURE;
-					break;
-				} else {
-					// Remove connection from this process
-					close(chanclient);
-				}
-				continue;
-			}
-		}
+	/* These handlers close the channelsock and dispfd */
+	int retcode;
+	if (oneshot) {
+		retcode = run_single_client(
+				channelsock, eol_pid, config, dispfd);
+	} else {
+		retcode = run_multi_client(
+				channelsock, eol_pid, config, disp_path);
 	}
-
-	if (dispfd != -1) {
-		close(dispfd);
-	}
-	close(channelsock);
 	unlink(socket_path);
 	int cleanup_type = shutdown_flag ? WNOHANG : 0;
 
 	int status = -1;
 	// Don't return until all child processes complete
-	if (wait_for_pid_and_clean(eol_pid, &status, cleanup_type)) {
+	if (wait_for_pid_and_clean(eol_pid, &status, cleanup_type, NULL)) {
 		retcode = WEXITSTATUS(status);
 	}
 	return retcode;

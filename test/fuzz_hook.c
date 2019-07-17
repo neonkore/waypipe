@@ -44,6 +44,7 @@
 struct copy_setup {
 	int conn;
 	int wayl;
+	int link;
 	bool is_display_side;
 	struct main_config *mc;
 };
@@ -51,7 +52,7 @@ struct copy_setup {
 void *start_looper(void *data)
 {
 	struct copy_setup *setup = (struct copy_setup *)data;
-	main_interface_loop(setup->conn, setup->wayl, setup->mc,
+	main_interface_loop(setup->conn, setup->wayl, setup->link, setup->mc,
 			setup->is_display_side);
 	return NULL;
 }
@@ -109,10 +110,12 @@ int main(int argc, char **argv)
 	close(fd);
 	printf("Loaded %ld bytes\n", len);
 
-	int srv_fds[2], cli_fds[2], conn_fds[2];
+	int srv_fds[2], cli_fds[2], conn_fds[2], srv_links[2], cli_links[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, srv_fds) == -1 ||
 			socketpair(AF_UNIX, SOCK_STREAM, 0, cli_fds) == -1 ||
-			socketpair(AF_UNIX, SOCK_STREAM, 0, conn_fds) == -1) {
+			socketpair(AF_UNIX, SOCK_STREAM, 0, conn_fds) == -1 ||
+			socketpair(AF_UNIX, SOCK_STREAM, 0, srv_links) == -1 ||
+			socketpair(AF_UNIX, SOCK_STREAM, 0, cli_links) == -1) {
 		printf("Socketpair failed\n");
 		return EXIT_FAILURE;
 	}
@@ -128,10 +131,12 @@ int main(int argc, char **argv)
 	pthread_t thread_a, thread_b;
 	struct copy_setup server_conf = {.conn = conn_fds[0],
 			.wayl = srv_fds[1],
+			.link = srv_links[1],
 			.is_display_side = true,
 			.mc = &config};
 	struct copy_setup client_conf = {.conn = conn_fds[1],
 			.wayl = cli_fds[1],
+			.link = cli_links[1],
 			.is_display_side = false,
 			.mc = &config};
 	if (pthread_create(&thread_a, NULL, start_looper, &server_conf) == -1) {
@@ -309,6 +314,9 @@ int main(int argc, char **argv)
 
 	pthread_join(thread_a, NULL);
 	pthread_join(thread_b, NULL);
+
+	close(srv_links[0]);
+	close(cli_links[0]);
 
 	free(buf);
 	free(ignore_buf);

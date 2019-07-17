@@ -27,6 +27,7 @@
 
 #include "util.h"
 
+#include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -40,13 +41,13 @@
 #include <unistd.h>
 
 int run_server(const char *socket_path, const char *display_path,
-		const struct main_config *config, bool oneshot,
-		bool unlink_at_end, const char *application,
+		const char *control_path, const struct main_config *config,
+		bool oneshot, bool unlink_at_end, const char *application,
 		char *const app_argv[]);
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool via_socket, pid_t eol_pid);
 
-enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER };
+enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER, MODE_RECON };
 
 static bool log_to_tty = false;
 static enum waypipe_mode log_mode = MODE_FAIL;
@@ -66,6 +67,8 @@ static const char usage_string[] =
 		"                 a socket to a matching 'waypipe client' instance.\n"
 		"  client       Run locally to create a Unix socket to which 'waypipe server'\n"
 		"                 instances can connect.\n"
+		"  recon C T    Reconnect a broken connection; C is the control pipe, T is\n"
+		"                 the new Unix socket path. Writes null-terminated T to C.\n"
 		"\n"
 		"Options:\n"
 		"  -c, --compress C     select compression method from: lz4, zstd, none\n"
@@ -78,6 +81,7 @@ static const char usage_string[] =
 		"                         client default: /tmp/waypipe-client.sock\n"
 		"                         ssh mode: sets the prefix for the socket path\n"
 		"  -v, --version        print waypipe version and exit\n"
+		"      --control C      server,ssh mode: set the reconnection pipe path\n"
 		"      --display D      server,ssh mode: set the Wayland display name or path\n"
 		"      --drm-node R     set the local render node. default: /dev/dri/renderD128\n"
 		"      --remote-node R  ssh mode: set the remote render node path\n"
@@ -251,6 +255,33 @@ static void setup_login_shell_command(char shell[static 256],
 	}
 }
 
+/* Send the socket at 'recon_path' to the control socket at 'control_path'.
+ * Because connections are made by address, the waypipe server root process
+ * must be able to connect to the `recon path`. */
+static int run_recon(const char *control_path, const char *recon_path)
+{
+	size_t len = strlen(recon_path);
+	if (len >= 108) {
+		fprintf(stderr, "Reconnection socket path \"%s\" too long, %d>=%d\n",
+				control_path, (int)len, 108);
+		return EXIT_FAILURE;
+	}
+	int cfd = open(control_path, O_WRONLY);
+	if (cfd == -1) {
+		fprintf(stderr, "Failed to open control pipe at \"%s\"\n",
+				control_path);
+		return EXIT_FAILURE;
+	}
+	ssize_t written = write(cfd, recon_path, len + 1);
+	if ((size_t)written != len + 1) {
+		close(cfd);
+		fprintf(stderr, "Failed to write to control pipe\n");
+		return EXIT_FAILURE;
+	}
+	close(cfd);
+	return EXIT_SUCCESS;
+}
+
 void handle_noop(int sig) { (void)sig; }
 
 #define ARG_DISPLAY 1001
@@ -262,6 +293,7 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_UNLINK 1007
 #define ARG_VIDEO 1008
 #define ARG_HWVIDEO 1009
+#define ARG_CONTROL 1010
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -280,6 +312,7 @@ static const struct option options[] = {
 		{"hwvideo", no_argument, NULL, ARG_HWVIDEO},
 		{"threads", required_argument, NULL, ARG_THREADS},
 		{"display", required_argument, NULL, ARG_DISPLAY},
+		{"control", required_argument, NULL, ARG_CONTROL},
 		{0, 0, NULL, 0}};
 
 int main(int argc, char **argv)
@@ -295,6 +328,7 @@ int main(int argc, char **argv)
 	char *comp_string = NULL;
 	char *nthread_string = NULL;
 	char *wayland_display = NULL;
+	char *control_path = NULL;
 	const char *socketpath = NULL;
 
 	struct main_config config = {.n_worker_threads = 0,
@@ -322,6 +356,10 @@ int main(int argc, char **argv)
 			mode = MODE_SERVER;
 			break;
 		}
+		if (!strcmp(argv[mode_argc], "recon")) {
+			mode = MODE_RECON;
+			break;
+		}
 		mode_argc++;
 	}
 
@@ -332,6 +370,11 @@ int main(int argc, char **argv)
 
 		if (opt == -1) {
 			break;
+		}
+		if (mode == MODE_RECON) {
+			/* no prefix arguments permitted */
+			fail = true;
+			continue;
 		}
 
 		switch (opt) {
@@ -381,6 +424,12 @@ int main(int argc, char **argv)
 			}
 			wayland_display = optarg;
 			break;
+		case ARG_CONTROL:
+			if (mode == MODE_CLIENT) {
+				fail = true;
+			}
+			control_path = optarg;
+			break;
 		case ARG_UNLINK:
 			if (mode != MODE_SERVER) {
 				fail = true;
@@ -429,7 +478,6 @@ int main(int argc, char **argv)
 
 	argv += optind;
 	argc -= optind;
-
 	if (fail) {
 		return usage(EXIT_FAILURE);
 	} else if (version) {
@@ -444,6 +492,9 @@ int main(int argc, char **argv)
 	}
 	if (mode == MODE_CLIENT && argc > 1) {
 		// In client mode, we do not start an application
+		return usage(EXIT_FAILURE);
+	} else if (mode == MODE_RECON && argc != 3) {
+		// The reconnection helper takes exactly two trailing arguments
 		return usage(EXIT_FAILURE);
 	}
 	argv++;
@@ -484,7 +535,9 @@ int main(int argc, char **argv)
 		oneshot = true;
 	}
 
-	if (mode == MODE_CLIENT) {
+	if (mode == MODE_RECON) {
+		return run_recon(argv[0], argv[1]);
+	} else if (mode == MODE_CLIENT) {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";
 		}
@@ -512,8 +565,9 @@ int main(int argc, char **argv)
 			sprintf(display_path, "wayland-%s", rbytes);
 			wayland_display = display_path;
 		}
-		return run_server(socketpath, wayland_display, &config, oneshot,
-				unlink_at_end, application, app_argv);
+		return run_server(socketpath, wayland_display, control_path,
+				&config, oneshot, unlink_at_end, application,
+				app_argv);
 	} else {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe";
@@ -564,6 +618,7 @@ int main(int argc, char **argv)
 		} else if (conn_pid == 0) {
 			int nextra = 12 + debug + oneshot +
 				     2 * (remote_drm_node != NULL) +
+				     2 * (control_path != NULL) +
 				     2 * (config.compression != COMP_NONE) +
 				     config.video_if_possible +
 				     2 * needs_login_shell +
@@ -619,6 +674,10 @@ int main(int argc, char **argv)
 			if (config.n_worker_threads != 0) {
 				arglist[dstidx + 1 + offset++] = "--threads";
 				arglist[dstidx + 1 + offset++] = nthread_string;
+			}
+			if (control_path) {
+				arglist[dstidx + 1 + offset++] = "--control";
+				arglist[dstidx + 1 + offset++] = control_path;
 			}
 			arglist[dstidx + 1 + offset++] = "--unlink-socket";
 			arglist[dstidx + 1 + offset++] = "-s";
