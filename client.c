@@ -136,7 +136,14 @@ static int run_single_client_reconnector(
 					close(newclient);
 					break;
 				}
+				bool update = (new_conn & CONN_UPDATE) != 0;
+				new_conn = new_conn & ~CONN_UPDATE;
 				if (new_conn != conn_id) {
+					close(newclient);
+					continue;
+				}
+				if (!update) {
+					wp_error("Connection token is missing update flag");
 					close(newclient);
 					continue;
 				}
@@ -215,6 +222,10 @@ static int run_single_client(int channelsock, pid_t eol_pid,
 	if (retcode == EXIT_FAILURE || shutdown_flag || chanclient == -1) {
 		return retcode;
 	}
+	if (conn_id & CONN_UPDATE) {
+		wp_error("Initial connection token had update flag set");
+		return retcode;
+	}
 
 	/* Fork a reconnection handler */
 	int linkfds[2];
@@ -254,18 +265,23 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		wp_error("Failed to get connection id");
 		goto fail_cc;
 	}
-	for (int i = 0; i < connmap->count; i++) {
-		if (connmap->data[i].token == conn_id) {
-			if (send_one_fd(connmap->data[i].linkfd, chanclient) ==
-					-1) {
-				wp_error("Failed to send new connection fd to subprocess: %s",
-						strerror(errno));
-				goto fail_cc;
+	if (conn_id & CONN_UPDATE) {
+		conn_id = conn_id & ~CONN_UPDATE;
+		for (int i = 0; i < connmap->count; i++) {
+			if (connmap->data[i].token == conn_id) {
+				if (send_one_fd(connmap->data[i].linkfd,
+						    chanclient) == -1) {
+					wp_error("Failed to send new connection fd to subprocess: %s",
+							strerror(errno));
+					goto fail_cc;
+				}
+				break;
 			}
-			close(chanclient);
-			return 0;
 		}
+		close(chanclient);
+		return 0;
 	}
+
 	if (buf_ensure_size(connmap->count + 1, sizeof(struct conn_addr),
 			    &connmap->size, (void **)&connmap->data) == -1) {
 		wp_error("Failed to allocate space to track connection");

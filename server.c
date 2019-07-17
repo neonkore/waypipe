@@ -104,7 +104,6 @@ static int run_single_server_reconnector(
 			}
 			path[amt] = '\0';
 			if (strlen(path) < 108) {
-				wp_error("New socket path: %s", path);
 				int new_conn = connect_to_socket(path);
 				if (new_conn == -1) {
 					wp_error("Socket path \"%s\" was invalid: %s",
@@ -112,8 +111,10 @@ static int run_single_server_reconnector(
 					/* Socket path was invalid */
 					continue;
 				}
-				if (write(new_conn, &token, sizeof(token)) !=
-						sizeof(token)) {
+				uint64_t flagged_token = token | CONN_UPDATE;
+				if (write(new_conn, &flagged_token,
+						    sizeof(flagged_token)) !=
+						sizeof(flagged_token)) {
 					wp_error("Failed to write to new connection: %s",
 							strerror(errno));
 					close(new_conn);
@@ -147,7 +148,9 @@ static int run_single_server(int control_pipe, const char *socket_path,
 	}
 
 	uint64_t token = get_random_token(0);
-	if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
+	uint64_t unflagged_token = token & ~CONN_UPDATE;
+	if (write(chanfd, &unflagged_token, sizeof(uint64_t)) !=
+			sizeof(uint64_t)) {
 		wp_error("Failed to write connection token to socket");
 		goto fail_cfd;
 	}
@@ -175,9 +178,10 @@ static int run_single_server(int control_pipe, const char *socket_path,
 		}
 	}
 
-	close(linkfds[1]);
-	return main_interface_loop(
+	int ret = main_interface_loop(
 			chanfd, server_link, linkfds[0], config, false);
+	close(linkfds[1]);
+	return ret;
 
 fail_cfd:
 	close(chanfd);
@@ -201,7 +205,9 @@ static int handle_new_server_connection(const char *current_sockpath,
 	if (chanfd == -1) {
 		goto fail_appfd;
 	}
-	if (write(chanfd, &new_token, sizeof(new_token)) != sizeof(new_token)) {
+	uint64_t unflagged_token = new_token & ~CONN_UPDATE;
+	if (write(chanfd, &unflagged_token, sizeof(uint64_t)) !=
+			sizeof(uint64_t)) {
 		wp_error("Failed to write connection token: %s",
 				strerror(errno));
 		goto fail_chanfd;
@@ -261,13 +267,15 @@ static int update_connections(char current_sockpath[static 110],
 					path, strerror(errno));
 			return -1;
 		}
-		uint64_t token = connmap->data[i].token;
-		if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
+		uint64_t flagged_token = connmap->data[i].token | CONN_UPDATE;
+		if (write(chanfd, &flagged_token, sizeof(uint64_t)) !=
+				sizeof(uint64_t)) {
 			wp_error("Failed to write token to replacement connection: %s",
 					strerror(errno));
 			close(chanfd);
 			return -1;
 		}
+
 		if (send_one_fd(connmap->data[i].linkfd, chanfd) == -1) {
 			// TODO: what happens if data has changed?
 			close(chanfd);
@@ -275,10 +283,11 @@ static int update_connections(char current_sockpath[static 110],
 		}
 	}
 	/* If switching connections succeeded, adopt the new socket */
-	if (unlink_at_end) {
+	if (unlink_at_end && strcmp(current_sockpath, path)) {
 		unlink(current_sockpath);
 	}
-	strncpy(current_sockpath, path, 109);
+	/* Length already checked */
+	strcpy(current_sockpath, path);
 	return 0;
 }
 
@@ -469,8 +478,10 @@ int run_server(const char *socket_path, const char *wayland_display,
 			wp_error("Failed to make a control FIFO at %s: %s",
 					control_path, strerror(errno));
 		} else {
-			control_pipe = open(
-					control_path, O_RDONLY | O_NONBLOCK);
+			/* To prevent getting POLLHUP spam after the first user
+			 * closes this pipe, open both read and write ends of
+			 * the named pipe */
+			control_pipe = open(control_path, O_RDWR | O_NONBLOCK);
 			if (control_pipe == -1) {
 				wp_error("Failed to open created FIFO for reading: %s",
 						control_path, strerror(errno));

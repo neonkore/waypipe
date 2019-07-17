@@ -74,6 +74,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
 /** A type to help keep track of the connection handling processes */
+#define CONN_UPDATE 0x1
 struct conn_addr {
 	uint64_t token;
 	pid_t pid;
@@ -278,6 +279,11 @@ enum wmsg_type {
 	 * that the sender of those messages no longer needs to store them
 	 * for replaying in case of reconnection */
 	WMSG_ACK_NBLOCKS, // wmsg_ack
+	/* When restarting a connection, indicate the number of the message
+	 * which will be sent next */
+	WMSG_RESTART, // wmsg_restart
+	/* When the remote program is closing */
+	WMSG_CLOSE, // uint32_t + padding
 };
 const char *wmsg_type_to_str(enum wmsg_type tp);
 struct wmsg_open_file {
@@ -316,6 +322,12 @@ struct wmsg_basic {
 struct wmsg_ack {
 	uint32_t size_and_type;
 	uint32_t messages_received;
+	uint32_t pad3;
+	uint32_t pad4;
+};
+struct wmsg_restart {
+	uint32_t size_and_type;
+	uint32_t last_ack_received;
 	uint32_t pad3;
 	uint32_t pad4;
 };

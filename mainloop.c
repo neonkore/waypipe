@@ -306,6 +306,9 @@ struct cross_state {
 	/* Which was the last message number received from the other
 	 * application? */
 	uint32_t last_received_msgno;
+	/* What was the highest number message received from the other
+	 * application? (matches last_received, unless we needed a restart */
+	uint32_t newest_received_msgno;
 	/* Which was the last message number sent to the other application which
 	 * was acknowledged by that side? */
 	uint32_t last_confirmed_msgno;
@@ -317,12 +320,31 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 	uint32_t size_and_type = ((uint32_t *)cmsg->cmsg_buffer)[0];
 	size_t unpadded_size = transfer_size(size_and_type);
 	enum wmsg_type type = transfer_type(size_and_type);
-	if (type == WMSG_ACK_NBLOCKS) {
+	if (type == WMSG_CLOSE) {
+		wp_debug("Other side has closed");
+		return -1;
+	} else if (type == WMSG_RESTART) {
+		struct wmsg_restart *ackm =
+				(struct wmsg_restart *)cmsg->cmsg_buffer;
+		wp_debug("Received restart message: remote last saw ack %d (we last sent %d)",
+				ackm->last_ack_received,
+				cxs->last_received_msgno);
+		cxs->last_received_msgno = ackm->last_ack_received;
+		return 0;
+	} else if (type == WMSG_ACK_NBLOCKS) {
 		struct wmsg_ack *ackm = (struct wmsg_ack *)cmsg->cmsg_buffer;
 		cxs->last_confirmed_msgno = ackm->messages_received;
 		return 0;
 	} else {
 		cxs->last_received_msgno++;
+		if (cxs->last_received_msgno < cxs->newest_received_msgno) {
+			/* Skip packet, as we already received it */
+			wp_debug("Ignoring replayed message %d (newest=%d)",
+					cxs->last_received_msgno,
+					cxs->newest_received_msgno);
+			return 0;
+		}
+		cxs->newest_received_msgno = cxs->last_received_msgno;
 	}
 
 	if (type == WMSG_INJECT_RIDS) {
@@ -396,6 +418,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 	// Read header, then read main contents
 	if (cmsg->cmsg_size == 0) {
 		uint32_t header = 0;
+
 		ssize_t r = read(chanfd, &header, sizeof(header));
 		if (r == -1 && errno == EWOULDBLOCK) {
 			wp_debug("Read would block");
@@ -405,7 +428,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 			return -1;
 		} else if (r == 0) {
 			wp_debug("Channel connection closed");
-			return -1;
+			return -2;
 		} else if (r < (ssize_t)sizeof(header)) {
 			wp_error("insufficient starting read block %ld of 8 bytes",
 					r);
@@ -435,8 +458,8 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 						strerror(errno));
 				return -1;
 			} else if (r == 0) {
-				wp_error("chanfd closed");
-				return -1;
+				wp_debug("Channel connection closed");
+				return -2;
 			} else {
 				cmsg->cmsg_end += r;
 			}
@@ -521,15 +544,12 @@ static int advance_chanmsg_transfer(struct globals *g,
 	}
 }
 
-static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
-		struct cross_state *ctx, int chanfd, bool display_side)
+static void clear_old_transfers(
+		struct transfer_data *td, uint32_t inclusive_cutoff)
 {
-	const char *progdesc = display_side ? "compositor" : "application";
-	struct transfer_data *td = &wmsg->transfers;
-	// First, clear out any transfers that are no longer needed
 	int k = 0;
 	for (int i = 0; i < td->start; i++) {
-		if (td->msgno[i] > ctx->last_confirmed_msgno) {
+		if (td->msgno[i] > inclusive_cutoff) {
 			break;
 		}
 		if (td->data[i].iov_base != &td->zeros) {
@@ -537,12 +557,31 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		}
 		td->data[i].iov_base = NULL;
 		td->data[i].iov_len = 0;
-		k = i;
+		k = i + 1;
 	}
-	memmove(td->msgno, td->msgno + k, (td->end - k) * sizeof(td->msgno[0]));
-	memmove(td->data, td->data + k, (td->end - k) * sizeof(td->data[0]));
-	td->start -= k;
-	td->end -= k;
+	if (k > 0) {
+		memmove(td->msgno, td->msgno + k,
+				(td->end - k) * sizeof(td->msgno[0]));
+		memmove(td->data, td->data + k,
+				(td->end - k) * sizeof(td->data[0]));
+		td->start -= k;
+		td->end -= k;
+	}
+}
+
+static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
+		struct cross_state *cxs, int chanfd, bool display_side)
+{
+	const char *progdesc = display_side ? "compositor" : "application";
+	struct transfer_data *td = &wmsg->transfers;
+	for (int i = 0; i < td->end; i++) {
+		if (td->data[i].iov_len == 0) {
+			wp_error("ZERO SIZE ITEM FAIL: %d [%d,%d)", i,
+					td->start, td->end);
+		}
+	}
+	// First, clear out any transfers that are no longer needed
+	clear_old_transfers(td, cxs->last_confirmed_msgno);
 
 	// Waiting for channel write to complete
 	while (td->start < td->end) {
@@ -565,8 +604,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 			wp_error("chanfd write failure: %s", strerror(errno));
 			return -1;
 		} else if (wr == 0) {
-			wp_error("chanfd has closed");
-			return 0;
+			wp_debug("Channel connection closed");
+			return -2;
 		}
 
 		size_t uwr = (size_t)wr;
@@ -784,6 +823,103 @@ static int advance_waymsg_transfer(struct globals *g,
 	}
 }
 
+static int read_new_chanfd(int linkfd, struct int_window *recon_fds)
+{
+	uint8_t tmp = 0;
+	ssize_t rd = iovec_read(linkfd, (char *)&tmp, 1, recon_fds);
+	if (rd == -1 && errno == EWOULDBLOCK) {
+		// do nothing
+		return -1;
+	} else if (rd == -1) {
+		wp_error("link read failure: %s", strerror(errno));
+		return -1;
+	} else if (rd == 0) {
+		wp_error("link has closed");
+		return -1;
+	}
+	for (int i = 0; i < recon_fds->zone_end - 1; i++) {
+		close(recon_fds->data[i]);
+	}
+	int ret_fd = -1;
+	if (recon_fds->zone_end > 0) {
+		ret_fd = recon_fds->data[recon_fds->zone_end - 1];
+	}
+	recon_fds->zone_end = 0;
+	return ret_fd;
+}
+
+static int reconnect_loop(int linkfd, int progfd, struct int_window *recon_fds)
+{
+	while (!shutdown_flag) {
+		struct pollfd rcfs[2];
+		rcfs[0].fd = linkfd;
+		rcfs[0].events = POLLIN;
+		rcfs[0].revents = 0;
+		rcfs[1].fd = progfd;
+		rcfs[1].events = 0;
+		rcfs[1].revents = 0;
+		int r = poll(rcfs, 2, -1);
+		if (r == -1) {
+			if (errno == EINTR) {
+				continue;
+			} else {
+				break;
+			}
+		}
+		if (rcfs[0].revents & POLLIN) {
+			int nfd = read_new_chanfd(linkfd, recon_fds);
+			if (nfd != -1) {
+				return nfd;
+			}
+		}
+		if (rcfs[0].revents & POLLHUP || rcfs[1].revents & POLLHUP) {
+			return -1;
+		}
+	}
+	return -1;
+}
+
+static void reset_connection(struct cross_state *cxs,
+		struct chan_msg_state *cmsg, struct way_msg_state *wmsg,
+		int chanfd)
+{
+	/* Discard partial transfer */
+	free(cmsg->cmsg_buffer);
+	cmsg->cmsg_buffer = NULL;
+	cmsg->cmsg_size = 0;
+	cmsg->cmsg_end = 0;
+
+	clear_old_transfers(&wmsg->transfers, cxs->last_confirmed_msgno);
+	wp_debug("Resetting connection: %d blocks unacknowledged",
+			wmsg->transfers.end);
+
+	if (wmsg->transfers.end > 0) {
+		/* If there was any data in flight, restart. If there wasn't
+		 * anything in flight, then the remote side shouldn't notice the
+		 * difference */
+		struct wmsg_restart restart;
+		restart.size_and_type =
+				transfer_header(sizeof(restart), WMSG_RESTART);
+		restart.last_ack_received = cxs->last_confirmed_msgno;
+		restart.pad3 = 0;
+		restart.pad4 = 0;
+		wmsg->transfers.start = 0;
+		wmsg->transfers.partial_write_amt = 0;
+		wp_debug("Sending restart message: last ack=%d",
+				restart.last_ack_received);
+		if (write(chanfd, &restart, sizeof(restart)) !=
+				sizeof(restart)) {
+			wp_error("Failed to write restart message");
+		}
+	}
+	if (set_nonblocking(chanfd) == -1) {
+		wp_error("Error making new channel connection nonblocking: %s",
+				strerror(errno));
+	}
+
+	(void)cxs;
+}
+
 int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side)
 {
@@ -880,14 +1016,24 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			.last_received_msgno = 0,
 	};
 
+	struct int_window recon_fds = {
+			.data = NULL,
+			.size = 0,
+			.zone_start = 0,
+			.zone_end = 0,
+	};
+
+	bool needs_new_channel = false;
 	while (!shutdown_flag) {
 		struct pollfd *pfds = NULL;
-		int psize = 2 + count_npipes(&g.map);
+		int psize = 3 + count_npipes(&g.map);
 		pfds = calloc((size_t)psize, sizeof(struct pollfd));
 		pfds[0].fd = chanfd;
 		pfds[1].fd = progfd;
+		pfds[2].fd = linkfd;
 		pfds[0].events = 0;
 		pfds[1].events = 0;
+		pfds[2].events = POLLIN;
 		if (way_msg.state == WM_WAITING_FOR_CHANNEL) {
 			pfds[0].events |= POLLOUT;
 		} else {
@@ -898,8 +1044,11 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		} else {
 			pfds[1].events |= POLLOUT;
 		}
+		pfds[0].revents = 0;
+		pfds[1].revents = 0;
+		pfds[2].revents = 0;
 		bool check_read = way_msg.state == WM_WAITING_FOR_PROGRAM;
-		int npoll = 2 + fill_with_pipes(&g.map, pfds + 2, check_read);
+		int npoll = 3 + fill_with_pipes(&g.map, pfds + 3, check_read);
 
 		bool own_msg_pending =
 				(cross_data.last_acked_msgno !=
@@ -923,35 +1072,85 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			}
 		}
 
-		mark_pipe_object_statuses(&g.map, npoll - 2, pfds + 2);
+		mark_pipe_object_statuses(&g.map, npoll - 3, pfds + 3);
 		bool progsock_readable = pfds[1].revents & POLLIN;
 		bool chanmsg_active = (pfds[0].revents & POLLIN) ||
 				      (pfds[1].revents & POLLOUT);
-		bool hang_up = (pfds[0].revents & POLLHUP) ||
-			       (pfds[1].revents & POLLHUP);
+		/* Whether or not POLLHUP is actually set appears to depend on
+		 * if the shutdown is full or partial, and on the OS */
+		bool user_hang_up = pfds[1].revents & POLLHUP;
+		bool link_hang_up = pfds[2].revents & POLLHUP;
+		bool maybe_new_channel = pfds[2].revents & POLLIN;
+		if (pfds[0].revents & POLLHUP) {
+			needs_new_channel = true;
+		}
+
 		free(pfds);
-		if (hang_up) {
+		if (user_hang_up) {
 			wp_error("Connection hang-up detected");
 			break;
+		}
+		if (link_hang_up) {
+			wp_error("Link to root process hang-up detected");
+			break;
+		}
+		if (maybe_new_channel) {
+			int new_fd = read_new_chanfd(linkfd, &recon_fds);
+			if (new_fd != -1) {
+				close(chanfd);
+				chanfd = new_fd;
+				reset_connection(&cross_data, &chan_msg,
+						&way_msg, chanfd);
+				needs_new_channel = false;
+			}
+		}
+		if (needs_new_channel) {
+			wp_error("Channel hang up detected, waiting for reconnection");
+			int new_fd = reconnect_loop(linkfd, progfd, &recon_fds);
+			if (new_fd == -1) {
+				break;
+			} else {
+				/* Actually handle the reconnection/reset state
+				 */
+				close(chanfd);
+				chanfd = new_fd;
+				reset_connection(&cross_data, &chan_msg,
+						&way_msg, chanfd);
+				needs_new_channel = false;
+			}
 		}
 
 		// Q: randomize the order of these?, to highlight
 		// accidental dependencies?
-		if (advance_chanmsg_transfer(&g, &chan_msg, &cross_data,
-				    display_side, chanfd, progfd,
-				    chanmsg_active) == -1) {
+		int chanmsg_ret = advance_chanmsg_transfer(&g, &chan_msg,
+				&cross_data, display_side, chanfd, progfd,
+				chanmsg_active);
+		if (chanmsg_ret == -1) {
 			break;
 		}
-		if (advance_waymsg_transfer(&g, &way_msg, &cross_data,
-				    display_side, chanfd, progfd,
-				    progsock_readable) == -1) {
+		int waymsg_ret = advance_waymsg_transfer(&g, &way_msg,
+				&cross_data, display_side, chanfd, progfd,
+				progsock_readable);
+		if (waymsg_ret == -1) {
 			break;
 		}
+		if (chanmsg_ret == -2 || waymsg_ret == -2) {
+			/* The channel connection has either partially or fully
+			 * closed */
+			needs_new_channel = true;
+		}
+
 		// Periodic maintenance. It doesn't matter who does this
 		flush_writable_pipes(&g.map);
 		close_rclosed_pipes(&g.map);
 	}
+	wp_debug("Exiting main loop, attempting close message");
 
+	/* Attempt to notify remote end that the application has closed */
+	uint32_t close_msg[4] = {transfer_header(16, WMSG_CLOSE), 0, 0, 0};
+	(void)write(chanfd, close_msg, sizeof(close_msg));
+
+	free(recon_fds.data);
 	cleanup_message_tracker(&g.map, &g.tracker);
 	cleanup_translation_map(&g.map);
 	cleanup_render_data(&g.render);
