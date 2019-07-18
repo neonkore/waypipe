@@ -182,7 +182,7 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 
 static void cleanup_transfer(struct transfer_data *td)
 {
-
+	pthread_mutex_destroy(&td->lock);
 	for (int i = td->start; i < td->end; i++) {
 		if (td->data[i].iov_base != &td->zeros) {
 			free(td->data[i].iov_base);
@@ -192,15 +192,57 @@ static void cleanup_transfer(struct transfer_data *td)
 	free(td->msgno);
 }
 
+static void wait_for_thread_pool(struct thread_pool *pool)
+{
+	bool done = false;
+	while (!done) {
+		uint8_t flush[64];
+		(void)read(pool->selfpipe_r, flush, sizeof(flush));
+
+		/* Also run tasks on main thread, just like the real version */
+		// TODO: create a 'threadpool.c'
+		struct task_data task;
+		task.type = TASK_STOP;
+		pthread_mutex_lock(&pool->work_mutex);
+		done = pool->queue_end == pool->queue_start &&
+		       pool->queue_in_progress == 0;
+		if (pool->queue_start < pool->queue_end) {
+			int i = pool->queue_start;
+			if (pool->queue[i].type != TASK_STOP) {
+				task = pool->queue[i];
+				pool->queue_start++;
+				pool->queue_in_progress++;
+			}
+		}
+		pthread_mutex_unlock(&pool->work_mutex);
+
+		if (task.type != TASK_STOP) {
+			run_task(&task, &pool->threads[0]);
+
+			pthread_mutex_lock(&pool->work_mutex);
+			pool->queue_in_progress--;
+			pthread_mutex_unlock(&pool->work_mutex);
+			/* To skip the next poll */
+		} else {
+			/* Wait a short amount */
+			usleep(100);
+		}
+	}
+}
+
 static bool test_transfer(struct fd_translation_map *src_map,
-		struct fd_translation_map *dst_map, int rid, int ndiff,
-		struct render_data *render_data)
+		struct fd_translation_map *dst_map,
+		struct thread_pool *src_pool, struct thread_pool *dst_pool,
+		int rid, int ndiff, struct render_data *render_data)
 {
 	struct transfer_data transfer_data;
 	memset(&transfer_data, 0, sizeof(struct transfer_data));
+	pthread_mutex_init(&transfer_data.lock, NULL);
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
-	collect_update(src_map, src_shadow, &transfer_data);
+	collect_update(src_map, src_pool, src_shadow, &transfer_data);
+	wait_for_thread_pool(src_pool);
+	finish_update(src_map, src_shadow);
 
 	if (ndiff == 0) {
 		long ns = 0;
@@ -231,8 +273,8 @@ static bool test_transfer(struct fd_translation_map *src_map,
 		uint32_t hb = ((uint32_t *)tmp.data)[0];
 		int32_t xid = ((int32_t *)tmp.data)[1];
 		tmp.size = alignu(transfer_size(hb), 16);
-		apply_update(dst_map, render_data, transfer_type(hb), xid,
-				&tmp);
+		apply_update(dst_map, dst_pool, render_data, transfer_type(hb),
+				xid, &tmp);
 		start += tmp.size;
 	}
 	free(res.data);
@@ -252,20 +294,16 @@ static bool test_mirror(int new_file_fd, size_t sz,
 		const struct dmabuf_slice_data *slice_data)
 {
 	struct fd_translation_map src_map;
-	setup_translation_map(&src_map, false, comp_mode, n_src_threads);
+	setup_translation_map(&src_map, false);
+
+	struct thread_pool src_pool;
+	setup_thread_pool(&src_pool, comp_mode, n_src_threads);
 
 	struct fd_translation_map dst_map;
-	setup_translation_map(&dst_map, true, comp_mode, n_dst_threads);
+	setup_translation_map(&dst_map, true);
 
-	// Force multithreading
-	if (n_src_threads > 1) {
-		src_map.diffcomp_thread_threshold = 1000;
-		src_map.comp_thread_threshold = 1000;
-	}
-	if (n_dst_threads > 1) {
-		dst_map.diffcomp_thread_threshold = 1000;
-		dst_map.comp_thread_threshold = 1000;
-	}
+	struct thread_pool dst_pool;
+	setup_thread_pool(&dst_pool, comp_mode, n_dst_threads);
 
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(new_file_fd, &fdsz);
@@ -292,13 +330,13 @@ static bool test_mirror(int new_file_fd, size_t sz,
 		if (fwd) {
 			src_shadow->is_dirty = true;
 			damage_everything(&src_shadow->damage);
-			subpass = test_transfer(
-					&src_map, &dst_map, rid, ndiff, rd);
+			subpass = test_transfer(&src_map, &dst_map, &src_pool,
+					&dst_pool, rid, ndiff, rd);
 		} else {
 			dst_shadow->is_dirty = true;
 			damage_everything(&dst_shadow->damage);
-			subpass = test_transfer(
-					&dst_map, &src_map, rid, ndiff, rd);
+			subpass = test_transfer(&dst_map, &src_map, &dst_pool,
+					&dst_pool, rid, ndiff, rd);
 		}
 		pass &= subpass;
 		if (!pass) {
@@ -310,6 +348,8 @@ static bool test_mirror(int new_file_fd, size_t sz,
 
 	cleanup_translation_map(&src_map);
 	cleanup_translation_map(&dst_map);
+	cleanup_thread_pool(&src_pool);
+	cleanup_thread_pool(&dst_pool);
 	return pass;
 }
 

@@ -270,6 +270,11 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 		uint32_t msgno)
 {
+	if (pthread_mutex_trylock(&transfers->lock) == 0) {
+		wp_error("Transfer operation happening without lock");
+		pthread_mutex_unlock(&transfers->lock);
+	}
+
 	if (size == 0) {
 		return true;
 	}

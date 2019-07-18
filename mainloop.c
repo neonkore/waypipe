@@ -274,6 +274,10 @@ struct way_msg_state {
 	/* Individual transfer chunks and headers, sent out via writev */
 	struct transfer_data transfers;
 	int total_written;
+
+	/* transfers to send after the compute queue is empty */
+	int ntrailing;
+	struct iovec trailing[3];
 };
 
 /* This state corresponds to the in-progress transfer from the channel
@@ -407,7 +411,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		};
 		wp_debug("Received %s for RID=%d (len %d)",
 				wmsg_type_to_str(type), rid, unpadded_size);
-		apply_update(&g->map, &g->render, type, rid, &msg);
+		apply_update(&g->map, &g->threads, &g->render, type, rid, &msg);
 	}
 	return 0;
 }
@@ -569,20 +573,10 @@ static void clear_old_transfers(
 	}
 }
 
-static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
-		struct cross_state *cxs, int chanfd, bool display_side)
+/* Returns 0 if done, 1 if partial, -1 if fatal error, -2 if closed */
+static int partial_write_transfer(
+		int chanfd, struct transfer_data *td, int *total_written)
 {
-	const char *progdesc = display_side ? "compositor" : "application";
-	struct transfer_data *td = &wmsg->transfers;
-	for (int i = 0; i < td->end; i++) {
-		if (td->data[i].iov_len == 0) {
-			wp_error("ZERO SIZE ITEM FAIL: %d [%d,%d)", i,
-					td->start, td->end);
-		}
-	}
-	// First, clear out any transfers that are no longer needed
-	clear_old_transfers(td, cxs->last_confirmed_msgno);
-
 	// Waiting for channel write to complete
 	while (td->start < td->end) {
 		/* Advance the current element by amount actually written */
@@ -609,7 +603,7 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		}
 
 		size_t uwr = (size_t)wr;
-		wmsg->total_written += wr;
+		*total_written += wr;
 		while (uwr > 0 && td->start < td->end) {
 			/* Skip past zero-length blocks */
 			if (td->data[td->start].iov_len == 0) {
@@ -631,6 +625,93 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		}
 	}
 	if (td->start == td->end) {
+		td->partial_write_amt = 0;
+		return 0;
+	} else {
+		return 1;
+	}
+}
+
+static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
+		struct cross_state *cxs, struct globals *g, int chanfd,
+		bool display_side)
+{
+	const char *progdesc = display_side ? "compositor" : "application";
+	struct transfer_data *td = &wmsg->transfers;
+
+	// First, clear out any transfers that are no longer needed
+	pthread_mutex_lock(&td->lock);
+	for (int i = 0; i < td->end; i++) {
+		if (td->data[i].iov_len == 0) {
+			wp_error("ZERO SIZE ITEM FAIL: %d [%d,%d)", i,
+					td->start, td->end);
+		}
+	}
+	clear_old_transfers(td, cxs->last_confirmed_msgno);
+	int ret = partial_write_transfer(chanfd, td, &wmsg->total_written);
+	pthread_mutex_unlock(&td->lock);
+	if (ret < 0) {
+		return ret;
+	}
+
+	bool is_done = false;
+	struct task_data task;
+	task.type = TASK_STOP;
+	pthread_mutex_lock(&g->threads.work_mutex);
+	is_done = g->threads.queue_end == g->threads.queue_start &&
+		  g->threads.queue_in_progress == 0;
+	if (g->threads.queue_start < g->threads.queue_end) {
+		int i = g->threads.queue_start;
+		if (g->threads.queue[i].type != TASK_STOP) {
+			task = g->threads.queue[i];
+			g->threads.queue_start++;
+			g->threads.queue_in_progress++;
+		}
+	}
+	pthread_mutex_unlock(&g->threads.work_mutex);
+
+	/* Run a task ourselves, making use of the main thread */
+	if (task.type != TASK_STOP) {
+		run_task(&task, &g->threads.threads[0]);
+
+		pthread_mutex_lock(&g->threads.work_mutex);
+		g->threads.queue_in_progress--;
+		pthread_mutex_unlock(&g->threads.work_mutex);
+		/* To skip the next poll */
+		uint8_t triv = 0;
+		if (write(g->threads.selfpipe_w, &triv, 1) == -1) {
+			wp_error("Failed to write to self-pipe");
+		}
+	}
+
+	if (is_done && wmsg->ntrailing > 0) {
+		pthread_mutex_lock(&td->lock);
+		for (int i = 0; i < wmsg->ntrailing; i++) {
+			transfer_add(td, wmsg->trailing[i].iov_len,
+					wmsg->trailing[i].iov_base,
+					td->last_msgno++);
+		}
+		pthread_mutex_unlock(&td->lock);
+
+		wmsg->ntrailing = 0;
+		memset(wmsg->trailing, 0, sizeof(wmsg->trailing));
+		ret = 1;
+	}
+
+	if (ret == 0 && is_done) {
+		for (struct shadow_fd *cur = g->map.list, *nxt = NULL; cur;
+				cur = nxt) {
+			/* Note: finish_update() may delete `cur` */
+			nxt = cur->next;
+			finish_update(&g->map, cur);
+		}
+		/* Reset work queue */
+		pthread_mutex_lock(&g->threads.work_mutex);
+		g->threads.queue_start = 0;
+		g->threads.queue_end = 0;
+		g->threads.queue_in_progress = 0;
+		pthread_mutex_unlock(&g->threads.work_mutex);
+
 		DTRACE_PROBE(waypipe, channel_write_end);
 		int unacked_bytes = 0;
 		for (int i = 0; i < td->end; i++) {
@@ -642,7 +723,6 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 		/* do not delete the used transfers yet; we need a remote
 		 * acknowledgement */
-		td->partial_write_amt = 0;
 		wmsg->total_written = 0;
 		wmsg->state = WM_WAITING_FOR_PROGRAM;
 	}
@@ -719,8 +799,25 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	}
 
 	read_readable_pipes(&g->map);
+
+	/* Acknowledge the other side's transfers as soon as possible */
+	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
+		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
+		ackm->size_and_type = transfer_header(
+				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
+		ackm->messages_received = cxs->last_received_msgno;
+		cxs->last_acked_msgno = cxs->last_received_msgno;
+		/* To avoid infinite regress, receive acknowledgement
+		 * messages do not themselves increase the message counters. */
+
+		pthread_mutex_lock(&wmsg->transfers.lock);
+		transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack), ackm,
+				wmsg->transfers.last_msgno);
+		pthread_mutex_unlock(&wmsg->transfers.lock);
+	}
+
 	for (struct shadow_fd *cur = g->map.list; cur; cur = cur->next) {
-		collect_update(&g->map, cur, &wmsg->transfers);
+		collect_update(&g->map, &g->threads, cur, &wmsg->transfers);
 	}
 
 	if (rc > 0) {
@@ -737,12 +834,13 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 					wmsg->rbuffer_count * sizeof(int32_t));
 			memset(&msg[1 + wmsg->rbuffer_count], 0,
 					pad_size - act_size);
-			transfer_add(&wmsg->transfers, pad_size, msg,
-					wmsg->transfers.last_msgno++);
-
 			decref_transferred_rids(&g->map, wmsg->rbuffer_count,
 					wmsg->rbuffer);
 			wmsg->rbuffer_count = 0;
+
+			wmsg->trailing[wmsg->ntrailing].iov_len = pad_size;
+			wmsg->trailing[wmsg->ntrailing].iov_base = msg;
+			wmsg->ntrailing++;
 		}
 		if (dst.zone_end > 0) {
 			wp_debug("We are transferring a data buffer with %ld bytes",
@@ -757,9 +855,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 					dst.zone_end);
 			memset(copy_proto + sizeof(uint32_t) + dst.zone_end, 0,
 					alignu(act_size, 16) - act_size);
-			transfer_add(&wmsg->transfers, alignu(act_size, 16),
-					copy_proto,
-					wmsg->transfers.last_msgno++);
+
+			wmsg->trailing[wmsg->ntrailing].iov_len =
+					alignu(act_size, 16);
+			wmsg->trailing[wmsg->ntrailing].iov_base = copy_proto;
+			wmsg->ntrailing++;
 		}
 
 		// Introduce carryover data
@@ -780,29 +880,27 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		wmsg->dbuffer_carryover_start = 0;
 	}
 
-	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
-		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
-		ackm->size_and_type = transfer_header(
-				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
-		ackm->messages_received = cxs->last_received_msgno;
-		cxs->last_acked_msgno = cxs->last_received_msgno;
-		/* To avoid infinite regress, receive acknowledgement
-		 * messages do not themselves increase the message counters. */
-		transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack), ackm,
-				wmsg->transfers.last_msgno);
-	}
+	int n_tasks = 0;
+	pthread_mutex_lock(&g->threads.work_mutex);
+	n_tasks = g->threads.queue_end;
+	pthread_mutex_unlock(&g->threads.work_mutex);
 
-	if (wmsg->transfers.end > wmsg->transfers.start) {
+	int n_transfers = 0;
+	pthread_mutex_lock(&wmsg->transfers.lock);
+	n_transfers = wmsg->transfers.end - wmsg->transfers.start;
+	pthread_mutex_unlock(&wmsg->transfers.lock);
+
+	if (n_transfers > 0 || n_tasks > 0 || wmsg->ntrailing > 0) {
 		size_t net_bytes = 0;
 		for (int i = wmsg->transfers.start; i < wmsg->transfers.end;
 				i++) {
 			net_bytes += wmsg->transfers.data[i].iov_len;
 		}
 
-		wp_debug("Packed message size (%d fds, %d blobs, %d bytes)",
+		wp_debug("Channel message start (%d fds, %d blobs, %d bytes, %d trailing, %d tasks)",
 				wmsg->rbuffer_count,
 				wmsg->transfers.end - wmsg->transfers.start,
-				net_bytes);
+				net_bytes, wmsg->ntrailing, n_tasks);
 		wmsg->state = WM_WAITING_FOR_CHANNEL;
 		DTRACE_PROBE(waypipe, channel_write_start);
 	}
@@ -811,12 +909,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 static int advance_waymsg_transfer(struct globals *g,
 		struct way_msg_state *wmsg, struct cross_state *cxs,
 		bool display_side, int chanfd, int progfd,
-
 		bool progsock_readable)
 {
 	if (wmsg->state == WM_WAITING_FOR_CHANNEL) {
 		return advance_waymsg_chanwrite(
-				wmsg, cxs, chanfd, display_side);
+				wmsg, cxs, g, chanfd, display_side);
 	} else {
 		return advance_waymsg_progread(wmsg, cxs, g, progfd,
 				display_side, progsock_readable);
@@ -951,7 +1048,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 
 	struct way_msg_state way_msg;
 	way_msg.state = WM_WAITING_FOR_PROGRAM;
-	/* AFAIK, there is not documented upper bound for the size of a
+	/* AFAIK, there is no documented upper bound for the size of a
 	 * Wayland protocol message, but libwayland (in wl_buffer_put)
 	 * effectively limits message sizes to 4096 bytes. We must
 	 * therefore adopt a limit as least as large. */
@@ -969,7 +1066,10 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	way_msg.dbuffer_edited_maxsize = 2 * way_msg.dbuffer_maxsize;
 	way_msg.dbuffer_edited = malloc((size_t)way_msg.dbuffer_edited_maxsize);
 	memset(&way_msg.transfers, 0, sizeof(struct transfer_data));
+	pthread_mutex_init(&way_msg.transfers.lock, NULL);
 	way_msg.total_written = 0;
+	way_msg.ntrailing = 0;
+	memset(way_msg.trailing, 0, sizeof(way_msg.trailing));
 
 	struct chan_msg_state chan_msg;
 	chan_msg.state = CM_WAITING_FOR_CHANNEL;
@@ -1006,8 +1106,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			.av_vadisplay = NULL,
 			.av_copy_config = 0,
 	};
-	setup_translation_map(&g.map, display_side, config->compression,
+	setup_thread_pool(&g.threads, config->compression,
 			config->n_worker_threads);
+	setup_translation_map(&g.map, display_side);
 	init_message_tracker(&g.tracker);
 	setup_video_logging();
 
@@ -1026,14 +1127,16 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	bool needs_new_channel = false;
 	while (!shutdown_flag) {
 		struct pollfd *pfds = NULL;
-		int psize = 3 + count_npipes(&g.map);
+		int psize = 4 + count_npipes(&g.map);
 		pfds = calloc((size_t)psize, sizeof(struct pollfd));
 		pfds[0].fd = chanfd;
 		pfds[1].fd = progfd;
 		pfds[2].fd = linkfd;
+		pfds[3].fd = g.threads.selfpipe_r;
 		pfds[0].events = 0;
 		pfds[1].events = 0;
 		pfds[2].events = POLLIN;
+		pfds[3].events = POLLIN;
 		if (way_msg.state == WM_WAITING_FOR_CHANNEL) {
 			pfds[0].events |= POLLOUT;
 		} else {
@@ -1044,11 +1147,8 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		} else {
 			pfds[1].events |= POLLOUT;
 		}
-		pfds[0].revents = 0;
-		pfds[1].revents = 0;
-		pfds[2].revents = 0;
 		bool check_read = way_msg.state == WM_WAITING_FOR_PROGRAM;
-		int npoll = 3 + fill_with_pipes(&g.map, pfds + 3, check_read);
+		int npoll = 4 + fill_with_pipes(&g.map, pfds + 4, check_read);
 
 		bool own_msg_pending =
 				(cross_data.last_acked_msgno !=
@@ -1072,7 +1172,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			}
 		}
 
-		mark_pipe_object_statuses(&g.map, npoll - 3, pfds + 3);
+		mark_pipe_object_statuses(&g.map, npoll - 4, pfds + 4);
 		bool progsock_readable = pfds[1].revents & POLLIN;
 		bool chanmsg_active = (pfds[0].revents & POLLIN) ||
 				      (pfds[1].revents & POLLOUT);
@@ -1084,7 +1184,12 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		if (pfds[0].revents & POLLHUP) {
 			needs_new_channel = true;
 		}
-
+		if (pfds[3].revents & POLLIN) {
+			/* After the self pipe has been used to wake up the
+			 * connection, drain it */
+			char tmp[64];
+			(void)read(g.threads.selfpipe_r, tmp, sizeof(tmp));
+		}
 		free(pfds);
 		if (user_hang_up) {
 			wp_error("Connection hang-up detected");
@@ -1151,6 +1256,8 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	(void)write(chanfd, close_msg, sizeof(close_msg));
 
 	free(recon_fds.data);
+
+	cleanup_thread_pool(&g.threads);
 	cleanup_message_tracker(&g.map, &g.tracker);
 	cleanup_translation_map(&g.map);
 	cleanup_render_data(&g.render);
@@ -1158,6 +1265,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	free(way_msg.fds.data);
 	free(way_msg.rbuffer);
 	free(way_msg.dbuffer_edited);
+	pthread_mutex_destroy(&way_msg.transfers.lock);
 	for (int i = 0; i < way_msg.transfers.end; i++) {
 		if (way_msg.transfers.data[i].iov_base !=
 				way_msg.transfers.zeros) {
@@ -1166,6 +1274,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	}
 	free(way_msg.transfers.msgno);
 	free(way_msg.transfers.data);
+	for (int i = 0; i < way_msg.ntrailing; i++) {
+		free(way_msg.trailing[i].iov_base);
+	}
 	// We do not free chan_msg.dbuffer, as it is a subset of
 	// cmsg_buffer
 	free(chan_msg.tfbuffer);

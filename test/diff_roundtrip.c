@@ -70,8 +70,6 @@ int main(int argc, char **argv)
 
 	bool all_success = true;
 
-	struct damage d = {NULL, 0, 0, 0};
-	damage_everything(&d);
 	int nsubtests = (sizeof(subtests) / sizeof(subtests[0]));
 	for (int i = 0; i < nsubtests; i++) {
 		struct subtest test = subtests[i];
@@ -84,17 +82,25 @@ int main(int argc, char **argv)
 		uint64_t ns01 = 0, ns12 = 0;
 		long nruns = 0;
 		size_t net_diffsize = 0;
+
 		for (int x = 0; x < test.repetitions; x++) {
 			nruns += rand_gap_fill(source, test.size, test.max_gap);
 
 			net_diffsize = 0;
 			for (int s = 0; s < test.shards; s++) {
+
+				// TODO: manage sharding and boundary
+				struct interval damage;
+				damage.start = (s * (int)test.size) /
+					       test.shards;
+				damage.end = ((s + 1) * (int)test.size) /
+					     test.shards;
+
 				size_t diffsize = 0;
 				struct timespec t0, t1, t2;
 				clock_gettime(CLOCK_MONOTONIC, &t0);
-				construct_diff(test.size, &d, s, test.shards,
-						mirror, source, &diffsize,
-						diff);
+				construct_diff(test.size, &damage, 1, mirror,
+						source, &diffsize, diff);
 				clock_gettime(CLOCK_MONOTONIC, &t1);
 				apply_diff(test.size, target1, target2,
 						diffsize, diff);

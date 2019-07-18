@@ -148,12 +148,6 @@ struct render_data {
 	VAConfigID av_copy_config;
 };
 
-enum thread_task {
-	THREADTASK_STOP,
-	THREADTASK_COMPRESSBLOCK,
-	THREADTASK_MAKE_COMPRESSEDDIFF,
-};
-
 typedef struct LZ4F_dctx_s LZ4F_dctx;
 typedef struct ZSTD_CCtx_s ZSTD_CCtx;
 typedef struct ZSTD_DCtx_s ZSTD_DCtx;
@@ -163,23 +157,6 @@ struct comp_ctx {
 	ZSTD_DCtx *zstd_dcontext;
 };
 
-struct thread_data {
-	pthread_t thread;
-	struct fd_translation_map *map;
-	/* This determines, based on the state stored in the map's linked
-	 * shadow structure target, which work is performed, and where
-	 * data should be read and written */
-	int index;
-	int last_task_id;
-	/* Where to record the location and size of the compressed diff
-	 * produced by this thread. The buffer data will point into an
-	 * existing buffer */
-	struct bytebuf cd_dst;
-	size_t cd_actual_size;
-	size_t cd_start;
-	size_t cd_end;
-	struct comp_ctx comp_ctx;
-};
 enum compression_mode {
 	COMP_NONE,
 #ifdef HAS_LZ4
@@ -189,42 +166,59 @@ enum compression_mode {
 	COMP_ZSTD,
 #endif
 };
+
 struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;
 	int local_sign;
+};
+
+struct thread_pool {
+	int nthreads;
+	struct thread_data *threads; // including a slot for the zero thread
 	/* Compression information is globally shared, to save memory, and
 	 * because most rapidly changing application buffers have similar
 	 * content and use the same settings */
 	enum compression_mode compression;
-	struct comp_ctx comp_ctx; // threadlocal
-	/* The latency of a multithreaded operation can be approximated with two
-	 * main components: the context switching time to get all threads
-	 * working (and then notify the original thread), and the time to
-	 * perform the (fully parallel) work. If the context switching time is
-	 * the same for all threads, then there is a threshold beyond which it
-	 * is helpful to run multithreaded (with as many threads as possible),
-	 * below which a single-threaded approach is faster. */
-	int diffcomp_thread_threshold;
-	int comp_thread_threshold;
-	/* Threads. These should only be used for computational work;
-	 * communication should be limited to task descriptions, with pointers
-	 * to e.g. the condition variables used to notify when work is done or
-	 * not */
-	int nthreads;
-	struct thread_data *threads;
-	/* `work_state` guards `nthreads_completed`, `next_thread_task`,
-	 * `task_id`, and `thread_target`. `work_needed_notify` signals when to
-	 * check for an increased task counter; `work_done_notify` lets the main
-	 * thread know that a task has been done.
-	 */
-	pthread_cond_t work_done_notify;
-	pthread_cond_t work_needed_notify;
-	pthread_mutex_t work_state_mutex;
-	int task_id;
-	int nthreads_completed;
-	struct shadow_fd *thread_target;
-	enum thread_task next_thread_task;
+
+	// Mutable state
+	pthread_mutex_t work_mutex;
+	pthread_cond_t work_cond;
+
+	int queue_start, queue_end, queue_size;
+	struct task_data *queue;
+	// TODO: distinct queues for wayland->channel and channel->wayland
+	int queue_in_progress;
+
+	// to wake to main loop
+	int selfpipe_r, selfpipe_w;
+};
+
+struct thread_data {
+	pthread_t thread;
+	struct thread_pool *pool;
+	/* Thread local data */
+	struct comp_ctx comp_ctx;
+};
+
+enum task_type {
+	TASK_STOP,
+	TASK_COMPRESS_BLOCK,
+	TASK_COMPRESS_DIFF,
+};
+
+struct task_data {
+	enum task_type type;
+
+	struct shadow_fd *sfd;
+	struct fd_translation_map *map;
+	/* For block compression option */
+	int zone_start, zone_end;
+	/* For diff compression option */
+	struct interval *damage_intervals;
+	int damage_len;
+
+	struct transfer_data *transfers;
 };
 
 typedef enum {
@@ -310,7 +304,7 @@ struct wmsg_buffer_diff {
 	uint32_t size_and_type;
 	int32_t remote_id;
 	uint32_t diff_size; // in bytes, when uncompressed
-	uint32_t pad_bytes; // number of trailing compression bytes
+	uint32_t pad4;
 	/* following this, the possibly-compressed diff  data */
 };
 struct wmsg_basic {
@@ -432,6 +426,8 @@ struct shadow_fd {
 			// is_dirty flag?
 	bool is_dirty;  // If so, should this file be scanned for updates?
 	struct damage damage;
+	/* For worker threads, contains their allocated damage intervals */
+	struct interval *damage_task_interval_store;
 
 	/* There are two types of reference counts for shadow_fd objects;
 	 * a struct shadow_fd can only be safely deleted when both counts are
@@ -443,6 +439,7 @@ struct shadow_fd {
 	 * so that said program can correctly parse its Wayland messages. */
 	int refcount_protocol; // Number of references from protocol objects
 	int refcount_transfer; // Number of references from fd transfer logic
+	bool refcount_compute; // Are the any thread tasks referring to this?
 
 	// common buffers for file-like types
 	/* total memory size of either the dmabuf or the file */
@@ -469,6 +466,7 @@ struct shadow_fd {
 	// DMAbuf data
 	struct gbm_bo *dmabuf_bo;
 	struct dmabuf_slice_data dmabuf_info;
+	void *dmabuf_map_handle; /* Nonnull when DMABUF is currently mapped */
 
 	// Video data
 	struct AVCodecContext *video_context;
@@ -504,6 +502,8 @@ struct transfer_data {
 	int partial_write_amt;
 	/* The most recent message number */
 	uint32_t last_msgno;
+	/* Guard for all operations */
+	pthread_mutex_t lock;
 };
 
 struct wp_interface;
@@ -580,6 +580,7 @@ struct globals {
 	struct fd_translation_map map;
 	struct render_data render;
 	struct message_tracker tracker;
+	struct thread_pool threads;
 };
 
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
@@ -593,9 +594,12 @@ bool transfer_zeropad(
 int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side);
 
-void setup_translation_map(struct fd_translation_map *map, bool display_side,
-		enum compression_mode compression, int n_threads);
+void setup_translation_map(struct fd_translation_map *map, bool display_side);
 void cleanup_translation_map(struct fd_translation_map *map);
+
+void setup_thread_pool(struct thread_pool *pool,
+		enum compression_mode compression, int n_threads);
+void cleanup_thread_pool(struct thread_pool *pool);
 
 /** Given a file descriptor, return which type code would be applied to its
  * shadow entry. (For example, FDC_PIPE_IR for a pipe-like object that can only
@@ -613,12 +617,16 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		const struct dmabuf_slice_data *info);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
-void collect_update(struct fd_translation_map *map, struct shadow_fd *cur,
-		struct transfer_data *transfers);
+void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
+		struct shadow_fd *cur, struct transfer_data *transfers);
+/** After all thread pool tasks have completed, reduce refcounts and clean up
+ * related data */
+void finish_update(struct fd_translation_map *map, struct shadow_fd *sfd);
 /** Apply a data update message to an element in the translation map, creating
  * an entry when there is none */
-void apply_update(struct fd_translation_map *map, struct render_data *render,
-		enum wmsg_type type, int remote_id, const struct bytebuf *msg);
+void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
+		struct render_data *render, enum wmsg_type type, int remote_id,
+		const struct bytebuf *msg);
 /** Get the shadow structure associated to a remote id, or NULL if it dne */
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
 
@@ -664,6 +672,7 @@ void decref_transferred_rids(
  * at least new_size, and mark the new part of underlying file as dirty */
 void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
 		size_t new_size);
+void run_task(struct task_data *task, struct thread_data *local);
 
 // parsing.c
 
@@ -754,8 +763,9 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize,
 		const char *__restrict__ diff);
-void construct_diff(size_t size, const struct damage *__restrict__ damage,
-		uint64_t slice_no, uint64_t nslices, char *__restrict__ base,
+void construct_diff(size_t size,
+		const struct interval *__restrict__ damaged_intervals,
+		int n_intervals, char *__restrict__ base,
 		const char *__restrict__ changed, size_t *diffsize,
 		char *__restrict__ diff);
 

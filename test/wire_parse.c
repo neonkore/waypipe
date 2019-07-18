@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 	destroy_wp_object(NULL, old_display);
 
 	struct fd_translation_map map;
-	setup_translation_map(&map, false, COMP_NONE, 1);
+	setup_translation_map(&map, false);
 
 	struct wp_object xobj;
 	xobj.type = &intf_xtype;

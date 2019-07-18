@@ -80,6 +80,7 @@ static void destroy_unlinked_sfd(
 
 	/* free all accumulated damage records */
 	reset_damage(&sfd->damage);
+	free(sfd->damage_task_interval_store);
 
 	if (sfd->type == FDC_FILE) {
 		munmap(sfd->mem_local, sfd->buffer_size);
@@ -119,24 +120,6 @@ static void cleanup_comp_ctx(struct comp_ctx *ctx)
 #endif
 	(void)ctx;
 }
-static void cleanup_threads(struct fd_translation_map *map)
-{
-	pthread_mutex_lock(&map->work_state_mutex);
-	map->next_thread_task = THREADTASK_STOP;
-	map->task_id++;
-	map->nthreads_completed = 0;
-	pthread_mutex_unlock(&map->work_state_mutex);
-
-	pthread_cond_broadcast(&map->work_needed_notify);
-	for (int i = 0; i < map->nthreads - 1; i++) {
-		pthread_join(map->threads[i].thread, NULL);
-		cleanup_comp_ctx(&map->threads[i].comp_ctx);
-	}
-	pthread_mutex_destroy(&map->work_state_mutex);
-	pthread_cond_destroy(&map->work_done_notify);
-	pthread_cond_destroy(&map->work_needed_notify);
-	free(map->threads);
-}
 
 static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
 {
@@ -173,107 +156,136 @@ void cleanup_translation_map(struct fd_translation_map *map)
 		tmp->next = NULL;
 		destroy_unlinked_sfd(map, tmp);
 	}
-	cleanup_comp_ctx(&map->comp_ctx);
-	if (map->nthreads > 1) {
-		cleanup_threads(map);
-	}
 }
-
-static void *worker_thread_main(void *arg);
-void setup_translation_map(struct fd_translation_map *map, bool display_side,
-		enum compression_mode comp, int nthreads)
+static bool destroy_shadow_if_unreferenced(
+		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
-	map->local_sign = display_side ? -1 : 1;
-	map->list = NULL;
-	map->max_local_id = 1;
-	map->compression = comp;
-	setup_comp_ctx(&map->comp_ctx, comp);
-
-	if (nthreads == 0) {
-		// platform dependent
-		long nt = sysconf(_SC_NPROCESSORS_ONLN);
-		map->nthreads = max((int)nt / 2, 1);
-	} else {
-		map->nthreads = nthreads;
-	}
-
-	// 1 ms wakeup for other threads, assuming mild CPU load.
-	float thread_switch_delay = 0.001f; // seconds
-	float scan_proc_irate = 0.5e-9f;    // seconds/byte
-	float comp_proc_irate = 0.f;        // seconds/bytes
-#ifdef HAS_LZ4
-	if (comp == COMP_LZ4) {
-		// 0.15 seconds on uncompressable 1e8 bytes
-		comp_proc_irate = 1.5e-9f;
-	}
-#endif
-#ifdef HAS_ZSTD
-	if (comp == COMP_ZSTD) {
-		// 0.5 seconds on uncompressable 1e8 bytes
-		comp_proc_irate = 5e-9f;
-	}
-#endif
-	float proc_irate = scan_proc_irate + comp_proc_irate;
-	if (map->nthreads > 1) {
-		map->diffcomp_thread_threshold =
-				(int)((thread_switch_delay * map->nthreads) /
-						(proc_irate * (map->nthreads -
-									      1)));
-		if (comp_proc_irate > 0) {
-			map->comp_thread_threshold =
-					(int)((thread_switch_delay *
-							      map->nthreads) /
-							(proc_irate * (map->nthreads -
-										      1)));
-		} else {
-			map->comp_thread_threshold = INT32_MAX;
-		}
-	} else {
-		map->diffcomp_thread_threshold = INT32_MAX;
-		map->comp_thread_threshold = INT32_MAX;
-	}
-	// stop task won't be called unless the main task id is
-	// incremented
-	map->next_thread_task = THREADTASK_STOP;
-	map->nthreads_completed = 0;
-	map->task_id = 0;
-	if (map->nthreads > 1) {
-		pthread_mutex_init(&map->work_state_mutex, NULL);
-		pthread_cond_init(&map->work_done_notify, NULL);
-		pthread_cond_init(&map->work_needed_notify, NULL);
-
-		// The main thread has index zero, and will, since
-		// computations block it anyway, share part of the
-		// workload
-		map->threads = calloc((size_t)(map->nthreads - 1),
-				sizeof(struct thread_data));
-		bool had_failures = false;
-		for (int i = 0; i < map->nthreads - 1; i++) {
-			// false sharing is negligible for cold data
-			map->threads[i].map = map;
-			map->threads[i].index = i + 1;
-			map->threads[i].thread = 0;
-			map->threads[i].last_task_id = 0;
-
-			map->threads[i].cd_actual_size = 0;
-			map->threads[i].cd_dst.data = NULL;
-			map->threads[i].cd_dst.size = 0;
-			setup_comp_ctx(&map->threads[i].comp_ctx, comp);
-
-			int ret = pthread_create(&map->threads[i].thread, NULL,
-					worker_thread_main, &map->threads[i]);
-			if (ret == -1) {
-				wp_error("Thread creation failed");
-				had_failures = true;
+	if (sfd->refcount_protocol == 0 && sfd->refcount_transfer == 0 &&
+			sfd->refcount_compute == false && sfd->has_owner) {
+		for (struct shadow_fd *cur = map->list, *prev = NULL; cur;
+				prev = cur, cur = cur->next) {
+			if (cur == sfd) {
+				if (!prev) {
+					map->list = cur->next;
+				} else {
+					prev->next = cur->next;
+				}
 				break;
 			}
 		}
 
-		if (had_failures) {
-			cleanup_threads(map);
-			map->nthreads = 1;
+		destroy_unlinked_sfd(map, sfd);
+		return true;
+	} else if (sfd->refcount_protocol < 0 || sfd->refcount_transfer < 0) {
+		wp_error("Negative refcount for rid=%d: %d protocol references, %d transfer references",
+				sfd->remote_id, sfd->refcount_protocol,
+				sfd->refcount_transfer);
+	}
+	return false;
+}
+
+static void *worker_thread_main(void *arg);
+void setup_translation_map(struct fd_translation_map *map, bool display_side)
+{
+	map->local_sign = display_side ? -1 : 1;
+	map->list = NULL;
+	map->max_local_id = 1;
+}
+
+static void shutdown_threads(struct thread_pool *pool)
+{
+	pthread_mutex_lock(&pool->work_mutex);
+	buf_ensure_size(pool->queue_end + pool->nthreads - 1,
+			sizeof(struct task_data), &pool->queue_size,
+			(void **)&pool->queue);
+	/* Discard all queue elements; this will need adjustment if tasks ever
+	 * own their own memory */
+	pool->queue_start = 0;
+	pool->queue_end = 0;
+	pool->queue_in_progress = 0;
+	for (int i = 1; i < pool->nthreads; i++) {
+		struct task_data task;
+		memset(&task, 0, sizeof(task));
+		task.type = TASK_STOP;
+		pool->queue[pool->queue_end++] = task;
+	}
+	pthread_mutex_unlock(&pool->work_mutex);
+	pthread_cond_broadcast(&pool->work_cond);
+
+	for (int i = 1; i < pool->nthreads; i++) {
+		pthread_join(pool->threads[i].thread, NULL);
+	}
+}
+
+void setup_thread_pool(struct thread_pool *pool,
+		enum compression_mode compression, int n_threads)
+{
+	pool->compression = compression;
+	if (n_threads <= 0) {
+		// platform dependent
+		long nt = sysconf(_SC_NPROCESSORS_ONLN);
+		pool->nthreads = max((int)nt / 2, 1);
+	} else {
+		pool->nthreads = n_threads;
+	}
+	pool->queue_size = 0;
+	pool->queue_end = 0;
+	pool->queue_start = 0;
+	pool->queue_in_progress = 0;
+	pool->queue = NULL;
+
+	pthread_mutex_init(&pool->work_mutex, NULL);
+	pthread_cond_init(&pool->work_cond, NULL);
+
+	/* Thread #0 is the 'main' thread */
+	pool->threads = calloc(
+			(size_t)pool->nthreads, sizeof(struct thread_data));
+	bool had_failures = false;
+	pool->threads[0].pool = pool;
+	pool->threads[0].thread = pthread_self();
+	for (int i = 1; i < pool->nthreads; i++) {
+		pool->threads[i].pool = pool;
+		int ret = pthread_create(&pool->threads[i].thread, NULL,
+				worker_thread_main, &pool->threads[i]);
+		if (ret == -1) {
+			wp_error("Thread creation failed");
+			had_failures = true;
+			break;
 		}
 	}
+
+	if (had_failures) {
+		shutdown_threads(pool);
+		pool->threads = realloc(
+				pool->threads, sizeof(struct thread_data));
+		pool->nthreads = 1;
+	}
+
+	setup_comp_ctx(&pool->threads[0].comp_ctx, compression);
+
+	int fds[2];
+	if (pipe(fds) == -1) {
+		wp_error("Failed to create pipe: %s", strerror(errno));
+	}
+	pool->selfpipe_r = fds[0];
+	pool->selfpipe_w = fds[1];
+	if (set_nonblocking(pool->selfpipe_r) == -1) {
+		wp_error("Failed to make read end of pipe nonblocking: %s",
+				strerror(errno));
+	}
+}
+void cleanup_thread_pool(struct thread_pool *pool)
+{
+	shutdown_threads(pool);
+	cleanup_comp_ctx(&pool->threads[0].comp_ctx);
+
+	pthread_mutex_destroy(&pool->work_mutex);
+	pthread_cond_destroy(&pool->work_cond);
+	free(pool->threads);
+	free(pool->queue);
+
+	close(pool->selfpipe_r);
+	close(pool->selfpipe_w);
 }
 
 const char *fdcat_to_str(fdcat_t cat)
@@ -349,9 +361,9 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	}
 }
 
-static size_t compress_bufsize(struct fd_translation_map *map, size_t max_input)
+static size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 {
-	switch (map->compression) {
+	switch (pool->compression) {
 	case COMP_NONE:
 		(void)max_input;
 		return 0;
@@ -370,9 +382,9 @@ static size_t compress_bufsize(struct fd_translation_map *map, size_t max_input)
 /* With the selected compression method, compress the buffer
  * {isize,ibuf}, possibly modifying {msize,mbuf}, and setting
  * {wsize,wbuf} to indicate the result */
-static void compress_buffer(struct fd_translation_map *map,
-		struct comp_ctx *ctx, size_t isize, const char *ibuf,
-		size_t msize, char *mbuf, struct bytebuf *dst)
+static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
+		size_t isize, const char *ibuf, size_t msize, char *mbuf,
+		struct bytebuf *dst)
 {
 	(void)ctx;
 	// Ensure inputs always nontrivial
@@ -383,7 +395,7 @@ static void compress_buffer(struct fd_translation_map *map,
 	}
 
 	DTRACE_PROBE1(waypipe, compress_buffer_enter, isize);
-	switch (map->compression) {
+	switch (pool->compression) {
 	case COMP_NONE:
 		(void)msize;
 		(void)mbuf;
@@ -424,10 +436,11 @@ static void compress_buffer(struct fd_translation_map *map,
  * to precisely msize bytes, setting {wsize,wbuf} to indicate the result.
  * If the compression mode requires it. Returns a pointer to a newly allocated
  * buffer, else NULL. */
-static void *uncompress_buffer(struct fd_translation_map *map, size_t isize,
-		const char *ibuf, size_t msize, size_t *wsize,
+static void *uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
+		size_t isize, const char *ibuf, size_t msize, size_t *wsize,
 		const char **wbuf)
 {
+	(void)ctx;
 	// Ensure inputs always nontrivial
 	if (isize == 0) {
 		*wsize = 0;
@@ -437,7 +450,7 @@ static void *uncompress_buffer(struct fd_translation_map *map, size_t isize,
 
 	DTRACE_PROBE1(waypipe, uncompress_buffer_enter, isize);
 	void *ret = NULL;
-	switch (map->compression) {
+	switch (pool->compression) {
 	case COMP_NONE:
 		(void)msize;
 		*wsize = isize;
@@ -451,8 +464,7 @@ static void *uncompress_buffer(struct fd_translation_map *map, size_t isize,
 		while (read < isize) {
 			size_t dst_remaining = msize - total;
 			size_t src_remaining = isize - read;
-			size_t hint = LZ4F_decompress(
-					map->comp_ctx.lz4f_dcontext,
+			size_t hint = LZ4F_decompress(ctx->lz4f_dcontext,
 					&mbuf[total], &dst_remaining,
 					&ibuf[read], &src_remaining, NULL);
 			read += src_remaining;
@@ -473,8 +485,8 @@ static void *uncompress_buffer(struct fd_translation_map *map, size_t isize,
 #ifdef HAS_ZSTD
 	case COMP_ZSTD: {
 		char *mbuf = malloc(msize);
-		size_t ws = ZSTD_decompressDCtx(map->comp_ctx.zstd_dcontext,
-				mbuf, msize, ibuf, isize);
+		size_t ws = ZSTD_decompressDCtx(
+				ctx->zstd_dcontext, mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws) || (size_t)ws != msize) {
 			wp_error("Zstd decompression failed for %d bytes to %d of space: %s",
 					(int)isize, (int)msize,
@@ -690,12 +702,13 @@ static uint64_t run_interval_diff(uint64_t blockrange_min,
  * Requires that `diff` point to a memory buffer of size `size + 8`, or
  * if slices are used, `align(ceildiv(size, nslices), 8) + 16`.
  */
-void construct_diff(size_t size, const struct damage *__restrict__ damage,
-		uint64_t slice_no, uint64_t nslices, char *__restrict__ base,
+void construct_diff(size_t size,
+		const struct interval *__restrict__ damaged_intervals,
+		int n_intervals, char *__restrict__ base,
 		const char *__restrict__ changed, size_t *diffsize,
 		char *__restrict__ diff)
 {
-	DTRACE_PROBE1(waypipe, construct_diff_enter, damage->ndamage_intvs);
+	DTRACE_PROBE1(waypipe, construct_diff_enter, n_intervals);
 
 	uint64_t nblocks = (uint64_t)floordiv((int)size, 8);
 	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
@@ -705,61 +718,22 @@ void construct_diff(size_t size, const struct damage *__restrict__ damage,
 	uint64_t ntrailing = size - 8 * nblocks;
 	uint64_t cursor = 0;
 
-	struct interval damage_everything = {0, size};
-	struct interval *damage_list;
-	int damage_len;
-	if (damage->damage == DAMAGE_EVERYTHING) {
-		damage_list = &damage_everything;
-		damage_len = 1;
-	} else {
-		damage_list = damage->damage;
-		damage_len = damage->ndamage_intvs;
-	}
-
-	uint64_t net_blocks = 0;
-	if (nslices > 1) {
-		for (int d = 0; d < damage_len; d++) {
-			/* realign to get true checked sizes */
-			struct interval intv = damage_list[d];
-			uint64_t bstart =
-					minu(floordiv(intv.start, 8), nblocks);
-			uint64_t bend = minu(ceildiv(intv.end, 8), nblocks);
-			net_blocks += bend - bstart;
+	bool check_tail = false;
+	for (int i = 0; i < n_intervals; i++) {
+		struct interval e = damaged_intervals[i];
+		uint64_t bstart = (uint64_t)floordiv(e.start, 8);
+		uint64_t bend = (uint64_t)ceildiv(e.end, 8);
+		if (bend > nblocks) {
+			check_tail = true;
 		}
-	} else {
-		net_blocks = UINT64_MAX;
-	}
-	uint64_t blockno_min = (net_blocks * slice_no) / nslices;
-	uint64_t blockno_max = (net_blocks * (slice_no + 1)) / nslices;
-
-	uint64_t acc_blocks = 0;
-	for (int d = 0; d < damage_len; d++) {
-		struct interval intv = damage_list[d];
-		uint64_t bstart = minu(floordiv(intv.start, 8), nblocks);
-		uint64_t bend = minu(ceildiv(intv.end, 8), nblocks);
-		uint64_t w = bend - bstart;
-		/* Adjust `bstart` and `bend` to be fall within the cumulative
-		 * block count restrictions. */
-		if (acc_blocks < blockno_min) {
-			bstart += (blockno_min - acc_blocks);
-		}
-		acc_blocks += w;
-		if (acc_blocks > blockno_max) {
-			/* don't wrap over */
-			if (bend < (acc_blocks - blockno_max)) {
-				bend = 0;
-			} else {
-				bend -= (acc_blocks - blockno_max);
-			}
-		}
-		if (bend <= bstart) {
+		bend = minu(bend, nblocks);
+		if (bstart >= bend) {
 			continue;
 		}
 		cursor = run_interval_diff(bstart, bend, changed_blocks,
 				base_blocks, diff_blocks, cursor);
 	}
 
-	bool check_tail = slice_no + 1 == nslices;
 	bool tail_change = false;
 	if (check_tail && ntrailing > 0) {
 		for (uint64_t i = 0; i < ntrailing; i++) {
@@ -821,224 +795,286 @@ void apply_diff(size_t size, char *__restrict__ target1,
 
 /* Construct and optionally compress a diff between sfd->mem_mirror and
  * the actual memmap'd data */
-static void worker_run_compresseddiff(struct fd_translation_map *map,
-		struct comp_ctx *ctx, int index, int nthreads,
-		struct bytebuf *dst, size_t *actual_size)
+static void worker_run_compress_diff(
+		struct task_data *task, struct thread_data *local)
 {
-	DTRACE_PROBE1(waypipe, worker_compdiff_enter, index);
-	struct shadow_fd *sfd = map->thread_target;
-
-	/* Allocate a disjoint target interval to each worker */
-	size_t diff_step = align(ceildiv(sfd->buffer_size, nthreads) + 16, 8);
-
-	char *diff_buffer = malloc(diff_step);
+	struct shadow_fd *sfd = task->sfd;
+	struct thread_pool *pool = local->pool;
 
 	/* Depending on the buffer format, doing a memcpy before running the
 	 * diff construction routine can be significantly faster. */
 	// TODO: Either autodetect when this happens, or write a
 	// faster/vectorizable diff routine
-	size_t diffsize;
-	construct_diff(sfd->buffer_size, &sfd->damage, index, nthreads,
-			sfd->mem_mirror, sfd->mem_local, &diffsize,
-			diff_buffer);
-	*actual_size = diffsize;
 
-	if (diffsize > diff_step) {
-		wp_error("Compression section %d overflow (%d>%d)", index,
-				(int)diffsize, (int)diff_step);
+	size_t damage_space = 0;
+	for (int i = 0; i < task->damage_len; i++) {
+		damage_space += (size_t)(task->damage_intervals[i].end -
+						task->damage_intervals[i]
+								.start) +
+				8;
+	}
+	DTRACE_PROBE1(waypipe, worker_compdiff_enter, damage_space);
+
+	char *diff_buffer = NULL;
+	char *diff_target = NULL;
+	if (pool->compression == COMP_NONE) {
+		diff_buffer = malloc(
+				damage_space + sizeof(struct wmsg_buffer_diff));
+		diff_target = diff_buffer + sizeof(struct wmsg_buffer_diff);
+	} else {
+		diff_buffer = malloc(damage_space);
+		diff_target = diff_buffer;
 	}
 
+	size_t diffsize;
+	construct_diff(sfd->buffer_size, task->damage_intervals,
+			task->damage_len, sfd->mem_mirror, sfd->mem_local,
+			&diffsize, diff_target);
 	if (diffsize == 0) {
 		free(diff_buffer);
-		dst->size = 0;
-		dst->data = NULL;
-	} else if (map->compression == COMP_NONE) {
-		dst->size = diffsize;
-		dst->data = realloc(diff_buffer, dst->size);
-	} else {
-		size_t comp_size = compress_bufsize(map, diffsize);
-		char *comp_buf = malloc(comp_size);
-		compress_buffer(map, ctx, diffsize, diff_buffer, comp_size,
-				comp_buf, dst);
-		free(diff_buffer);
-		dst->data = realloc(dst->data, dst->size);
+		goto end;
 	}
-	/* Shrink diff buffer. */
 
-	DTRACE_PROBE1(waypipe, worker_compdiff_exit, index);
+	uint8_t *msg;
+	size_t sz;
+	if (pool->compression == COMP_NONE) {
+		sz = diffsize + sizeof(struct wmsg_buffer_diff);
+		msg = (uint8_t *)diff_buffer;
+	} else {
+		struct bytebuf dst;
+		size_t comp_size = compress_bufsize(pool, diffsize);
+		char *comp_buf = malloc(alignu(comp_size, 16) +
+					sizeof(struct wmsg_buffer_diff));
+		compress_buffer(pool, &local->comp_ctx, diffsize, diff_target,
+				comp_size,
+				comp_buf + sizeof(struct wmsg_buffer_diff),
+				&dst);
+		free(diff_buffer);
+		sz = dst.size + sizeof(struct wmsg_buffer_diff);
+		msg = (uint8_t *)comp_buf;
+	}
+	msg = realloc(msg, alignu(sz, 16));
+	memset(msg + sz, 0, alignu(sz, 16) - sz);
+	struct wmsg_buffer_diff header;
+	header.size_and_type = transfer_header(sz, WMSG_BUFFER_DIFF);
+	header.remote_id = sfd->remote_id;
+	header.diff_size = (uint32_t)diffsize;
+	header.pad4 = 0;
+	memcpy(msg, &header, sizeof(struct wmsg_buffer_diff));
+
+	struct transfer_data *transfers = task->transfers;
+
+	pthread_mutex_lock(&transfers->lock);
+	transfer_add(transfers, alignu(sz, 16), msg, transfers->last_msgno++);
+	pthread_mutex_unlock(&transfers->lock);
+
+end:
+	DTRACE_PROBE1(waypipe, worker_compdiff_exit, diffsize);
 }
 
 /* Compress data for sfd->mem_mirror */
-static void worker_run_compressblock(struct fd_translation_map *map,
-		struct comp_ctx *ctx, int index, int nthreads,
-		struct bytebuf *dst, size_t *actual_start, size_t *actual_end)
+static void worker_run_compress_block(
+		struct task_data *task, struct thread_data *local)
 {
-	DTRACE_PROBE1(waypipe, worker_comp_enter, index);
 
-	struct shadow_fd *sfd = map->thread_target;
-
-	size_t region_start = sfd->remote_bufsize;
-	size_t region_end = sfd->buffer_size;
+	struct shadow_fd *sfd = task->sfd;
+	struct thread_pool *pool = local->pool;
 
 	/* Allocate a disjoint target interval to each worker */
-	size_t source_start = region_start +
-			      ((size_t)index * (region_end - region_start)) /
-					      nthreads;
-	size_t source_end =
-			region_start +
-			((size_t)(index + 1) * (region_end - region_start)) /
-					nthreads;
+	size_t source_start = (size_t)task->zone_start;
+	size_t source_end = (size_t)task->zone_end;
+	DTRACE_PROBE1(waypipe, worker_comp_enter, source_end - source_start);
 
-	*actual_start = source_start;
-	*actual_end = source_end;
-
+	size_t sz = sizeof(struct wmsg_buffer_fill);
 	if (source_end == source_start) {
-		dst->size = 0;
-		dst->data = NULL;
-	} else if (map->compression == COMP_NONE) {
-		dst->size = source_end - source_start;
-		dst->data = malloc(dst->size);
-		memcpy(dst->data, sfd->mem_mirror + source_start,
+		/* Nothing to do here */
+
+		wp_error("Skipping task");
+		goto end;
+	}
+
+	uint8_t *msg;
+	if (pool->compression == COMP_NONE) {
+		sz = sizeof(struct wmsg_buffer_fill) +
+		     (source_end - source_start);
+
+		msg = malloc(alignu(sz, 16));
+		memcpy(msg + sizeof(struct wmsg_buffer_fill),
+				sfd->mem_mirror + source_start,
 				source_end - source_start);
 	} else {
 		size_t comp_size = compress_bufsize(
-				map, source_end - source_start);
-		char *comp_buf = malloc(comp_size);
-		compress_buffer(map, ctx, source_end - source_start,
+				pool, source_end - source_start);
+		struct bytebuf dst;
+		msg = malloc(alignu(comp_size, 16) +
+				sizeof(struct wmsg_buffer_fill));
+		compress_buffer(pool, &local->comp_ctx,
+				source_end - source_start,
 				&sfd->mem_mirror[source_start], comp_size,
-				comp_buf, dst);
-		dst->data = realloc(dst->data, dst->size);
+				(char *)msg + sizeof(struct wmsg_buffer_fill),
+				&dst);
+		msg = realloc(msg,
+				alignu(dst.size, 16) +
+						sizeof(struct wmsg_buffer_fill));
+		sz = dst.size + sizeof(struct wmsg_buffer_fill);
 	}
+	memset(msg + sz, 0, alignu(sz, 16) - sz);
+	struct wmsg_buffer_fill header;
+	header.size_and_type = transfer_header(sz, WMSG_BUFFER_FILL);
+	header.remote_id = sfd->remote_id;
+	header.start = (uint32_t)source_start;
+	header.end = (uint32_t)source_end;
+	memcpy(msg, &header, sizeof(struct wmsg_buffer_fill));
 
-	DTRACE_PROBE1(waypipe, worker_comp_exit, index);
+	struct transfer_data *transfers = task->transfers;
+
+	pthread_mutex_lock(&transfers->lock);
+	transfer_add(transfers, alignu(sz, 16), msg, transfers->last_msgno++);
+	pthread_mutex_unlock(&transfers->lock);
+
+end:
+	DTRACE_PROBE1(waypipe, worker_comp_exit,
+			sz - sizeof(struct wmsg_buffer_fill));
 }
 
-static void queue_thread_task(struct fd_translation_map *map,
-		struct shadow_fd *shadow, enum thread_task task)
-{
-	pthread_mutex_lock(&map->work_state_mutex);
-	map->task_id++;
-	map->nthreads_completed = 0;
-	map->next_thread_task = task;
-	map->thread_target = shadow;
-	pthread_mutex_unlock(&map->work_state_mutex);
-	pthread_cond_broadcast(&map->work_needed_notify);
-}
-static void wait_thread_task(struct fd_translation_map *map)
-{
-	pthread_mutex_lock(&map->work_state_mutex);
-	map->nthreads_completed++;
-	while (map->nthreads_completed < map->nthreads) {
-		pthread_cond_wait(
-				&map->work_done_notify, &map->work_state_mutex);
-	}
-	pthread_mutex_unlock(&map->work_state_mutex);
-}
 /* Optionally compress the data in mem_mirror, and set up the initial
  * transfer blocks */
-static void add_initial_compressed_block(struct fd_translation_map *map,
-		struct shadow_fd *sfd, struct transfer_data *transfers)
+static void queue_fill_transfers(struct fd_translation_map *map,
+		struct thread_pool *threads, struct shadow_fd *sfd,
+		struct transfer_data *transfers)
 {
 	// new transfer, we send file contents verbatim
-	bool use_threads = (int32_t)(sfd->buffer_size - sfd->remote_bufsize) >
-			   map->comp_thread_threshold;
+	const int chunksize = 262144;
 
-	size_t cd_start0;
-	size_t cd_end0;
-	struct bytebuf cd_dst0;
-	if (use_threads) {
-		queue_thread_task(map, sfd, THREADTASK_COMPRESSBLOCK);
-	} else {
-		map->thread_target = sfd;
-	}
-	worker_run_compressblock(map, &map->comp_ctx, 0,
-			use_threads ? map->nthreads : 1, &cd_dst0, &cd_start0,
-			&cd_end0);
-	if (use_threads) {
-		wait_thread_task(map);
+	int region_start = (int)sfd->remote_bufsize;
+	int region_end = (int)sfd->buffer_size;
+	if (region_start == region_end) {
+		return;
 	}
 
-	for (int i = 0; i < (use_threads ? map->nthreads : 1); i++) {
-		size_t start = i > 0 ? map->threads[i - 1].cd_start : cd_start0;
-		size_t end = i > 0 ? map->threads[i - 1].cd_end : cd_end0;
-		struct bytebuf dst =
-				i > 0 ? map->threads[i - 1].cd_dst : cd_dst0;
-		if (dst.size == 0) {
-			continue;
-		}
+	/* Keep sfd alive at least until write to channel is done */
+	sfd->refcount_compute = true;
 
-		struct wmsg_buffer_fill *header =
-				calloc(1, sizeof(struct wmsg_buffer_fill));
-		size_t packet_len = sizeof(struct wmsg_buffer_fill) + dst.size;
-		header->size_and_type =
-				transfer_header(packet_len, WMSG_BUFFER_FILL);
-		header->remote_id = sfd->remote_id;
-		header->end = (uint32_t)end;
-		header->start = (uint32_t)start;
-		transfer_add(transfers, sizeof(struct wmsg_buffer_fill), header,
-				transfers->last_msgno);
-		transfer_add(transfers, dst.size, dst.data,
-				transfers->last_msgno);
-		transfer_zeropad(transfers, alignu(packet_len, 16) - packet_len,
-				transfers->last_msgno);
-		transfers->last_msgno++;
+	int nshards = ceildiv((region_end - region_start), chunksize);
+
+	pthread_mutex_lock(&threads->work_mutex);
+	buf_ensure_size(threads->queue_end + nshards, sizeof(struct task_data),
+			&threads->queue_size, (void **)&threads->queue);
+
+	for (int i = 0; i < nshards; i++) {
+		struct task_data task;
+		task.type = TASK_COMPRESS_BLOCK;
+		task.sfd = sfd;
+		task.map = map;
+		task.transfers = transfers;
+
+		int range = (region_end - region_start);
+		task.zone_start = region_start + (range * i) / nshards;
+		task.zone_end = region_start + (range * (i + 1)) / nshards;
+
+		task.damage_len = 0;
+		task.damage_intervals = NULL;
+		threads->queue[threads->queue_end++] = task;
 	}
+	pthread_mutex_unlock(&threads->work_mutex);
+	pthread_cond_broadcast(&threads->work_cond);
 }
-static void add_updated_diff_block(struct fd_translation_map *map,
-		struct shadow_fd *sfd, struct transfer_data *transfers,
-		int total_damaged_area)
+
+static void queue_diff_transfers(struct fd_translation_map *map,
+		struct thread_pool *threads, struct shadow_fd *sfd,
+		struct transfer_data *transfers)
 {
-	DTRACE_PROBE2(waypipe, diffcomp_start, total_damaged_area,
-			sfd->buffer_size);
-	bool use_threads = total_damaged_area > map->diffcomp_thread_threshold;
-
-	size_t cd_actual_size0;
-	struct bytebuf cd_dst0;
-	if (use_threads) {
-		queue_thread_task(map, sfd, THREADTASK_MAKE_COMPRESSEDDIFF);
-	} else {
-		map->thread_target = sfd;
-	}
-	worker_run_compresseddiff(map, &map->comp_ctx, 0,
-			use_threads ? map->nthreads : 1, &cd_dst0,
-			&cd_actual_size0);
-	if (use_threads) {
-		wait_thread_task(map);
+	const int chunksize = 262144;
+	if (!sfd->damage.damage) {
+		return;
 	}
 
-	uint64_t actual_diff_size = 0;
+	/* Keep sfd alive at least until write to channel is done */
+	sfd->refcount_compute = true;
 
-	for (int i = 0; i < (use_threads ? map->nthreads : 1); i++) {
-		size_t asize = i > 0 ? map->threads[i - 1].cd_actual_size
-				     : cd_actual_size0;
-		struct bytebuf dst =
-				i > 0 ? map->threads[i - 1].cd_dst : cd_dst0;
-		if (dst.size == 0) {
-			continue;
+	if (sfd->damage.damage == DAMAGE_EVERYTHING) {
+		reset_damage(&sfd->damage);
+		struct ext_interval all = {.start = 0,
+				.width = (int)sfd->buffer_size,
+				.rep = 1,
+				.stride = 0};
+		merge_damage_records(&sfd->damage, 1, &all);
+	}
+
+	int net_damage = 0;
+	for (int i = 0; i < sfd->damage.ndamage_intvs; i++) {
+		/* Extend all damage to the nearest 8-block */
+		struct interval e = sfd->damage.damage[i];
+		e.start = floordiv(e.start, 8) * 8;
+		e.end = ceildiv(e.end, 8) * 8;
+		sfd->damage.damage[i] = e;
+		net_damage += e.end - e.start;
+	}
+
+	int nshards = ceildiv(net_damage, chunksize);
+
+	/* Instead of allocating individual buffers for each task, create a
+	 * global damage tracking buffer into which tasks index. It will be
+	 * deleted in `finish_update`. */
+	struct interval *intvs = malloc(
+			sizeof(struct interval) *
+			(size_t)(sfd->damage.ndamage_intvs + nshards));
+	int *offsets = calloc((size_t)nshards + 1, sizeof(int));
+	sfd->damage_task_interval_store = intvs;
+	int tot_blocks = net_damage / 8;
+	int ir = 0, iw = 0, acc_prev_blocks = 0;
+	for (int shard = 0; shard < nshards; shard++) {
+		int s_lower = (shard * tot_blocks) / nshards;
+		int s_upper = ((shard + 1) * tot_blocks) / nshards;
+
+		while (acc_prev_blocks < s_upper) {
+			struct interval e = sfd->damage.damage[ir];
+			const int w = (e.end - e.start) / 8;
+			int e_lower = acc_prev_blocks;
+			int e_upper = acc_prev_blocks + w;
+
+			int a_low = max(e_lower, s_lower) - acc_prev_blocks;
+			int a_high = min(e_upper, s_upper) - acc_prev_blocks;
+
+			intvs[iw++] = (struct interval){
+					.start = e.start + 8 * a_low,
+					.end = e.start + 8 * a_high,
+			};
+
+			if (acc_prev_blocks + w > s_upper) {
+				break;
+			} else {
+				acc_prev_blocks += w;
+				ir++;
+			}
 		}
 
-		struct wmsg_buffer_diff *header =
-				calloc(1, sizeof(struct wmsg_buffer_diff));
-		size_t packet_len = sizeof(struct wmsg_buffer_diff) + dst.size;
-		header->size_and_type =
-				transfer_header(packet_len, WMSG_BUFFER_DIFF);
-		header->remote_id = sfd->remote_id;
-		header->diff_size = (uint32_t)asize;
-		transfer_add(transfers, sizeof(struct wmsg_buffer_diff), header,
-				transfers->last_msgno);
-		transfer_add(transfers, dst.size, dst.data,
-				transfers->last_msgno);
-		transfer_zeropad(transfers, alignu(packet_len, 16) - packet_len,
-				transfers->last_msgno);
-		transfers->last_msgno++;
-
-		actual_diff_size += asize;
+		offsets[shard + 1] = iw;
 	}
 
-	reset_damage(&sfd->damage);
-	DTRACE_PROBE1(waypipe, diffcomp_end, actual_diff_size);
-	wp_debug("Diff+comp construction end: %ld/%ld", actual_diff_size,
-			(uint64_t)sfd->buffer_size);
+	pthread_mutex_lock(&threads->work_mutex);
+	buf_ensure_size(threads->queue_end + nshards, sizeof(struct task_data),
+			&threads->queue_size, (void **)&threads->queue);
+
+	for (int i = 0; i < nshards; i++) {
+		struct task_data task;
+		task.type = TASK_COMPRESS_DIFF;
+		task.sfd = sfd;
+		task.map = map;
+		task.transfers = transfers;
+
+		task.damage_len = offsets[i + 1] - offsets[i];
+		task.damage_intervals =
+				&sfd->damage_task_interval_store[offsets[i]];
+
+		task.zone_start = 0;
+		task.zone_end = 0;
+		threads->queue[threads->queue_end++] = task;
+	}
+	pthread_mutex_unlock(&threads->work_mutex);
+	free(offsets);
+
+	pthread_cond_broadcast(&threads->work_cond);
 }
 
 static void add_dmabuf_create_request(struct transfer_data *transfers,
@@ -1055,7 +1091,10 @@ static void add_dmabuf_create_request(struct transfer_data *transfers,
 	header->size_and_type = transfer_header(actual_len, variant);
 	memcpy(data + sizeof(struct wmsg_open_dmabuf), &sfd->dmabuf_info,
 			sizeof(struct dmabuf_slice_data));
+
+	pthread_mutex_lock(&transfers->lock);
 	transfer_add(transfers, padded_len, data, transfers->last_msgno++);
+	pthread_mutex_unlock(&transfers->lock);
 }
 static void add_file_create_request(
 		struct transfer_data *transfers, struct shadow_fd *sfd)
@@ -1066,12 +1105,34 @@ static void add_file_create_request(
 	header->remote_id = sfd->remote_id;
 	header->size_and_type = transfer_header(
 			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
+
+	pthread_mutex_lock(&transfers->lock);
 	transfer_add(transfers, sizeof(struct wmsg_open_file), header,
 			transfers->last_msgno++);
+	pthread_mutex_unlock(&transfers->lock);
 }
 
-void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
-		struct transfer_data *transfers)
+void finish_update(struct fd_translation_map *map, struct shadow_fd *sfd)
+{
+	if (!sfd->refcount_compute) {
+		return;
+	}
+	if (sfd->type == FDC_DMABUF && sfd->dmabuf_map_handle) {
+		// if this fails, unmap_dmabuf will print error
+		(void)unmap_dmabuf(sfd->dmabuf_bo, sfd->dmabuf_map_handle);
+		sfd->dmabuf_map_handle = NULL;
+		sfd->mem_local = NULL;
+	}
+	if (sfd->damage_task_interval_store) {
+		free(sfd->damage_task_interval_store);
+		sfd->damage_task_interval_store = NULL;
+	}
+	sfd->refcount_compute = false;
+	destroy_shadow_if_unreferenced(map, sfd);
+}
+
+void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
+		struct shadow_fd *sfd, struct transfer_data *transfers)
 {
 	if (sfd->type == FDC_FILE) {
 		if (!sfd->is_dirty) {
@@ -1093,7 +1154,7 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			sfd->remote_bufsize = 0;
 
 			add_file_create_request(transfers, sfd);
-			add_initial_compressed_block(map, sfd, transfers);
+			queue_fill_transfers(map, threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
 			return;
 		}
@@ -1106,25 +1167,21 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			header->size_and_type = transfer_header(
 					sizeof(struct wmsg_open_file),
 					WMSG_EXTEND_FILE);
+
+			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_open_file),
 					header, transfers->last_msgno++);
+			pthread_mutex_unlock(&transfers->lock);
 
 			memcpy(sfd->mem_mirror + sfd->remote_bufsize,
 					sfd->mem_local + sfd->remote_bufsize,
 					sfd->buffer_size - sfd->remote_bufsize);
 
-			add_initial_compressed_block(map, sfd, transfers);
+			queue_fill_transfers(map, threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
 		}
 
-		int total_area = get_damage_area(&sfd->damage);
-		total_area = min(total_area, (int)sfd->buffer_size);
-		if (total_area == 0) {
-			reset_damage(&sfd->damage);
-			return;
-		}
-
-		add_updated_diff_block(map, sfd, transfers, total_area);
+		queue_diff_transfers(map, threads, sfd, transfers);
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
@@ -1140,34 +1197,30 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			add_dmabuf_create_request(
 					transfers, sfd, WMSG_OPEN_DMABUF);
 		}
-		void *handle = NULL;
 		if (!sfd->dmabuf_bo) {
 			// ^ was not previously able to create buffer
 			return;
 		}
-		void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle);
-		if (!data) {
-			return;
+		if (!sfd->mem_local) {
+			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, false,
+					&sfd->dmabuf_map_handle);
+			if (!sfd->mem_local) {
+				return;
+			}
 		}
 		if (first) {
-			// Write diff with a header, and build mirror,
-			// only touching data once
-			memcpy(sfd->mem_mirror, data, sfd->buffer_size);
+			// Q: is it better to run the copy in parallel?
+			memcpy(sfd->mem_mirror, sfd->mem_local,
+					sfd->buffer_size);
 
-			add_initial_compressed_block(map, sfd, transfers);
+			queue_fill_transfers(map, threads, sfd, transfers);
 		} else {
 			damage_everything(&sfd->damage);
-			sfd->mem_local = data;
 
-			add_updated_diff_block(map, sfd, transfers,
-					(int)sfd->buffer_size);
-			sfd->mem_local = NULL;
+			queue_diff_transfers(map, threads, sfd, transfers);
 		}
-		if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
-			// there was an issue unmapping; unmap_dmabuf
-			// will log error
-			return;
-		}
+		/* Unmapping will be handled by finish_update() */
+
 	} else if (sfd->type == FDC_DMAVID_IR) {
 		if (!sfd->is_dirty) {
 			return;
@@ -1206,8 +1259,12 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			createh->size_and_type = transfer_header(
 					sizeof(struct wmsg_basic), type);
 			createh->remote_id = sfd->remote_id;
+
+			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_basic),
 					createh, transfers->last_msgno++);
+			pthread_mutex_unlock(&transfers->lock);
+
 			sfd->pipe_onlyhere = false;
 		}
 
@@ -1226,10 +1283,13 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 			memset(buf + sfd->pipe_recv.used, 0,
 					psz - sfd->pipe_recv.used);
 
+			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_basic),
 					header, transfers->last_msgno);
 			transfer_add(transfers, psz, buf,
 					transfers->last_msgno);
+			pthread_mutex_unlock(&transfers->lock);
+
 			transfers->last_msgno++;
 			sfd->pipe_recv.used = 0;
 		}
@@ -1241,8 +1301,11 @@ void collect_update(struct fd_translation_map *map, struct shadow_fd *sfd,
 					sizeof(struct wmsg_basic),
 					WMSG_PIPE_HANGUP);
 			hanguph->remote_id = sfd->remote_id;
+
+			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_basic),
 					hanguph, transfers->last_msgno++);
+			pthread_mutex_unlock(&transfers->lock);
 
 			sfd->pipe_rclosed = true;
 			close(sfd->pipe_fd);
@@ -1468,8 +1531,9 @@ static void increase_buffer_sizes(struct shadow_fd *sfd, size_t new_size)
 			align(sfd->buffer_size, 8) - old_size);
 }
 
-void apply_update(struct fd_translation_map *map, struct render_data *render,
-		enum wmsg_type type, int remote_id, const struct bytebuf *msg)
+void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
+		struct render_data *render, enum wmsg_type type, int remote_id,
+		const struct bytebuf *msg)
 {
 	if (type == WMSG_OPEN_FILE || type == WMSG_OPEN_DMABUF ||
 			type == WMSG_OPEN_IR_PIPE ||
@@ -1513,7 +1577,8 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		void *fptr = uncompress_buffer(map,
+		void *fptr = uncompress_buffer(threads,
+				&threads->threads[0].comp_ctx,
 				sz - sizeof(struct wmsg_buffer_fill),
 				msg->data + sizeof(struct wmsg_buffer_fill),
 				header->end - header->start, &act_size,
@@ -1566,7 +1631,8 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		void *fptr = uncompress_buffer(map,
+		void *fptr = uncompress_buffer(threads,
+				&threads->threads[0].comp_ctx,
 				sz - sizeof(struct wmsg_buffer_diff),
 				msg->data + sizeof(struct wmsg_buffer_diff),
 				header->diff_size, &act_size, &act_buffer);
@@ -1659,32 +1725,6 @@ void apply_update(struct fd_translation_map *map, struct render_data *render,
 	}
 }
 
-static bool destroy_shadow_if_unreferenced(
-		struct fd_translation_map *map, struct shadow_fd *sfd)
-{
-	if (sfd->refcount_protocol == 0 && sfd->refcount_transfer == 0 &&
-			sfd->has_owner) {
-		for (struct shadow_fd *cur = map->list, *prev = NULL; cur;
-				prev = cur, cur = cur->next) {
-			if (cur == sfd) {
-				if (!prev) {
-					map->list = cur->next;
-				} else {
-					prev->next = cur->next;
-				}
-				break;
-			}
-		}
-
-		destroy_unlinked_sfd(map, sfd);
-		return true;
-	} else if (sfd->refcount_protocol < 0 || sfd->refcount_transfer < 0) {
-		wp_error("Negative refcount for rid=%d: %d protocol references, %d transfer references",
-				sfd->remote_id, sfd->refcount_protocol,
-				sfd->refcount_transfer);
-	}
-	return false;
-}
 bool shadow_decref_protocol(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
@@ -1908,48 +1948,48 @@ void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
 	sfd->is_dirty = true;
 }
 
+void run_task(struct task_data *task, struct thread_data *local)
+{
+	if (task->type == TASK_COMPRESS_BLOCK) {
+		worker_run_compress_block(task, local);
+	} else if (task->type == TASK_COMPRESS_DIFF) {
+		worker_run_compress_diff(task, local);
+	}
+}
+
 static void *worker_thread_main(void *arg)
 {
 	struct thread_data *data = arg;
-	struct fd_translation_map *map = data->map;
+	struct thread_pool *pool = data->pool;
+
+	setup_comp_ctx(&data->comp_ctx, pool->compression);
 
 	/* The loop is globally locked by default, and only unlocked in
 	 * pthread_cond_wait. Yes, there are fancier and faster schemes.
 	 */
-	pthread_mutex_lock(&map->work_state_mutex);
+	pthread_mutex_lock(&pool->work_mutex);
 	while (1) {
-		if (map->task_id != data->last_task_id) {
-			data->last_task_id = map->task_id;
-			if (map->next_thread_task == THREADTASK_STOP) {
-				break;
-			}
-			enum thread_task task = map->next_thread_task;
-			pthread_mutex_unlock(&map->work_state_mutex);
-			/* The main thread should not have modified any
-			 * worker-related state since releasing its
-			 * mutex */
-			if (task == THREADTASK_MAKE_COMPRESSEDDIFF) {
-				worker_run_compresseddiff(map, &data->comp_ctx,
-						data->index, map->nthreads,
-						&data->cd_dst,
-						&data->cd_actual_size);
-			} else if (task == THREADTASK_COMPRESSBLOCK) {
-				worker_run_compressblock(map, &data->comp_ctx,
-						data->index, map->nthreads,
-						&data->cd_dst, &data->cd_start,
-						&data->cd_end);
-			}
-			pthread_mutex_lock(&map->work_state_mutex);
-
-			map->nthreads_completed++;
-			if (map->nthreads_completed == map->nthreads) {
-				pthread_cond_signal(&map->work_done_notify);
-			}
+		while (pool->queue_start == pool->queue_end) {
+			pthread_cond_wait(&pool->work_cond, &pool->work_mutex);
 		}
+		/* Copy task, since the queue may be resized */
+		struct task_data task = pool->queue[pool->queue_start++];
+		pool->queue_in_progress++;
+		pthread_mutex_unlock(&pool->work_mutex);
+		run_task(&task, data);
+		pthread_mutex_lock(&pool->work_mutex);
 
-		pthread_cond_wait(&map->work_needed_notify,
-				&map->work_state_mutex);
+		uint8_t triv = 0;
+		pool->queue_in_progress--;
+		if (write(pool->selfpipe_w, &triv, 1) == -1) {
+			wp_error("Failed to write to self-pipe");
+		}
+		if (task.type == TASK_STOP) {
+			break;
+		}
 	}
-	pthread_mutex_unlock(&map->work_state_mutex);
+	pthread_mutex_unlock(&pool->work_mutex);
+
+	cleanup_comp_ctx(&data->comp_ctx);
 	return NULL;
 }

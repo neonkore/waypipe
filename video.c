@@ -1070,11 +1070,13 @@ void collect_video_from_mirror(
 		memset(data + pkt->buf->size, 0, padded_len - pkt->buf->size);
 		memcpy(data, pkt->buf->data, pkt->buf->size);
 
+		pthread_mutex_lock(&transfers->lock);
 		transfer_add(transfers, sizeof(struct wmsg_basic), header,
 				transfers->last_msgno);
 		transfer_add(transfers, padded_len, data,
 				transfers->last_msgno);
 		transfers->last_msgno++;
+		pthread_mutex_unlock(&transfers->lock);
 
 		av_packet_unref(pkt);
 	}
