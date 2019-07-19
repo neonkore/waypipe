@@ -353,22 +353,6 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	return pass;
 }
 
-/* to avoid warnings when the driver dmabuf size constraints require
- * significant alignment, the width/height are already 64 aligned */
-static const size_t test_width = 256;
-static const size_t test_height = 320;
-static const size_t test_cpp = 2;
-static const size_t test_size = test_width * test_height * test_cpp;
-static const struct dmabuf_slice_data slice_data = {
-		.width = (uint32_t)test_width,
-		.height = (uint32_t)test_height,
-		.format = TEST_2CPP_FORMAT,
-		.num_planes = 1,
-		.modifier = 0,
-		.offsets = {0, 0, 0, 0},
-		.strides = {(uint32_t)(test_width * test_cpp), 0, 0, 0},
-		.using_planes = {true, false, false, false}};
-
 log_handler_func_t log_funcs[2] = {NULL, test_log_handler};
 int main(int argc, char **argv)
 {
@@ -380,6 +364,23 @@ int main(int argc, char **argv)
 		wp_error("Not allowed to create test directory, cannot run tests.");
 		return EXIT_FAILURE;
 	}
+
+	/* to avoid warnings when the driver dmabuf size constraints require
+	 * significant alignment, the width/height are already 64 aligned */
+	const size_t test_width = 256;
+	const size_t test_height = 320;
+	const size_t test_cpp = 2;
+	const size_t test_size = test_width * test_height * test_cpp;
+	const struct dmabuf_slice_data slice_data = {
+			.width = (uint32_t)test_width,
+			.height = (uint32_t)test_height,
+			.format = TEST_2CPP_FORMAT,
+			.num_planes = 1,
+			.modifier = 0,
+			.offsets = {0, 0, 0, 0},
+			.strides = {(uint32_t)(test_width * test_cpp), 0, 0, 0},
+			.using_planes = {true, false, false, false},
+	};
 
 	uint8_t *test_pattern = malloc(test_size);
 	for (size_t i = 0; i < test_size; i++) {
