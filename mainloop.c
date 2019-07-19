@@ -32,6 +32,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
@@ -645,8 +646,8 @@ static int partial_write_transfer(
 		td->data[td->start].iov_base =
 				orig_base + td->partial_write_amt;
 		td->data[td->start].iov_len = orig_len - td->partial_write_amt;
-		ssize_t wr = writev(chanfd, &td->data[td->start],
-				td->end - td->start);
+		int count = min(IOV_MAX, td->end - td->start);
+		ssize_t wr = writev(chanfd, &td->data[td->start], count);
 		td->data[td->start].iov_base = orig_base;
 		td->data[td->start].iov_len = orig_len;
 

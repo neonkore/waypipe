@@ -1023,8 +1023,9 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 	int tot_blocks = net_damage / 8;
 	int ir = 0, iw = 0, acc_prev_blocks = 0;
 	for (int shard = 0; shard < nshards; shard++) {
-		int s_lower = (shard * tot_blocks) / nshards;
-		int s_upper = ((shard + 1) * tot_blocks) / nshards;
+		int s_lower = (int)(shard * (int64_t)tot_blocks) / nshards;
+		int s_upper = (int)((shard + 1) * (int64_t)tot_blocks) /
+			      nshards;
 
 		while (acc_prev_blocks < s_upper) {
 			struct interval e = sfd->damage.damage[ir];
