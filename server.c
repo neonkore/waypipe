@@ -44,7 +44,7 @@
 static uint64_t get_random_token(uint64_t last_token)
 {
 	struct timespec tp;
-	clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
+	clock_gettime(CLOCK_REALTIME, &tp);
 	uint64_t pid = (uint64_t)getpid();
 	uint64_t base = last_token + 1;
 	base += ((uint64_t)tp.tv_sec * 1000000000uL + (uint64_t)tp.tv_nsec) *
