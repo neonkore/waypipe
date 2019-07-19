@@ -287,8 +287,6 @@ struct chan_msg_state {
 	enum cm_state state;
 
 	/* The large packed message read from the channel */
-	int cmsg_end;
-	int cmsg_size;
 	int dbuffer_start;
 	int dbuffer_end;
 	int dbuffer_edited_maxsize;
@@ -300,7 +298,13 @@ struct chan_msg_state {
 	int *tfbuffer;        // fds to be immediately transferred
 	int *fbuffer;         // fds for use
 	char *dbuffer_edited; // messages are copied to here
-	char *cmsg_buffer;
+
+#define RECV_GOAL_READ_SIZE 131072
+	char *recv_buffer; // ring-like buffer for message data
+	int recv_size;
+	int recv_start; // (recv_buffer+rev_start) should be a message header
+	int recv_end;   // last byte read from channel, always >=recv_start
+	int recv_unhandled_messages; // number of messages to parse
 };
 
 struct cross_state {
@@ -319,24 +323,24 @@ struct cross_state {
 };
 
 static int interpret_chanmsg(struct chan_msg_state *cmsg,
-		struct cross_state *cxs, struct globals *g, bool display_side)
+		struct cross_state *cxs, struct globals *g, bool display_side,
+		char *packet)
 {
-	uint32_t size_and_type = ((uint32_t *)cmsg->cmsg_buffer)[0];
+	uint32_t size_and_type = *(uint32_t *)packet;
 	size_t unpadded_size = transfer_size(size_and_type);
 	enum wmsg_type type = transfer_type(size_and_type);
 	if (type == WMSG_CLOSE) {
 		wp_debug("Other side has closed");
 		return -1;
 	} else if (type == WMSG_RESTART) {
-		struct wmsg_restart *ackm =
-				(struct wmsg_restart *)cmsg->cmsg_buffer;
+		struct wmsg_restart *ackm = (struct wmsg_restart *)packet;
 		wp_debug("Received restart message: remote last saw ack %d (we last sent %d)",
 				ackm->last_ack_received,
 				cxs->last_received_msgno);
 		cxs->last_received_msgno = ackm->last_ack_received;
 		return 0;
 	} else if (type == WMSG_ACK_NBLOCKS) {
-		struct wmsg_ack *ackm = (struct wmsg_ack *)cmsg->cmsg_buffer;
+		struct wmsg_ack *ackm = (struct wmsg_ack *)packet;
 		cxs->last_confirmed_msgno = ackm->messages_received;
 		return 0;
 	} else {
@@ -352,7 +356,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 	}
 
 	if (type == WMSG_INJECT_RIDS) {
-		const int32_t *fds = &((const int32_t *)cmsg->cmsg_buffer)[1];
+		const int32_t *fds = &((const int32_t *)packet)[1];
 		int nfds = (unpadded_size - sizeof(uint32_t)) / sizeof(int32_t);
 
 		cmsg->tfbuffer_count = nfds;
@@ -372,7 +376,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		 * the messages. This makes fd handling more complicated. */
 		struct char_window src;
 		size_t protosize = unpadded_size - sizeof(uint32_t);
-		src.data = cmsg->cmsg_buffer + sizeof(uint32_t);
+		src.data = packet + sizeof(uint32_t);
 		src.zone_start = 0;
 		src.zone_end = protosize;
 		src.size = protosize;
@@ -404,9 +408,9 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		cmsg->dbuffer_start = 0;
 		cmsg->dbuffer_end = dst.zone_end;
 	} else {
-		int32_t rid = ((int32_t *)cmsg->cmsg_buffer)[1];
+		int32_t rid = ((int32_t *)packet)[1];
 		struct bytebuf msg = {
-				.data = cmsg->cmsg_buffer,
+				.data = packet,
 				.size = unpadded_size,
 		};
 		wp_debug("Received %s for RID=%d (len %d)",
@@ -419,11 +423,58 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		struct cross_state *cxs, int chanfd, bool display_side,
 		struct globals *g)
 {
-	// Read header, then read main contents
-	if (cmsg->cmsg_size == 0) {
-		uint32_t header = 0;
+	/* Setup read operation to be able to read a minimum number of bytes,
+	 * wrapping around as early as overlap conditions permit */
+	if (cmsg->recv_unhandled_messages == 0) {
+		struct iovec vec[2];
+		memset(vec, 0, sizeof(vec));
+		int nvec;
+		if (cmsg->recv_start == cmsg->recv_end) {
+			/* A fresh packet */
+			cmsg->recv_start = 0;
+			cmsg->recv_end = 0;
+			nvec = 1;
+			vec[0].iov_base = cmsg->recv_buffer;
+			vec[0].iov_len = (size_t)(cmsg->recv_size / 2);
+		} else if (cmsg->recv_end <
+				cmsg->recv_start + (int)sizeof(uint32_t)) {
+			/* Didn't quite finish reading the header */
+			buf_ensure_size(cmsg->recv_end + RECV_GOAL_READ_SIZE, 1,
+					&cmsg->recv_size,
+					(void **)&cmsg->recv_buffer);
 
-		ssize_t r = read(chanfd, &header, sizeof(header));
+			nvec = 1;
+			vec[0].iov_base = cmsg->recv_buffer + cmsg->recv_end;
+			vec[0].iov_len = RECV_GOAL_READ_SIZE;
+		} else {
+			/* Continuing an old packet; space made available last
+			 * time */
+			uint32_t *header = (uint32_t *)&cmsg->recv_buffer
+							   [cmsg->recv_start];
+			size_t sz = alignu(transfer_size(*header), 16);
+
+			size_t read_end = cmsg->recv_start + sz;
+			bool wraparound =
+					cmsg->recv_start >= RECV_GOAL_READ_SIZE;
+			if (!wraparound) {
+				read_end = maxu(read_end,
+						cmsg->recv_end +
+								RECV_GOAL_READ_SIZE);
+			}
+			buf_ensure_size((int)read_end, 1, &cmsg->recv_size,
+					(void **)&cmsg->recv_buffer);
+
+			nvec = 1;
+			vec[0].iov_base = cmsg->recv_buffer + cmsg->recv_end;
+			vec[0].iov_len = read_end - (size_t)cmsg->recv_end;
+			if (wraparound) {
+				nvec = 2;
+				vec[1].iov_base = cmsg->recv_buffer;
+				vec[1].iov_len = cmsg->recv_start;
+			}
+		}
+
+		ssize_t r = readv(chanfd, vec, nvec);
 		if (r == -1 && errno == EWOULDBLOCK) {
 			wp_debug("Read would block");
 			return 0;
@@ -433,58 +484,67 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		} else if (r == 0) {
 			wp_debug("Channel connection closed");
 			return -2;
-		} else if (r < (ssize_t)sizeof(header)) {
-			wp_error("insufficient starting read block %ld of 8 bytes",
-					r);
-			return -1;
-		} else if (header == 0) {
-			wp_error("Meaningless zero-byte transfer");
-			return -1;
 		} else {
-			size_t loaded_size = alignu(transfer_size(header), 16);
-			DTRACE_PROBE1(waypipe, channel_read_start, loaded_size);
+			if (nvec == 2 && (size_t)r >= vec[0].iov_len) {
+				/* Complete parsing this message */
+				if (interpret_chanmsg(cmsg, cxs, g,
+						    display_side,
+						    cmsg->recv_buffer +
+								    cmsg->recv_start) ==
+						-1) {
+					return -1;
+				}
 
-			cmsg->cmsg_buffer = malloc(loaded_size);
-			memcpy(cmsg->cmsg_buffer, &header, sizeof(header));
-			cmsg->cmsg_end = sizeof(header);
-			cmsg->cmsg_size = (int)loaded_size;
-		}
-	} else {
-		while (cmsg->cmsg_end < cmsg->cmsg_size) {
-			ssize_t r = read(chanfd,
-					cmsg->cmsg_buffer + cmsg->cmsg_end,
-					(size_t)(cmsg->cmsg_size -
-							cmsg->cmsg_end));
-			if (r == -1 && errno == EWOULDBLOCK) {
-				return 0;
-			} else if (r == -1) {
-				wp_error("chanfd read failure: %s",
-						strerror(errno));
-				return -1;
-			} else if (r == 0) {
-				wp_debug("Channel connection closed");
-				return -2;
+				cmsg->recv_start = 0;
+				cmsg->recv_end = (int)r - (int)vec[0].iov_len;
+
+				if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
+					goto next_stage;
+				}
 			} else {
-				cmsg->cmsg_end += r;
-			}
-		}
-		if (cmsg->cmsg_end == cmsg->cmsg_size) {
-			DTRACE_PROBE(waypipe, channel_read_end);
-			if (interpret_chanmsg(cmsg, cxs, g, display_side) ==
-					-1) {
-				return -1;
-			}
-			free(cmsg->cmsg_buffer);
-			cmsg->cmsg_buffer = NULL;
-			cmsg->cmsg_size = 0;
-			cmsg->cmsg_end = 0;
-			/* Only try writing data if such data is available */
-			if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
-				cmsg->state = CM_WAITING_FOR_PROGRAM;
-				DTRACE_PROBE(waypipe, chanmsg_program_wait);
+				cmsg->recv_end += r;
 			}
 		}
 	}
+
+	/* Recount unhandled messages */
+	cmsg->recv_unhandled_messages = 0;
+	int i = cmsg->recv_start;
+	while (i + (int)sizeof(uint32_t) < cmsg->recv_end) {
+		uint32_t *header = (uint32_t *)&cmsg->recv_buffer[i];
+		size_t sz = alignu(transfer_size(*header), 16);
+		if (sz == 0) {
+			wp_error("Encountered malformed zero size packet");
+			return -1;
+		}
+		i += sz;
+		if (i > cmsg->recv_end) {
+			break;
+		}
+		cmsg->recv_unhandled_messages++;
+	}
+
+	while (cmsg->recv_unhandled_messages > 0) {
+		char *packet_start = &cmsg->recv_buffer[cmsg->recv_start];
+		uint32_t *header = (uint32_t *)packet_start;
+		size_t sz = transfer_size(*header);
+		if (interpret_chanmsg(cmsg, cxs, g, display_side,
+				    packet_start) == -1) {
+			return -1;
+		}
+		cmsg->recv_start += alignu(sz, 16);
+		cmsg->recv_unhandled_messages--;
+
+		if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
+			goto next_stage;
+		}
+	}
+	return 0;
+next_stage:
+	/* When protocol data was sent, switch to trying to write the protocol
+	 * data to its socket, before trying to parse any other message */
+	cmsg->state = CM_WAITING_FOR_PROGRAM;
+	DTRACE_PROBE(waypipe, chanmsg_program_wait);
 	return 0;
 }
 static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
@@ -980,11 +1040,11 @@ static void reset_connection(struct cross_state *cxs,
 		struct chan_msg_state *cmsg, struct way_msg_state *wmsg,
 		int chanfd)
 {
-	/* Discard partial transfer */
-	free(cmsg->cmsg_buffer);
-	cmsg->cmsg_buffer = NULL;
-	cmsg->cmsg_size = 0;
-	cmsg->cmsg_end = 0;
+	/* Discard partial read transfer, throwing away complete but unread
+	 * messages, and trailing remnants */
+	cmsg->recv_end = 0;
+	cmsg->recv_start = 0;
+	cmsg->recv_unhandled_messages = 0;
 
 	clear_old_transfers(&wmsg->transfers, cxs->last_confirmed_msgno);
 	wp_debug("Resetting connection: %d blocks unacknowledged",
@@ -1083,9 +1143,10 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	chan_msg.tfbuffer =
 			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
 	chan_msg.tfbuffer_count = 0;
-	chan_msg.cmsg_size = 0;
-	chan_msg.cmsg_end = 0;
-	chan_msg.cmsg_buffer = NULL;
+	chan_msg.recv_size = 2 * RECV_GOAL_READ_SIZE;
+	chan_msg.recv_buffer = malloc(chan_msg.recv_size);
+	chan_msg.recv_start = 0;
+	chan_msg.recv_end = 0;
 	chan_msg.dbuffer_start = 0;
 	chan_msg.dbuffer_end = 0;
 	chan_msg.dbuffer_edited_maxsize = way_msg.dbuffer_maxsize * 2;
@@ -1156,13 +1217,22 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				(cross_data.last_acked_msgno !=
 						cross_data.last_received_msgno) &&
 				way_msg.state == WM_WAITING_FOR_PROGRAM;
-		/* To coalesce acknowledgements, we wait for a minimum amount */
-		int min_ack_delay = 20;
+		bool unread_chan_msgs =
+				chan_msg.state == CM_WAITING_FOR_CHANNEL &&
+				chan_msg.recv_unhandled_messages > 0;
 
-		int r = poll(pfds, (nfds_t)npoll,
-				own_msg_pending ? min_ack_delay : -1);
+		int poll_delay = -1;
+		if (unread_chan_msgs) {
+			/* There is work to do, so continue */
+			poll_delay = 0;
+		}
+		if (own_msg_pending) {
+			/* To coalesce acknowledgements, we wait for a minimum
+			 * amount */
+			poll_delay = 20;
+		}
+		int r = poll(pfds, (nfds_t)npoll, poll_delay);
 		if (r == -1) {
-			free(pfds);
 			if (errno == EINTR) {
 				wp_error("poll interrupted: shutdown=%c",
 						shutdown_flag ? 'Y' : 'n');
@@ -1177,7 +1247,8 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		mark_pipe_object_statuses(&g.map, npoll - 4, pfds + 4);
 		bool progsock_readable = pfds[1].revents & POLLIN;
 		bool chanmsg_active = (pfds[0].revents & POLLIN) ||
-				      (pfds[1].revents & POLLOUT);
+				      (pfds[1].revents & POLLOUT) ||
+				      unread_chan_msgs;
 		/* Whether or not POLLHUP is actually set appears to depend on
 		 * if the shutdown is full or partial, and on the OS */
 		bool user_hang_up = pfds[1].revents & POLLHUP;
@@ -1284,7 +1355,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	free(chan_msg.tfbuffer);
 	free(chan_msg.fbuffer);
 	free(chan_msg.rbuffer);
-	free(chan_msg.cmsg_buffer);
+	free(chan_msg.recv_buffer);
 	free(chan_msg.dbuffer_edited);
 	close(chanfd);
 	close(progfd);
