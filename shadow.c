@@ -1030,16 +1030,15 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 		while (acc_prev_blocks < s_upper) {
 			struct interval e = sfd->damage.damage[ir];
 			const int w = (e.end - e.start) / 8;
-			int e_lower = acc_prev_blocks;
-			int e_upper = acc_prev_blocks + w;
 
-			int a_low = max(e_lower, s_lower) - acc_prev_blocks;
-			int a_high = min(e_upper, s_upper) - acc_prev_blocks;
+			int a_low = max(0, s_lower - acc_prev_blocks);
+			int a_high = min(w, s_upper - acc_prev_blocks);
 
-			intvs[iw++] = (struct interval){
+			struct interval r = {
 					.start = e.start + 8 * a_low,
 					.end = e.start + 8 * a_high,
 			};
+			intvs[iw++] = r;
 
 			if (acc_prev_blocks + w > s_upper) {
 				break;
@@ -1051,6 +1050,8 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 
 		offsets[shard + 1] = iw;
 	}
+	/* Reset damage, once it has been applied */
+	reset_damage(&sfd->damage);
 
 	pthread_mutex_lock(&threads->work_mutex);
 	buf_ensure_size(threads->queue_end + nshards, sizeof(struct task_data),
