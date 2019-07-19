@@ -199,6 +199,11 @@ struct thread_data {
 	struct thread_pool *pool;
 	/* Thread local data */
 	struct comp_ctx comp_ctx;
+
+	/* A local temporary buffer, used to e.g. store diff sections before
+	 * compression */
+	void *tmp_buf;
+	int tmp_size;
 };
 
 enum task_type {

@@ -1125,10 +1125,12 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	};
 
 	bool needs_new_channel = false;
+	struct pollfd *pfds = NULL;
+	int pfds_size = 0;
 	while (!shutdown_flag) {
-		struct pollfd *pfds = NULL;
 		int psize = 4 + count_npipes(&g.map);
-		pfds = calloc((size_t)psize, sizeof(struct pollfd));
+		buf_ensure_size(psize, sizeof(struct pollfd), &pfds_size,
+				(void **)&pfds);
 		pfds[0].fd = chanfd;
 		pfds[1].fd = progfd;
 		pfds[2].fd = linkfd;
@@ -1190,7 +1192,6 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			char tmp[64];
 			(void)read(g.threads.selfpipe_r, tmp, sizeof(tmp));
 		}
-		free(pfds);
 		if (user_hang_up) {
 			wp_error("Connection hang-up detected");
 			break;
@@ -1255,6 +1256,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	uint32_t close_msg[4] = {transfer_header(16, WMSG_CLOSE), 0, 0, 0};
 	(void)write(chanfd, close_msg, sizeof(close_msg));
 
+	free(pfds);
 	free(recon_fds.data);
 
 	cleanup_thread_pool(&g.threads);

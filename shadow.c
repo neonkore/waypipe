@@ -109,20 +109,22 @@ static void destroy_unlinked_sfd(
 	free(sfd);
 	(void)map;
 }
-static void cleanup_comp_ctx(struct comp_ctx *ctx)
+static void cleanup_thread_local(struct thread_data *data)
 {
 #ifdef HAS_ZSTD
-	ZSTD_freeCCtx(ctx->zstd_ccontext);
-	ZSTD_freeDCtx(ctx->zstd_dcontext);
+	ZSTD_freeCCtx(data->comp_ctx.zstd_ccontext);
+	ZSTD_freeDCtx(data->comp_ctx.zstd_dcontext);
 #endif
 #ifdef HAS_LZ4
-	LZ4F_freeDecompressionContext(ctx->lz4f_dcontext);
+	LZ4F_freeDecompressionContext(data->comp_ctx.lz4f_dcontext);
 #endif
-	(void)ctx;
+	free(data->tmp_buf);
 }
 
-static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
+static void setup_thread_local(
+		struct thread_data *data, enum compression_mode mode)
 {
+	struct comp_ctx *ctx = &data->comp_ctx;
 	ctx->zstd_ccontext = NULL;
 	ctx->zstd_dcontext = NULL;
 	ctx->lz4f_dcontext = NULL;
@@ -145,6 +147,9 @@ static void setup_comp_ctx(struct comp_ctx *ctx, enum compression_mode mode)
 	}
 #endif
 	(void)mode;
+
+	data->tmp_buf = NULL;
+	data->tmp_size = 0;
 }
 void cleanup_translation_map(struct fd_translation_map *map)
 {
@@ -261,7 +266,7 @@ void setup_thread_pool(struct thread_pool *pool,
 		pool->nthreads = 1;
 	}
 
-	setup_comp_ctx(&pool->threads[0].comp_ctx, compression);
+	setup_thread_local(&pool->threads[0], compression);
 
 	int fds[2];
 	if (pipe(fds) == -1) {
@@ -277,7 +282,7 @@ void setup_thread_pool(struct thread_pool *pool,
 void cleanup_thread_pool(struct thread_pool *pool)
 {
 	shutdown_threads(pool);
-	cleanup_comp_ctx(&pool->threads[0].comp_ctx);
+	cleanup_thread_local(&pool->threads[0]);
 
 	pthread_mutex_destroy(&pool->work_mutex);
 	pthread_cond_destroy(&pool->work_cond);
@@ -434,31 +439,29 @@ static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 }
 /* With the selected compression method, uncompress the buffer {isize,ibuf},
  * to precisely msize bytes, setting {wsize,wbuf} to indicate the result.
- * If the compression mode requires it. Returns a pointer to a newly allocated
- * buffer, else NULL. */
-static void *uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
-		size_t isize, const char *ibuf, size_t msize, size_t *wsize,
-		const char **wbuf)
+ * If the compression mode requires it. */
+static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
+		size_t isize, const char *ibuf, size_t msize, char *mbuf,
+		size_t *wsize, const char **wbuf)
 {
 	(void)ctx;
 	// Ensure inputs always nontrivial
 	if (isize == 0) {
 		*wsize = 0;
 		*wbuf = ibuf;
-		return NULL;
+		return;
 	}
 
 	DTRACE_PROBE1(waypipe, uncompress_buffer_enter, isize);
-	void *ret = NULL;
 	switch (pool->compression) {
 	case COMP_NONE:
+		(void)mbuf;
 		(void)msize;
 		*wsize = isize;
 		*wbuf = ibuf;
 		break;
 #ifdef HAS_LZ4
 	case COMP_LZ4: {
-		char *mbuf = malloc(msize);
 		size_t total = 0;
 		size_t read = 0;
 		while (read < isize) {
@@ -478,13 +481,11 @@ static void *uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		}
 		*wsize = total;
 		*wbuf = mbuf;
-		ret = mbuf;
 		break;
 	}
 #endif
 #ifdef HAS_ZSTD
 	case COMP_ZSTD: {
-		char *mbuf = malloc(msize);
 		size_t ws = ZSTD_decompressDCtx(
 				ctx->zstd_dcontext, mbuf, msize, ibuf, isize);
 		if (ZSTD_isError(ws) || (size_t)ws != msize) {
@@ -495,13 +496,11 @@ static void *uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		}
 		*wsize = (size_t)ws;
 		*wbuf = mbuf;
-		ret = mbuf;
 		break;
 	}
 #endif
 	}
 	DTRACE_PROBE1(waypipe, uncompress_buffer_exit, *wsize);
-	return ret;
 }
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
@@ -822,8 +821,9 @@ static void worker_run_compress_diff(
 				damage_space + sizeof(struct wmsg_buffer_diff));
 		diff_target = diff_buffer + sizeof(struct wmsg_buffer_diff);
 	} else {
-		diff_buffer = malloc(damage_space);
-		diff_target = diff_buffer;
+		buf_ensure_size((int)damage_space, 1, &local->tmp_size,
+				&local->tmp_buf);
+		diff_target = local->tmp_buf;
 	}
 
 	size_t diffsize;
@@ -849,7 +849,6 @@ static void worker_run_compress_diff(
 				comp_size,
 				comp_buf + sizeof(struct wmsg_buffer_diff),
 				&dst);
-		free(diff_buffer);
 		sz = dst.size + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)comp_buf;
 	}
@@ -1575,13 +1574,17 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				(const struct wmsg_buffer_fill *)msg->data;
 		size_t sz = transfer_size(header->size_and_type);
 
+		size_t uncomp_size = header->end - header->start;
+		struct thread_data *local = &threads->threads[0];
+		buf_ensure_size((int)uncomp_size, 1, &local->tmp_size,
+				&local->tmp_buf);
+
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		void *fptr = uncompress_buffer(threads,
-				&threads->threads[0].comp_ctx,
+		uncompress_buffer(threads, &threads->threads[0].comp_ctx,
 				sz - sizeof(struct wmsg_buffer_fill),
 				msg->data + sizeof(struct wmsg_buffer_fill),
-				header->end - header->start, &act_size,
+				uncomp_size, local->tmp_buf, &act_size,
 				&act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff
@@ -1599,7 +1602,6 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 		memcpy(sfd->mem_mirror + header->start, act_buffer,
 				header->end - header->start);
-		free(fptr);
 
 		void *handle = NULL;
 		if (sfd->type == FDC_DMABUF) {
@@ -1629,13 +1631,17 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				(const struct wmsg_buffer_diff *)msg->data;
 		size_t sz = transfer_size(header->size_and_type);
 
+		struct thread_data *local = &threads->threads[0];
+		buf_ensure_size((int)header->diff_size, 1, &local->tmp_size,
+				&local->tmp_buf);
+
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
-		void *fptr = uncompress_buffer(threads,
-				&threads->threads[0].comp_ctx,
+		uncompress_buffer(threads, &threads->threads[0].comp_ctx,
 				sz - sizeof(struct wmsg_buffer_diff),
 				msg->data + sizeof(struct wmsg_buffer_diff),
-				header->diff_size, &act_size, &act_buffer);
+				header->diff_size, local->tmp_buf, &act_size,
+				&act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff
 		// expansion
@@ -1649,13 +1655,11 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
 			if (!sfd->mem_local) {
-				free(fptr);
 				return;
 			}
 		}
 		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
 				act_size, act_buffer);
-		free(fptr);
 		if (sfd->type == FDC_DMABUF) {
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
@@ -1962,7 +1966,7 @@ static void *worker_thread_main(void *arg)
 	struct thread_data *data = arg;
 	struct thread_pool *pool = data->pool;
 
-	setup_comp_ctx(&data->comp_ctx, pool->compression);
+	setup_thread_local(data, pool->compression);
 
 	/* The loop is globally locked by default, and only unlocked in
 	 * pthread_cond_wait. Yes, there are fancier and faster schemes.
@@ -1990,6 +1994,6 @@ static void *worker_thread_main(void *arg)
 	}
 	pthread_mutex_unlock(&pool->work_mutex);
 
-	cleanup_comp_ctx(&data->comp_ctx);
+	cleanup_thread_local(data);
 	return NULL;
 }
