@@ -55,7 +55,7 @@ static uint64_t get_random_token(uint64_t last_token)
 	if (devrand != -1) {
 		errno = 0;
 		uint64_t offset = 0;
-		read(devrand, &offset, sizeof(offset));
+		(void)read(devrand, &offset, sizeof(offset));
 		close(devrand);
 		base += offset;
 	}

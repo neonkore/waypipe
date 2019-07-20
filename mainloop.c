@@ -335,9 +335,10 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		return -1;
 	} else if (type == WMSG_RESTART) {
 		struct wmsg_restart *ackm = (struct wmsg_restart *)packet;
-		wp_debug("Received restart message: remote last saw ack %d (we last sent %d)",
+		wp_debug("Received restart message: remote last saw ack %d (we last recvd %d, acked %d)",
 				ackm->last_ack_received,
-				cxs->last_received_msgno);
+				cxs->last_received_msgno,
+				cxs->last_acked_msgno);
 		cxs->last_received_msgno = ackm->last_ack_received;
 		return 0;
 	} else if (type == WMSG_ACK_NBLOCKS) {
@@ -346,7 +347,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		return 0;
 	} else {
 		cxs->last_received_msgno++;
-		if (cxs->last_received_msgno < cxs->newest_received_msgno) {
+		if (cxs->last_received_msgno <= cxs->newest_received_msgno) {
 			/* Skip packet, as we already received it */
 			wp_debug("Ignoring replayed message %d (newest=%d)",
 					cxs->last_received_msgno,
@@ -1047,10 +1048,10 @@ static void reset_connection(struct cross_state *cxs,
 	cmsg->recv_start = 0;
 	cmsg->recv_unhandled_messages = 0;
 
+	pthread_mutex_lock(&wmsg->transfers.lock);
 	clear_old_transfers(&wmsg->transfers, cxs->last_confirmed_msgno);
 	wp_debug("Resetting connection: %d blocks unacknowledged",
 			wmsg->transfers.end);
-
 	if (wmsg->transfers.end > 0) {
 		/* If there was any data in flight, restart. If there wasn't
 		 * anything in flight, then the remote side shouldn't notice the
@@ -1070,6 +1071,8 @@ static void reset_connection(struct cross_state *cxs,
 			wp_error("Failed to write restart message");
 		}
 	}
+	pthread_mutex_unlock(&wmsg->transfers.lock);
+
 	if (set_nonblocking(chanfd) == -1) {
 		wp_error("Error making new channel connection nonblocking: %s",
 				strerror(errno));
@@ -1127,6 +1130,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	way_msg.dbuffer_edited_maxsize = 2 * way_msg.dbuffer_maxsize;
 	way_msg.dbuffer_edited = malloc((size_t)way_msg.dbuffer_edited_maxsize);
 	memset(&way_msg.transfers, 0, sizeof(struct transfer_data));
+
 	pthread_mutex_init(&way_msg.transfers.lock, NULL);
 	way_msg.total_written = 0;
 	way_msg.ntrailing = 0;
@@ -1174,10 +1178,14 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	init_message_tracker(&g.tracker);
 	setup_video_logging();
 
+	/* The first packet received will be #1 */
 	struct cross_state cross_data = {
 			.last_acked_msgno = 0,
 			.last_received_msgno = 0,
+			.newest_received_msgno = 0,
+			.last_confirmed_msgno = 0,
 	};
+	way_msg.transfers.last_msgno = 1;
 
 	struct int_window recon_fds = {
 			.data = NULL,
