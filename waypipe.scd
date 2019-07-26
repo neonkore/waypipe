@@ -7,7 +7,8 @@ waypipe - A transparent proxy for Wayland applications
 # SYNOPSIS
 
 *waypipe* [options...] client++
-*waypipe* [options...] server -- command++
+*waypipe* [options...] server -- _command..._++
+*waypipe* [options...] recon _control_pipe_ _new_socket_path_++
 *waypipe* [options...] ssh ...
 
 # DESCRIPTION
@@ -25,6 +26,11 @@ command line invocation, set up its own Wayland compositor socket, and
 try to connect to its matching *waypipe client* socket (by default
 _/tmp/waypipe-server.sock_) and try to forward all the Wayland clients
 that connect to fake compositor socket to the matching *waypipe client*.
+
+The *waypipe recon* mode is used to reconnect a *waypipe server* instance
+which has had a control pipe (option *--control*) set. The new socket path
+should indicate a Unix socket whose connections are forwarded to the *waypipe
+client* that the *waypipe server* was initially connected to.
 
 Finally, prefixing an *ssh ...* command to become *waypipe ssh ...* will
 automatically set up local and remote copies of *waypipe*, as well as
@@ -59,6 +65,14 @@ will be displayed locally.
 
 *-v, --version*
 	Print the version number and quit.
+
+*--control C*
+	For server or ssh mode, provide the path to the "control pipe" that will
+	be created the the server. Writing (with *waypipe recon C T*, or
+	'echo -n T > C') a new socket path to this pipe will make the server
+	instance replace all running connections with connections to the new
+	Unix socket. The new socket should ultimately forward data to the same
+	waypipe client that the server was connected to before.
 
 *--display D*
 	For server or ssh mode, provide _WAYLAND_DISPLAY_ and let waypipe configure
@@ -115,7 +129,7 @@ One can obtain similar behavior by explictly running waypipe and ssh:
 
 ```
 	waypipe --socket /tmp/socket-client client  &
-	ssh -R/tmp/socket-server:/tmp/socket-client user@exserv \
+	ssh -R /tmp/socket-server:/tmp/socket-client user@exserv \\
 		waypipe --socket /tmp/socket-server server -- weston-flower
 	kill %1
 ```
@@ -137,6 +151,35 @@ a command, to use the login shell environment.
 
 ```
 	 waypipe ssh user@host env XDG_SESSION_TYPE=wayland dolphin
+```
+
+Waypipe has support for reconnecting a *waypipe client* and a *waypipe server*
+instance when whatever was used to transfer data between their sockets fails.
+For this to work, waypipe must still be running on both sides of the connection.
+As the *waypipe ssh* wrapper will automatically close both the *waypipe client*
+and the *waypipe server* when the connection fails, the client and server modes
+must be run seprately. For example, to persistently forward applications running
+on server _rserv_ to a local Wayland compositor running on _lserv_, one would
+first set up a waypipe client instance on _lserv_,
+
+```
+	waypipe -s /tmp/waypipe.sock client &
+```
+
+and on server _rserv_, establish socket forwarding and run the server
+
+```
+	ssh -fN -L /tmp/waypipe-lserv.sock:/tmp/waypipe.sock user@lserv
+	waypipe -s /tmp/waypipe-lserv.sock --control /tmp/ctrl-lserv.pipe \\
+		--display wayland-lserv server -- sleep inf &
+```
+
+then set _WAYLAND_DISPLAY=wayland-lserv_ and run the desired applications.
+When the ssh forwarding breaks, on _rserv_, reconnect with
+
+```
+	ssh -fN -L /tmp/waypipe-lserv-2.sock:/tmp/waypipe.sock user@lserv
+	waypipe recon /tmp/ctrl-lserv.pipe /tmp/waypipe-lserv-2.sock
 ```
 
 # ENVIRONMENT
