@@ -57,10 +57,16 @@ struct subtest {
 	int repetitions, shards;
 };
 
-static const struct subtest subtests[] = {{333333, 128, 0x11, 1000, 3},
-		{39, 2, 0x13, 10000, 17}, {100000000, 262144, 0x21, 10, 1},
-		{4, 4, 0x41, 10000, 1}, {65537, 177, 0x51, 1000, 1},
-		{17777, 2, 0x61, 1000, 1}, {60005, 60005, 0x71, 1000, 1}};
+static const struct subtest subtests[] = {
+		{256, 128, 0x11, 1000, 3},
+		{333333, 128, 0x11, 1000, 3},
+		{39, 2, 0x13, 10000, 17},
+		{100000000, 262144, 0x21, 10, 1},
+		{4, 4, 0x41, 10000, 1},
+		{65537, 177, 0x51, 1000, 1},
+		{17777, 2, 0x61, 1000, 1},
+		{60005, 60005, 0x71, 1000, 1},
+};
 
 log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
 int main(int argc, char **argv)
@@ -70,15 +76,19 @@ int main(int argc, char **argv)
 
 	bool all_success = true;
 
+	int alignment;
+	interval_diff_fn_t diff_fn = get_fastest_diff_function(&alignment);
+
 	int nsubtests = (sizeof(subtests) / sizeof(subtests[0]));
 	for (int i = 0; i < nsubtests; i++) {
 		struct subtest test = subtests[i];
 		srand((uint32_t)test.seed);
-		char *diff = calloc(test.size + 32, 1);
-		char *source = calloc(test.size + 32, 1);
-		char *mirror = calloc(test.size + 32, 1);
-		char *target1 = calloc(test.size + 32, 1);
-		char *target2 = calloc(test.size + 32, 1);
+		int bufsize = align(test.size + 32, alignment);
+		char *diff = aligned_alloc(alignment, bufsize);
+		char *source = aligned_alloc(alignment, bufsize);
+		char *mirror = aligned_alloc(alignment, bufsize);
+		char *target1 = aligned_alloc(alignment, bufsize);
+		char *target2 = aligned_alloc(alignment, bufsize);
 		uint64_t ns01 = 0, ns12 = 0;
 		long nruns = 0;
 		size_t net_diffsize = 0;
@@ -95,15 +105,29 @@ int main(int argc, char **argv)
 					       test.shards;
 				damage.end = ((s + 1) * (int)test.size) /
 					     test.shards;
+				damage.start = alignment *
+					       (damage.start / alignment);
+				damage.end = alignment *
+					     (damage.end / alignment);
 
-				size_t diffsize = 0;
 				struct timespec t0, t1, t2;
 				clock_gettime(CLOCK_MONOTONIC, &t0);
-				construct_diff(test.size, &damage, 1, mirror,
-						source, &diffsize, diff);
+				int diffsize = 0;
+				if (damage.start < damage.end) {
+					diffsize = construct_diff_core(diff_fn,
+							&damage, 1, mirror,
+							source, diff);
+				}
+				int ntrailing = 0;
+				if (s == test.shards - 1) {
+					ntrailing = construct_diff_trailing(
+							test.size, alignment,
+							mirror, source,
+							diff + diffsize);
+				}
 				clock_gettime(CLOCK_MONOTONIC, &t1);
 				apply_diff(test.size, target1, target2,
-						diffsize, diff);
+						diffsize, ntrailing, diff);
 				clock_gettime(CLOCK_MONOTONIC, &t2);
 				ns01 += (t1.tv_sec - t0.tv_sec) * 1000000000L +
 					(t1.tv_nsec - t0.tv_nsec);

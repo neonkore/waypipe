@@ -225,6 +225,8 @@ static void shutdown_threads(struct thread_pool *pool)
 void setup_thread_pool(struct thread_pool *pool,
 		enum compression_mode compression, int n_threads)
 {
+	pool->diff_func = get_fastest_diff_function(&pool->diff_func_alignment);
+
 	pool->compression = compression;
 	if (n_threads <= 0) {
 		// platform dependent
@@ -622,176 +624,6 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	return sfd;
 }
 
-/* large window sizes (64) can be faster if everything has changed,
- * at the cost of overcopying sometimes. 0 is also a reasonable
- * choice. Differences are amplified at low optimization levels. */
-#define DIFF_WINDOW_SIZE 32
-
-static uint64_t run_interval_diff(uint64_t blockrange_min,
-		uint64_t blockrange_max,
-		const uint64_t *__restrict__ changed_blocks,
-		uint64_t *__restrict__ base_blocks,
-		uint64_t *__restrict__ diff_blocks, uint64_t cursor)
-{
-	/* we paper over gaps of a given window size, to avoid fine
-	 * grained context switches */
-	uint64_t i = blockrange_min;
-	uint64_t changed_val = i < blockrange_max ? changed_blocks[i] : 0;
-	uint64_t base_val = i < blockrange_max ? base_blocks[i] : 0;
-	i++;
-	// Alternating scanners, ending with a mispredict each.
-	bool clear_exit = false;
-	while (i < blockrange_max) {
-		while (changed_val == base_val && i < blockrange_max) {
-			changed_val = changed_blocks[i];
-			base_val = base_blocks[i];
-			i++;
-		}
-		if (i == blockrange_max) {
-			/* it's possible that the last value actually;
-			 * see exit block */
-			clear_exit = true;
-			break;
-		}
-		uint64_t last_header = cursor++;
-		diff_blocks[last_header] = (i - 1) << 32;
-		diff_blocks[cursor++] = changed_val;
-		base_blocks[i - 1] = changed_val;
-		// changed_val != base_val, difference occurs at early
-		// index
-		uint64_t nskip = 0;
-		// we could only sentinel this assuming a tiny window
-		// size
-		while (i < blockrange_max && nskip <= DIFF_WINDOW_SIZE) {
-			base_val = base_blocks[i];
-			changed_val = changed_blocks[i];
-			base_blocks[i] = changed_val;
-			i++;
-			diff_blocks[cursor++] = changed_val;
-			nskip++;
-			nskip *= (base_val == changed_val);
-		}
-		cursor -= nskip;
-		diff_blocks[last_header] |= i - nskip;
-		/* our sentinel, at worst, causes overcopy by one. this
-		 * is fine
-		 */
-	}
-
-	/* If only the last block changed */
-	if ((clear_exit || blockrange_min + 1 == blockrange_max) &&
-			changed_val != base_val) {
-		diff_blocks[cursor++] =
-				(blockrange_max - 1) << 32 | blockrange_max;
-		diff_blocks[cursor++] = changed_val;
-		base_blocks[blockrange_max - 1] = changed_val;
-	}
-	return cursor;
-}
-
-/** Construct a very simple binary diff format, designed to be fast for
- * small changes in big files, and entire-file changes in essentially
- * random files. Tries not to read beyond the end of the input buffers,
- * because they are often mmap'd. Simultaneously updates the `base`
- * buffer to match the `changed` buffer.
- *
- * `slice_no` and `nslices` are used to restrict the diff to a subset of
- * the damaged area.
- *
- * Requires that `diff` point to a memory buffer of size `size + 8`, or
- * if slices are used, `align(ceildiv(size, nslices), 8) + 16`.
- */
-void construct_diff(size_t size,
-		const struct interval *__restrict__ damaged_intervals,
-		int n_intervals, char *__restrict__ base,
-		const char *__restrict__ changed, size_t *diffsize,
-		char *__restrict__ diff)
-{
-	DTRACE_PROBE1(waypipe, construct_diff_enter, n_intervals);
-
-	uint64_t nblocks = (uint64_t)floordiv((int)size, 8);
-	uint64_t *__restrict__ base_blocks = (uint64_t *)base;
-	const uint64_t *__restrict__ changed_blocks = (const uint64_t *)changed;
-
-	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
-	uint64_t ntrailing = size - 8 * nblocks;
-	uint64_t cursor = 0;
-
-	bool check_tail = false;
-	for (int i = 0; i < n_intervals; i++) {
-		struct interval e = damaged_intervals[i];
-		uint64_t bstart = (uint64_t)floordiv(e.start, 8);
-		uint64_t bend = (uint64_t)ceildiv(e.end, 8);
-		if (bend > nblocks) {
-			check_tail = true;
-		}
-		bend = minu(bend, nblocks);
-		if (bstart >= bend) {
-			continue;
-		}
-		cursor = run_interval_diff(bstart, bend, changed_blocks,
-				base_blocks, diff_blocks, cursor);
-	}
-
-	bool tail_change = false;
-	if (check_tail && ntrailing > 0) {
-		for (uint64_t i = 0; i < ntrailing; i++) {
-			tail_change |= base[nblocks * 8 + i] !=
-				       changed[nblocks * 8 + i];
-		}
-	}
-	if (tail_change) {
-		for (uint64_t i = 0; i < ntrailing; i++) {
-			diff[cursor * 8 + i] = changed[nblocks * 8 + i];
-			base[nblocks * 8 + i] = changed[nblocks * 8 + i];
-		}
-		*diffsize = cursor * 8 + ntrailing;
-	} else {
-		*diffsize = cursor * 8;
-	}
-	DTRACE_PROBE1(waypipe, construct_diff_exit, *diffsize);
-}
-void apply_diff(size_t size, char *__restrict__ target1,
-		char *__restrict__ target2, size_t diffsize,
-		const char *__restrict__ diff)
-{
-	uint64_t nblocks = size / 8;
-	uint64_t ndiffblocks = diffsize / 8;
-	uint64_t *__restrict__ t1_blocks = (uint64_t *)target1;
-	uint64_t *__restrict__ t2_blocks = (uint64_t *)target2;
-	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
-	uint64_t ndifftrailing = diffsize - 8 * ndiffblocks;
-	if (diffsize % 8 != 0 && ndifftrailing != (size - 8 * nblocks)) {
-		wp_error("Trailing bytes mismatch for diff.");
-		return;
-	}
-	DTRACE_PROBE2(waypipe, apply_diff_enter, size, diffsize);
-	for (uint64_t i = 0; i < ndiffblocks;) {
-		uint64_t block = diff_blocks[i];
-		uint64_t nfrom = block >> 32;
-		uint64_t nto = (block << 32) >> 32;
-		if (nto > nblocks || nfrom >= nto ||
-				i + (nto - nfrom) >= ndiffblocks) {
-			wp_error("Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks",
-					nfrom, nto, nblocks, i + 1,
-					i + 1 + (nto - nfrom), ndiffblocks);
-			return;
-		}
-		memcpy(t1_blocks + nfrom, diff_blocks + i + 1,
-				8 * (nto - nfrom));
-		memcpy(t2_blocks + nfrom, diff_blocks + i + 1,
-				8 * (nto - nfrom));
-		i += nto - nfrom + 1;
-	}
-	DTRACE_PROBE(waypipe, apply_diff_exit);
-	if (ndifftrailing > 0) {
-		for (uint64_t i = 0; i < ndifftrailing; i++) {
-			target1[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
-			target2[nblocks * 8 + i] = diff[ndiffblocks * 8 + i];
-		}
-	}
-}
-
 /* Construct and optionally compress a diff between sfd->mem_mirror and
  * the actual memmap'd data */
 static void worker_run_compress_diff(
@@ -810,7 +642,7 @@ static void worker_run_compress_diff(
 		damage_space += (size_t)(task->damage_intervals[i].end -
 						task->damage_intervals[i]
 								.start) +
-				8;
+				8 + pool->diff_func_alignment;
 	}
 	DTRACE_PROBE1(waypipe, worker_compdiff_enter, damage_space);
 
@@ -826,11 +658,18 @@ static void worker_run_compress_diff(
 		diff_target = local->tmp_buf;
 	}
 
-	size_t diffsize;
-	construct_diff(sfd->buffer_size, task->damage_intervals,
-			task->damage_len, sfd->mem_mirror, sfd->mem_local,
-			&diffsize, diff_target);
-	if (diffsize == 0) {
+	DTRACE_PROBE1(waypipe, construct_diff_enter, task->damage_len);
+	int diffsize = construct_diff_core(pool->diff_func,
+			task->damage_intervals, task->damage_len,
+			sfd->mem_mirror, sfd->mem_local, diff_target);
+	int ntrailing = 0;
+	if (task->damaged_end) {
+		ntrailing = construct_diff_trailing(sfd->buffer_size,
+				pool->diff_func_alignment, sfd->mem_mirror,
+				sfd->mem_local, diff_target + diffsize);
+	}
+	DTRACE_PROBE1(waypipe, construct_diff_exit, diffsize);
+	if (diffsize == 0 && ntrailing == 0) {
 		free(diff_buffer);
 		goto end;
 	}
@@ -838,15 +677,16 @@ static void worker_run_compress_diff(
 	uint8_t *msg;
 	size_t sz;
 	if (pool->compression == COMP_NONE) {
-		sz = diffsize + sizeof(struct wmsg_buffer_diff);
+		sz = (diffsize + ntrailing) + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)diff_buffer;
 	} else {
 		struct bytebuf dst;
-		size_t comp_size = compress_bufsize(pool, diffsize);
+		size_t comp_size =
+				compress_bufsize(pool, (diffsize + ntrailing));
 		char *comp_buf = malloc(alignu(comp_size, 16) +
 					sizeof(struct wmsg_buffer_diff));
-		compress_buffer(pool, &local->comp_ctx, diffsize, diff_target,
-				comp_size,
+		compress_buffer(pool, &local->comp_ctx, (diffsize + ntrailing),
+				diff_target, comp_size,
 				comp_buf + sizeof(struct wmsg_buffer_diff),
 				&dst);
 		sz = dst.size + sizeof(struct wmsg_buffer_diff);
@@ -858,7 +698,7 @@ static void worker_run_compress_diff(
 	header.size_and_type = transfer_header(sz, WMSG_BUFFER_DIFF);
 	header.remote_id = sfd->remote_id;
 	header.diff_size = (uint32_t)diffsize;
-	header.pad4 = 0;
+	header.ntrailing = (uint32_t)ntrailing;
 	memcpy(msg, &header, sizeof(struct wmsg_buffer_diff));
 
 	struct transfer_data *transfers = task->transfers;
@@ -991,25 +831,32 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 	/* Keep sfd alive at least until write to channel is done */
 	sfd->refcount_compute = true;
 
+	int bs = threads->diff_func_alignment;
+	int align_end = bs * ((int)sfd->buffer_size / bs);
+	bool check_tail = false;
+
+	int net_damage = 0;
 	if (sfd->damage.damage == DAMAGE_EVERYTHING) {
 		reset_damage(&sfd->damage);
 		struct ext_interval all = {.start = 0,
-				.width = (int)sfd->buffer_size,
+				.width = align_end,
 				.rep = 1,
 				.stride = 0};
 		merge_damage_records(&sfd->damage, 1, &all);
+		check_tail = true;
+		net_damage = align_end;
+	} else {
+		for (int i = 0; i < sfd->damage.ndamage_intvs; i++) {
+			/* Extend all damage to the nearest alignment block */
+			struct interval e = sfd->damage.damage[i];
+			check_tail |= e.end > align_end;
+			e.end = min(e.end, align_end);
+			e.start = floordiv(e.start, bs) * bs;
+			e.end = ceildiv(e.end, bs) * bs;
+			sfd->damage.damage[i] = e;
+			net_damage += e.end - e.start;
+		}
 	}
-
-	int net_damage = 0;
-	for (int i = 0; i < sfd->damage.ndamage_intvs; i++) {
-		/* Extend all damage to the nearest 8-block */
-		struct interval e = sfd->damage.damage[i];
-		e.start = floordiv(e.start, 8) * 8;
-		e.end = ceildiv(e.end, 8) * 8;
-		sfd->damage.damage[i] = e;
-		net_damage += e.end - e.start;
-	}
-
 	int nshards = ceildiv(net_damage, chunksize);
 
 	/* Instead of allocating individual buffers for each task, create a
@@ -1020,7 +867,7 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 			(size_t)(sfd->damage.ndamage_intvs + nshards));
 	int *offsets = calloc((size_t)nshards + 1, sizeof(int));
 	sfd->damage_task_interval_store = intvs;
-	int tot_blocks = net_damage / 8;
+	int tot_blocks = net_damage / bs;
 	int ir = 0, iw = 0, acc_prev_blocks = 0;
 	for (int shard = 0; shard < nshards; shard++) {
 		int s_lower = (int)(shard * (int64_t)tot_blocks) / nshards;
@@ -1029,14 +876,14 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 
 		while (acc_prev_blocks < s_upper) {
 			struct interval e = sfd->damage.damage[ir];
-			const int w = (e.end - e.start) / 8;
+			const int w = (e.end - e.start) / bs;
 
 			int a_low = max(0, s_lower - acc_prev_blocks);
 			int a_high = min(w, s_upper - acc_prev_blocks);
 
 			struct interval r = {
-					.start = e.start + 8 * a_low,
-					.end = e.start + 8 * a_high,
+					.start = e.start + bs * a_low,
+					.end = e.start + bs * a_high,
 			};
 			intvs[iw++] = r;
 
@@ -1067,6 +914,7 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 		task.damage_len = offsets[i + 1] - offsets[i];
 		task.damage_intervals =
 				&sfd->damage_task_interval_store[offsets[i]];
+		task.damaged_end = (i == nshards - 1) && check_tail;
 
 		task.zone_start = 0;
 		task.zone_end = 0;
@@ -1148,7 +996,10 @@ void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
-			sfd->mem_mirror = calloc(align(sfd->buffer_size, 8), 1);
+			sfd->mem_mirror = aligned_alloc(
+					threads->diff_func_alignment,
+					align(sfd->buffer_size,
+							threads->diff_func_alignment));
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
 
@@ -1192,7 +1043,10 @@ void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 		bool first = false;
 		if (!sfd->mem_mirror) {
-			sfd->mem_mirror = calloc(1, sfd->buffer_size);
+			sfd->mem_mirror = aligned_alloc(
+					threads->diff_func_alignment,
+					align(sfd->buffer_size,
+							threads->diff_func_alignment));
 			first = true;
 
 			add_dmabuf_create_request(
@@ -1315,9 +1169,9 @@ void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
 	}
 }
 
-void create_from_update(struct fd_translation_map *map,
-		struct render_data *render, enum wmsg_type type, int remote_id,
-		const struct bytebuf *msg)
+static void create_from_update(struct fd_translation_map *map,
+		struct thread_pool *threads, struct render_data *render,
+		enum wmsg_type type, int remote_id, const struct bytebuf *msg)
 {
 
 	wp_debug("Introducing new fd, remoteid=%d", remote_id);
@@ -1341,8 +1195,9 @@ void create_from_update(struct fd_translation_map *map,
 		sfd->mem_local = NULL;
 		sfd->buffer_size = header.file_size;
 		sfd->remote_bufsize = sfd->buffer_size;
-		sfd->mem_mirror = calloc(
-				(size_t)align((int)sfd->buffer_size, 8), 1);
+		sfd->mem_mirror = aligned_alloc(threads->diff_func_alignment,
+				align(sfd->buffer_size,
+						threads->diff_func_alignment));
 
 		// The PID should be unique during the lifetime of the
 		// program
@@ -1489,7 +1344,9 @@ void create_from_update(struct fd_translation_map *map,
 		memcpy(&sfd->dmabuf_info,
 				msg->data + sizeof(struct wmsg_open_dmabuf),
 				sizeof(struct dmabuf_slice_data));
-		sfd->mem_mirror = calloc(sfd->buffer_size, 1);
+		sfd->mem_mirror = aligned_alloc(threads->diff_func_alignment,
+				align(sfd->buffer_size,
+						threads->diff_func_alignment));
 
 		wp_debug("Creating remote DMAbuf of %d bytes",
 				(int)sfd->buffer_size);
@@ -1513,7 +1370,8 @@ void create_from_update(struct fd_translation_map *map,
 	}
 }
 
-static void increase_buffer_sizes(struct shadow_fd *sfd, size_t new_size)
+static void increase_buffer_sizes(struct shadow_fd *sfd,
+		struct thread_pool *threads, size_t new_size)
 {
 	size_t old_size = sfd->buffer_size;
 	munmap(sfd->mem_local, old_size);
@@ -1525,11 +1383,17 @@ static void increase_buffer_sizes(struct shadow_fd *sfd, size_t new_size)
 		return;
 	}
 	// todo: handle allocation failures
-	sfd->mem_mirror = realloc(sfd->mem_mirror, align(sfd->buffer_size, 8));
-	/* set extension bytes to zero so that the standard diff procedure has
-	 * a known state to work against */
-	memset(sfd->mem_mirror + old_size, 0,
-			align(sfd->buffer_size, 8) - old_size);
+
+	/* Reallocation here is complicated by the requirement that the mirror
+	 * memory be aligned; unfortunately, there is no aligned_realloc */
+	int al = threads->diff_func_alignment;
+	sfd->mem_mirror = realloc(sfd->mem_mirror, align(sfd->buffer_size, al));
+	if ((ptrdiff_t)sfd->mem_mirror % al != 0) {
+		wp_error("Alignment fixup: %d\n", sfd->buffer_size);
+		char *mem = aligned_alloc(al, align(sfd->buffer_size, al));
+		memcpy(mem, sfd->mem_mirror, old_size);
+		free(sfd->mem_mirror);
+	}
 }
 
 void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
@@ -1542,7 +1406,7 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			type == WMSG_OPEN_RW_PIPE ||
 			type == WMSG_OPEN_DMAVID_SRC ||
 			type == WMSG_OPEN_DMAVID_DST) {
-		create_from_update(map, render, type, remote_id, msg);
+		create_from_update(map, threads, render, type, remote_id, msg);
 		return;
 	}
 
@@ -1565,7 +1429,7 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			wp_error("Failed to resize file buffer: %s",
 					strerror(errno));
 		}
-		increase_buffer_sizes(sfd, header->file_size);
+		increase_buffer_sizes(sfd, threads, header->file_size);
 	} else if (type == WMSG_BUFFER_FILL) {
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
@@ -1634,22 +1498,22 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		size_t sz = transfer_size(header->size_and_type);
 
 		struct thread_data *local = &threads->threads[0];
-		buf_ensure_size((int)header->diff_size, 1, &local->tmp_size,
-				&local->tmp_buf);
+		buf_ensure_size((int)(header->diff_size + header->ntrailing), 1,
+				&local->tmp_size, &local->tmp_buf);
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
 		uncompress_buffer(threads, &threads->threads[0].comp_ctx,
 				sz - sizeof(struct wmsg_buffer_diff),
 				msg->data + sizeof(struct wmsg_buffer_diff),
-				header->diff_size, local->tmp_buf, &act_size,
-				&act_buffer);
+				header->diff_size + header->ntrailing,
+				local->tmp_buf, &act_size, &act_buffer);
 
 		// `memsize+8*remote_nthreads` is the worst-case diff
 		// expansion
-		if (act_size != header->diff_size) {
+		if (act_size != header->diff_size + header->ntrailing) {
 			wp_error("Transfer size mismatch %ld %ld", act_size,
-					header->diff_size);
+					header->diff_size + header->ntrailing);
 		}
 
 		void *handle = NULL;
@@ -1660,8 +1524,14 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				return;
 			}
 		}
+
+		DTRACE_PROBE2(waypipe, apply_diff_enter, sfd->buffer_size,
+				header->diff_size);
 		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
-				act_size, act_buffer);
+				header->diff_size, header->ntrailing,
+				act_buffer);
+		DTRACE_PROBE(waypipe, apply_diff_exit);
+
 		if (sfd->type == FDC_DMABUF) {
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
@@ -1927,7 +1797,8 @@ void close_rclosed_pipes(struct fd_translation_map *map)
 	}
 }
 
-void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
+void extend_shm_shadow(struct fd_translation_map *map,
+		struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size)
 {
 	if (sfd->buffer_size >= new_size) {
@@ -1947,7 +1818,7 @@ void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
 		return;
 	}
 
-	increase_buffer_sizes(sfd, new_size);
+	increase_buffer_sizes(sfd, threads, new_size);
 	(void)map;
 
 	// leave `sfd->remote_bufsize` unchanged, and mark dirty

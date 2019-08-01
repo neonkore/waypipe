@@ -32,6 +32,8 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 
+#include "config-waypipe.h"
+
 #ifdef HAS_USDT
 #include <sys/sdt.h>
 #else
@@ -167,6 +169,10 @@ enum compression_mode {
 #endif
 };
 
+typedef int (*interval_diff_fn_t)(const int diff_window_size, const int i_end,
+		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
+		uint64_t *__restrict__ diff, int i);
+
 struct fd_translation_map {
 	struct shadow_fd *list;
 	int max_local_id;
@@ -180,6 +186,8 @@ struct thread_pool {
 	 * because most rapidly changing application buffers have similar
 	 * content and use the same settings */
 	enum compression_mode compression;
+	interval_diff_fn_t diff_func;
+	int diff_func_alignment;
 
 	// Mutable state
 	pthread_mutex_t work_mutex;
@@ -222,6 +230,7 @@ struct task_data {
 	/* For diff compression option */
 	struct interval *damage_intervals;
 	int damage_len;
+	bool damaged_end;
 
 	struct transfer_data *transfers;
 };
@@ -309,7 +318,7 @@ struct wmsg_buffer_diff {
 	uint32_t size_and_type;
 	int32_t remote_id;
 	uint32_t diff_size; // in bytes, when uncompressed
-	uint32_t pad4;
+	uint32_t ntrailing; // number of 'trailing' bytes, copied to tail
 	/* following this, the possibly-compressed diff  data */
 };
 struct wmsg_basic {
@@ -675,7 +684,8 @@ void decref_transferred_rids(
 
 /** If sfd->type == FDC_FILE, increase the size of the backing data to support
  * at least new_size, and mark the new part of underlying file as dirty */
-void extend_shm_shadow(struct fd_translation_map *map, struct shadow_fd *sfd,
+void extend_shm_shadow(struct fd_translation_map *map,
+		struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size);
 void run_task(struct task_data *task, struct thread_data *local);
 
@@ -764,14 +774,18 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 		int *new_height, int *new_min_size);
 
-// exported for testing
-void apply_diff(size_t size, char *__restrict__ target1,
-		char *__restrict__ target2, size_t diffsize,
-		const char *__restrict__ diff);
-void construct_diff(size_t size,
+// kernel.c
+/** Returns a function pointer to a diff construction kernel, and indicates
+ * the alignment of the data which is to be passed in */
+interval_diff_fn_t get_fastest_diff_function(int *alignment);
+int construct_diff_core(interval_diff_fn_t idiff_fn,
 		const struct interval *__restrict__ damaged_intervals,
 		int n_intervals, char *__restrict__ base,
-		const char *__restrict__ changed, size_t *diffsize,
-		char *__restrict__ diff);
+		const char *__restrict__ changed, char *__restrict__ diff);
+int construct_diff_trailing(int size, int alignment, char *__restrict__ base,
+		const char *__restrict__ changed, char *__restrict__ diff);
+void apply_diff(size_t size, char *__restrict__ target1,
+		char *__restrict__ target2, size_t diffsize, size_t ntrailing,
+		const char *__restrict__ diff);
 
 #endif // WAYPIPE_UTIL_H

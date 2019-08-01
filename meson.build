@@ -12,10 +12,11 @@ project(
 )
 
 cc = meson.get_compiler('c')
+config_data = configuration_data()
 
 # mention version
 version = '"@0@"'.format(meson.project_version())
-add_project_arguments('-DWAYPIPE_VERSION=@0@'.format(version), language: 'c')
+config_data.set('WAYPIPE_VERSION', version)
 
 # Make build reproducible if possible
 python3 = import('python').find_installation()
@@ -37,7 +38,7 @@ endif
 libgbm = dependency('gbm', required: get_option('with_dmabuf'))
 libdrm = dependency('libdrm', required: get_option('with_dmabuf'))
 if libgbm.found() and libdrm.found()
-	add_project_arguments('-DHAS_DMABUF=1', language: 'c')
+	config_data.set('HAS_DMABUF', 1, description: 'Support DMABUF replication')
 endif
 pthreads = dependency('threads')
 rt = cc.find_library('rt')
@@ -45,30 +46,30 @@ rt = cc.find_library('rt')
 is_linux = host_machine.system() == 'linux'
 is_darwin = host_machine.system() == 'darwin'
 if (is_linux or is_darwin) and cc.has_header('sys/sdt.h')
-	add_project_arguments('-DHAS_USDT=1', language: 'c')
+	config_data.set('HAS_USDT', 1, description: 'Enable static trace probes')
 endif
 liblz4 = dependency('liblz4', required: get_option('with_lz4'))
 if liblz4.found()
-	add_project_arguments('-DHAS_LZ4=1', language: 'c')
+	config_data.set('HAS_LZ4', 1, description: 'Enable LZ4 compression')
 endif
 libzstd = dependency('libzstd', version: '>=1.4.0', required: get_option('with_zstd'))
 if libzstd.found()
-	add_project_arguments('-DHAS_ZSTD=1', language: 'c')
+	config_data.set('HAS_ZSTD', 1, description: 'Enable Zstd compression')
 endif
 libavcodec = dependency('libavcodec', required: get_option('with_video'))
 libavutil = dependency('libavutil', required: get_option('with_video'))
 libswscale = dependency('libswscale', required: get_option('with_video'))
 if libavcodec.found() and libavutil.found() and libswscale.found()
-	add_project_arguments('-DHAS_VIDEO=1', language: 'c')
+	config_data.set('HAS_VIDEO', 1, description: 'Enable video (de)compression')
 endif
 libva = dependency('libva', required: get_option('with_vaapi'))
 if libva.found()
-	add_project_arguments('-DHAS_VAAPI=1', language: 'c')
+	config_data.set('HAS_VAAPI', 1, description: 'Enable hardware video (de)compression with VAAPI')
 endif
 
 subdir('protocols')
 
-waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
+waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
 waypipe_dependencies = [
 	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 	liblz4,          # Fast compression option
@@ -85,10 +86,28 @@ if libdrm.found()
 	waypipe_includes += include_directories(libdrm.get_pkgconfig_variable('includedir'))
 endif
 
+# TODO: replace with explicit -mavx checks?
+simd = import('unstable-simd')
+pair  = simd.check(
+	'kernel',
+	sse41: 'kernel_sse41.c',
+	avx2: 'kernel_avx2.c',
+	neon: 'kernel_neon.c',
+	compiler: cc
+)
+lib_kernel = pair[0]
+config_data.merge_from(pair[1])
+
+configure_file(
+	output: 'config-waypipe.h',
+	configuration: config_data,
+)
+
 lib_waypipe_src = static_library(
 	'waypipe_src',
 	waypipe_source_files,
 	include_directories: waypipe_includes,
+	link_with: lib_kernel,
 	dependencies: waypipe_dependencies,
 )
 
