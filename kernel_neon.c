@@ -28,7 +28,7 @@
 
 #include <arm_neon.h>
 
-#if __linux
+#ifdef __linux__
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #endif
@@ -36,7 +36,7 @@
 bool neon_available(void)
 {
 	/* The actual methods are platform-dependent */
-#if __linux
+#ifdef __linux__
 	return (getauxval(AT_HWCAP) & HWCAP_NEON) != 0;
 #endif
 	return true;
