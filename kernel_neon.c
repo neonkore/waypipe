@@ -36,7 +36,7 @@
 bool neon_available(void)
 {
 	/* The actual methods are platform-dependent */
-#ifdef __linux__
+#if defined(__linux__) && defined(__arm__)
 	return (getauxval(AT_HWCAP) & HWCAP_NEON) != 0;
 #endif
 	return true;

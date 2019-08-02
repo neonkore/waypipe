@@ -86,17 +86,22 @@ if libdrm.found()
 	waypipe_includes += include_directories(libdrm.get_pkgconfig_variable('includedir'))
 endif
 
-# TODO: replace with explicit -mavx checks?
-simd = import('unstable-simd')
-pair  = simd.check(
-	'kernel',
-	sse41: 'kernel_sse41.c',
-	avx2: 'kernel_avx2.c',
-	neon: 'kernel_neon.c',
-	compiler: cc
-)
-lib_kernel = pair[0]
-config_data.merge_from(pair[1])
+# Conditionally compile SIMD-optimized code.
+# (The meson simd module is a bit too limited for this)
+kernel_libs = []
+if cc.has_argument('-mavx2') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi')
+	kernel_libs += static_library('kernel_avx2', 'kernel_avx2.c', c_args:['-mavx2', '-mlzcnt', '-mbmi'])
+	config_data.set('HAVE_AVX2', 1, description: 'Compiler supports AVX2')
+endif
+if cc.has_argument('-msse4.1')
+	kernel_libs += static_library('kernel_sse41', 'kernel_sse41.c', c_args:['-msse4.1'])
+	config_data.set('HAVE_AVX2', 1, description: 'Compiler supports SSE 4.1')
+endif
+if host_machine.cpu_family() == 'aarch64' or cc.has_argument('-mfpu=neon')
+	neon_args = host_machine.cpu_family() == 'aarch64' ? [] : ['-mfpu=neon']
+	kernel_libs += static_library('kernel_neon', 'kernel_neon.c', c_args:neon_args)
+	config_data.set('HAVE_NEON', 1, description: 'Compiler supports NEON')
+endif
 
 configure_file(
 	output: 'config-waypipe.h',
@@ -107,7 +112,7 @@ lib_waypipe_src = static_library(
 	'waypipe_src',
 	waypipe_source_files,
 	include_directories: waypipe_includes,
-	link_with: lib_kernel,
+	link_with: kernel_libs,
 	dependencies: waypipe_dependencies,
 )
 
