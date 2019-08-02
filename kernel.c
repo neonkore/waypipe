@@ -125,7 +125,7 @@ interval_diff_fn_t get_fastest_diff_function(int *alignment)
 #endif
 #ifdef HAVE_SSE41
 	if (sse41_available()) {
-		*alignment = 16;
+		*alignment = 32;
 		return run_interval_diff_sse41;
 	}
 #endif

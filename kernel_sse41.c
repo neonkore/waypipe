@@ -39,45 +39,43 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i)
 {
-	const __m128i ident = _mm_set_epi8(
-			15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
-	const __m128i swap = _mm_set_epi8(
-			7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8);
-	const __m128i table[2] = {ident, swap};
-
 	int dc = 0;
 	while (1) {
 		/* Loop: no changes */
 		uint32_t *ctrl_blocks = (uint32_t *)&diff[dc++];
 
 		int trailing_unchanged = 0;
-		for (; i < i_end; i += 2) {
+		for (; i < i_end; i += 4) {
 			/* Q: does it make sense to unroll by 2, cutting branch
 			 * count in half? */
-			__m128i m = _mm_load_si128((const __m128i *)&mod[i]);
-			__m128i b = _mm_load_si128((const __m128i *)&base[i]);
+			__m128i b0 = _mm_load_si128((const __m128i *)&base[i]);
+			__m128i b1 = _mm_load_si128(
+					(const __m128i *)&base[i + 2]);
+			__m128i m0 = _mm_load_si128((const __m128i *)&mod[i]);
+			__m128i m1 = _mm_load_si128(
+					(const __m128i *)&mod[i + 2]);
 
 			/* pxor + ptest + branch could be faster, depending on
 			 * compiler choices */
-			__m128i eq = _mm_cmpeq_epi64(m, b);
-			uint32_t mask = (uint32_t)_mm_movemask_epi8(eq);
-			if (mask != 0xffff) {
-				_mm_storeu_si128((__m128i *)&base[i], m);
+			__m128i eq0 = _mm_cmpeq_epi64(m0, b0);
+			__m128i eq1 = _mm_cmpeq_epi64(m1, b1);
+			uint32_t mask = (uint32_t)_mm_movemask_epi8(eq0);
+			mask |= ((uint32_t)_mm_movemask_epi8(eq1)) << 16;
+			if (mask != 0xffffffff) {
+				_mm_storeu_si128((__m128i *)&base[i], m0);
+				_mm_storeu_si128((__m128i *)&base[i + 2], m1);
 
 				/* Write the changed bytes, starting at the
-				 * first modified term,
-				 * and set the n_unchanged counter */
-				int ncom = (mask & 0xff) != 0;
-
-				__m128i left_aligned = _mm_shuffle_epi8(
-						m, table[ncom > 0]);
-				_mm_storeu_si128((__m128i *)&diff[dc],
-						left_aligned);
-				dc += 2 - ncom;
-				trailing_unchanged = (mask & 0xff00) != 0;
+				 * first modified term, and set the
+				 * unchanged counter */
+				int ncom = __builtin_ctz(~mask) >> 3;
+				for (int z = ncom; z < 4; z++) {
+					diff[dc++] = mod[i + z];
+				}
+				trailing_unchanged = __builtin_clz(~mask) >> 3;
 				ctrl_blocks[0] = i + ncom;
 
-				i += 2;
+				i += 4;
 				if (i >= i_end) {
 					/* Last block, hence will not enter copy
 					 * loop */
@@ -94,24 +92,36 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		}
 
 		/* Loop: until no changes for DIFF_WINDOW +/- 4 spaces */
-		for (; i < i_end; i += 2) {
-			__m128i m = _mm_load_si128((const __m128i *)&mod[i]);
-			__m128i b = _mm_load_si128((const __m128i *)&base[i]);
-			__m128i eq = _mm_cmpeq_epi64(m, b);
-			uint32_t mask = (uint32_t)_mm_movemask_epi8(eq);
+		for (; i < i_end; i += 4) {
+			__m128i b0 = _mm_load_si128((const __m128i *)&base[i]);
+			__m128i b1 = _mm_load_si128(
+					(const __m128i *)&base[i + 2]);
+			__m128i m0 = _mm_load_si128((const __m128i *)&mod[i]);
+			__m128i m1 = _mm_load_si128(
+					(const __m128i *)&mod[i + 2]);
 
-			bool clear = mask == 0x0000ffff;
-			bool trail_one = (mask & 0x0000ff00) != 0;
-			trailing_unchanged = trail_one +
-					     clear * (trailing_unchanged + 1);
+			__m128i eq0 = _mm_cmpeq_epi64(m0, b0);
+			__m128i eq1 = _mm_cmpeq_epi64(m1, b1);
+			uint32_t mask = (uint32_t)_mm_movemask_epi8(eq0);
+			mask |= ((uint32_t)_mm_movemask_epi8(eq1)) << 16;
 
-			_mm_storeu_si128((__m128i *)&diff[dc], m);
-			dc += 2;
+			bool clear = mask == 0xffffffff;
+			/* Because clz is undefined when mask=0, extend */
+			uint64_t ext_mask = ((uint64_t)mask) << 32;
+			int nleading = __builtin_clzll(~ext_mask);
+
+			trailing_unchanged = clear * (trailing_unchanged + 4) +
+					     (!clear) * (nleading >> 3);
+
+			_mm_storeu_si128((__m128i *)&diff[dc], m0);
+			_mm_storeu_si128((__m128i *)&diff[dc + 2], m1);
+			dc += 4;
 			if (trailing_unchanged > diff_window_size) {
-				i += 2;
+				i += 4;
 				break;
 			}
-			_mm_storeu_si128((__m128i *)&base[i], m);
+			_mm_storeu_si128((__m128i *)&base[i], m0);
+			_mm_storeu_si128((__m128i *)&base[i + 2], m1);
 		}
 		/* Write coda */
 		dc -= trailing_unchanged;
