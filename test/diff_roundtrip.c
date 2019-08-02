@@ -33,6 +33,14 @@
 
 static long rand_gap_fill(char *data, size_t size, int max_run)
 {
+	if (max_run == -1) {
+		memset(data, rand(), size);
+		return 1;
+	} else if (max_run == -2) {
+		memset(data, 0, size);
+		return 0;
+	}
+
 	max_run = max(2, max_run);
 	size_t pos = 0;
 	long nruns = 0;
@@ -66,6 +74,10 @@ static const struct subtest subtests[] = {
 		{65537, 177, 0x51, 1000, 1},
 		{17777, 2, 0x61, 1000, 1},
 		{60005, 60005, 0x71, 1000, 1},
+		{1 << 16, -1, 0x71, 200, 4},
+		{1 << 16, -2, 0x71, 200, 4},
+		{1 << 24, -1, 0x71, 20, 4},
+		{1 << 24, -2, 0x71, 20, 4},
 };
 
 log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
@@ -83,7 +95,7 @@ int main(int argc, char **argv)
 	for (int i = 0; i < nsubtests; i++) {
 		struct subtest test = subtests[i];
 		srand((uint32_t)test.seed);
-		int bufsize = align(test.size + 32, alignment);
+		int bufsize = align(test.size + 8 + alignment, alignment);
 		char *diff = aligned_alloc(alignment, bufsize);
 		char *source = aligned_alloc(alignment, bufsize);
 		char *mirror = aligned_alloc(alignment, bufsize);

@@ -113,7 +113,7 @@ interval_diff_fn_t get_fastest_diff_function(int *alignment)
 {
 #ifdef HAVE_AVX2
 	if (avx2_available()) {
-		*alignment = 32;
+		*alignment = 64;
 		return run_interval_diff_avx2;
 	}
 #endif
