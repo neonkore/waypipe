@@ -121,8 +121,8 @@ static void cleanup_thread_local(struct thread_data *data)
 	free(data->tmp_buf);
 }
 
-static void setup_thread_local(
-		struct thread_data *data, enum compression_mode mode)
+static void setup_thread_local(struct thread_data *data,
+		enum compression_mode mode, int compression_level)
 {
 	struct comp_ctx *ctx = &data->comp_ctx;
 	ctx->zstd_ccontext = NULL;
@@ -142,11 +142,12 @@ static void setup_thread_local(
 	if (mode == COMP_ZSTD) {
 		ctx->zstd_ccontext = ZSTD_createCCtx();
 		ctx->zstd_dcontext = ZSTD_createDCtx();
-		ZSTD_CCtx_setParameter(
-				ctx->zstd_ccontext, ZSTD_c_compressionLevel, 5);
+		ZSTD_CCtx_setParameter(ctx->zstd_ccontext,
+				ZSTD_c_compressionLevel, compression_level);
 	}
 #endif
 	(void)mode;
+	(void)compression_level;
 
 	data->tmp_buf = NULL;
 	data->tmp_size = 0;
@@ -223,11 +224,13 @@ static void shutdown_threads(struct thread_pool *pool)
 }
 
 void setup_thread_pool(struct thread_pool *pool,
-		enum compression_mode compression, int n_threads)
+		enum compression_mode compression, int comp_level,
+		int n_threads)
 {
 	pool->diff_func = get_fastest_diff_function(&pool->diff_func_alignment);
 
 	pool->compression = compression;
+	pool->compression_level = comp_level;
 	if (n_threads <= 0) {
 		// platform dependent
 		long nt = sysconf(_SC_NPROCESSORS_ONLN);
@@ -268,7 +271,7 @@ void setup_thread_pool(struct thread_pool *pool,
 		pool->nthreads = 1;
 	}
 
-	setup_thread_local(&pool->threads[0], compression);
+	setup_thread_local(&pool->threads[0], compression, comp_level);
 
 	int fds[2];
 	if (pipe(fds) == -1) {
@@ -411,7 +414,11 @@ static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		break;
 #ifdef HAS_LZ4
 	case COMP_LZ4: {
-		size_t ws = LZ4F_compressFrame(mbuf, msize, ibuf, isize, NULL);
+		LZ4F_preferences_t prefs;
+		memset(&prefs, 0, sizeof(prefs));
+		prefs.compressionLevel = pool->compression_level;
+		size_t ws = LZ4F_compressFrame(
+				mbuf, msize, ibuf, isize, &prefs);
 		if (LZ4F_isError(ws)) {
 			wp_error("Lz4 compression failed for %d bytes in %d of space: %s",
 					(int)isize, (int)msize,
@@ -1839,7 +1846,7 @@ static void *worker_thread_main(void *arg)
 	struct thread_data *data = arg;
 	struct thread_pool *pool = data->pool;
 
-	setup_thread_local(data, pool->compression);
+	setup_thread_local(data, pool->compression, pool->compression_level);
 
 	/* The loop is globally locked by default, and only unlocked in
 	 * pthread_cond_wait. Yes, there are fancier and faster schemes.

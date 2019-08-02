@@ -37,13 +37,18 @@
 
 #include <sys/mman.h>
 
-static const enum compression_mode comp_modes[] = {
-		COMP_NONE,
+struct compression_settings {
+	enum compression_mode mode;
+	int level;
+};
+
+static const struct compression_settings comp_modes[] = {
+		{COMP_NONE, 0},
 #ifdef HAS_LZ4
-		COMP_LZ4,
+		{COMP_LZ4, 1},
 #endif
 #ifdef HAS_ZSTD
-		COMP_ZSTD,
+		{COMP_ZSTD, 5},
 #endif
 };
 
@@ -289,7 +294,7 @@ static bool test_transfer(struct fd_translation_map *src_map,
 /* This test closes the provided file fd */
 static bool test_mirror(int new_file_fd, size_t sz,
 		int (*update)(int fd, struct gbm_bo *bo, size_t sz, int seqno),
-		enum compression_mode comp_mode, int n_src_threads,
+		struct compression_settings comp_mode, int n_src_threads,
 		int n_dst_threads, struct render_data *rd,
 		const struct dmabuf_slice_data *slice_data)
 {
@@ -297,13 +302,15 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	setup_translation_map(&src_map, false);
 
 	struct thread_pool src_pool;
-	setup_thread_pool(&src_pool, comp_mode, n_src_threads);
+	setup_thread_pool(&src_pool, comp_mode.mode, comp_mode.level,
+			n_src_threads);
 
 	struct fd_translation_map dst_map;
 	setup_translation_map(&dst_map, true);
 
 	struct thread_pool dst_pool;
-	setup_thread_pool(&dst_pool, comp_mode, n_dst_threads);
+	setup_thread_pool(&dst_pool, comp_mode.mode, comp_mode.level,
+			n_dst_threads);
 
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(new_file_fd, &fdsz);

@@ -1173,7 +1173,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			.av_copy_config = 0,
 	};
 	setup_thread_pool(&g.threads, config->compression,
-			config->n_worker_threads);
+			config->compression_level, config->n_worker_threads);
 	setup_translation_map(&g.map, display_side);
 	init_message_tracker(&g.tracker);
 	setup_video_logging();

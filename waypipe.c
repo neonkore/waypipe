@@ -71,7 +71,7 @@ static const char usage_string[] =
 		"                 socket path T to the control pipe C.\n"
 		"\n"
 		"Options:\n"
-		"  -c, --compress C     select compression method from: lz4, zstd, none\n"
+		"  -c, --compress C     choose compression method: lz4[=#], zstd=[=#], none\n"
 		"  -d, --debug          print debug messages\n"
 		"  -h, --help           display this help and exit\n"
 		"  -n, --no-gpu         disable protocols which would use GPU resources\n"
@@ -178,6 +178,26 @@ static void fill_rand_token(char tok[static 8])
 			tok[i] = (char)(r - 52 + '0');
 		}
 	}
+}
+
+/* Scan a suffix which is either empty or has the form =N, returning true
+ * if it matches */
+static bool parse_level_choice(const char *str, int *dest, int defval)
+{
+	if (str[0] == '\0') {
+		*dest = defval;
+		return true;
+	}
+	if (str[0] != '=') {
+		return false;
+	}
+	char *endptr = NULL;
+	long dv = strtol(str + 1, &endptr, 10);
+	if (*endptr != 0) {
+		return false;
+	}
+	*dest = (int)dv;
+	return true;
 }
 
 /* Identifies the index at which the `destination` occurs in an openssh command,
@@ -381,14 +401,21 @@ int main(int argc, char **argv)
 		case 'c':
 			if (!strcmp(optarg, "none")) {
 				config.compression = COMP_NONE;
-			} else if (!strcmp(optarg, "lz4")) {
+				config.compression_level = 0;
+			} else if (!strncmp(optarg, "lz4", 3) &&
+					parse_level_choice(optarg + 3,
+							&config.compression_level,
+							1)) {
 #ifdef HAS_LZ4
 				config.compression = COMP_LZ4;
 #else
 				fprintf(stderr, "LZ4 compression not available: is the library installed?\n");
 				return EXIT_FAILURE;
 #endif
-			} else if (!strcmp(optarg, "zstd")) {
+			} else if (!strncmp(optarg, "zstd", 4) &&
+					parse_level_choice(optarg + 4,
+							&config.compression_level,
+							5)) {
 #ifdef HAS_ZSTD
 				config.compression = COMP_ZSTD;
 #else

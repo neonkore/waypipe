@@ -186,6 +186,8 @@ struct thread_pool {
 	 * because most rapidly changing application buffers have similar
 	 * content and use the same settings */
 	enum compression_mode compression;
+	int compression_level;
+
 	interval_diff_fn_t diff_func;
 	int diff_func_alignment;
 
@@ -584,6 +586,7 @@ struct main_config {
 	const char *drm_node;
 	int n_worker_threads;
 	enum compression_mode compression;
+	int compression_level;
 	bool no_gpu;
 	bool linear_dmabuf;
 	bool video_if_possible;
@@ -612,7 +615,8 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side);
 void cleanup_translation_map(struct fd_translation_map *map);
 
 void setup_thread_pool(struct thread_pool *pool,
-		enum compression_mode compression, int n_threads);
+		enum compression_mode compression, int compression_level,
+		int n_threads);
 void cleanup_thread_pool(struct thread_pool *pool);
 
 /** Given a file descriptor, return which type code would be applied to its
