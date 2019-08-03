@@ -89,6 +89,10 @@ endif
 # Conditionally compile SIMD-optimized code.
 # (The meson simd module is a bit too limited for this)
 kernel_libs = []
+if cc.has_argument('-mavx512f') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi')
+	kernel_libs += static_library('kernel_avx512f', 'kernel_avx512f.c', c_args:['-mavx512f', '-mlzcnt', '-mbmi'])
+	config_data.set('HAVE_AVX512F', 1, description: 'Compiler supports AVX-512F')
+endif
 if cc.has_argument('-mavx2') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi')
 	kernel_libs += static_library('kernel_avx2', 'kernel_avx2.c', c_args:['-mavx2', '-mlzcnt', '-mbmi'])
 	config_data.set('HAVE_AVX2', 1, description: 'Compiler supports AVX2')

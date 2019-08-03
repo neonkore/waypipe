@@ -88,6 +88,13 @@ int run_interval_diff_C(const int diff_window_size, const int i_end,
 	return dc;
 }
 
+#ifdef HAVE_AVX512F
+bool avx512f_available(void);
+int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
+		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
+		uint64_t *__restrict__ diff, int i);
+#endif
+
 #ifdef HAVE_AVX2
 bool avx2_available(void);
 int run_interval_diff_avx2(const int diff_window_size, const int i_end,
@@ -111,6 +118,12 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 
 interval_diff_fn_t get_fastest_diff_function(int *alignment)
 {
+#ifdef HAVE_AVX512F
+	if (avx512f_available()) {
+		*alignment = 64;
+		return run_interval_diff_avx512f;
+	}
+#endif
 #ifdef HAVE_AVX2
 	if (avx2_available()) {
 		*alignment = 64;
@@ -150,7 +163,7 @@ int construct_diff_core(interval_diff_fn_t idiff_fn,
 		struct interval e = damaged_intervals[i];
 		int bend = e.end / 8;
 		int bstart = e.start / 8;
-		cursor += (uint64_t)(*idiff_fn)(32, bend, changed_blocks,
+		cursor += (uint64_t)(*idiff_fn)(12, bend, changed_blocks,
 				base_blocks, diff_blocks + cursor, bstart);
 	}
 	return cursor * 8;
