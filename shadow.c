@@ -42,7 +42,8 @@
 #include <unistd.h>
 
 #ifdef HAS_LZ4
-#include <lz4frame.h>
+#include <lz4.h>
+#include <lz4hc.h>
 #endif
 #ifdef HAS_ZSTD
 #include <zstd.h>
@@ -116,7 +117,7 @@ static void cleanup_thread_local(struct thread_data *data)
 	ZSTD_freeDCtx(data->comp_ctx.zstd_dcontext);
 #endif
 #ifdef HAS_LZ4
-	LZ4F_freeDecompressionContext(data->comp_ctx.lz4f_dcontext);
+	free(data->comp_ctx.lz4_extstate);
 #endif
 	free(data->tmp_buf);
 }
@@ -127,14 +128,16 @@ static void setup_thread_local(struct thread_data *data,
 	struct comp_ctx *ctx = &data->comp_ctx;
 	ctx->zstd_ccontext = NULL;
 	ctx->zstd_dcontext = NULL;
-	ctx->lz4f_dcontext = NULL;
+	ctx->lz4_extstate = NULL;
 #ifdef HAS_LZ4
 	if (mode == COMP_LZ4) {
-		LZ4F_errorCode_t err = LZ4F_createDecompressionContext(
-				&ctx->lz4f_dcontext, LZ4F_VERSION);
-		if (LZ4F_isError(err)) {
-			wp_error("Failed to created LZ4F decompression context: %s",
-					LZ4F_getErrorName(err));
+		/* Like LZ4Frame, integer codes indicate compression level.
+		 * Negative numbers are acceleration, positive use the HC
+		 * routines */
+		if (compression_level <= 0) {
+			ctx->lz4_extstate = malloc((size_t)LZ4_sizeofState());
+		} else {
+			ctx->lz4_extstate = malloc((size_t)LZ4_sizeofStateHC());
 		}
 	}
 #endif
@@ -142,8 +145,6 @@ static void setup_thread_local(struct thread_data *data,
 	if (mode == COMP_ZSTD) {
 		ctx->zstd_ccontext = ZSTD_createCCtx();
 		ctx->zstd_dcontext = ZSTD_createDCtx();
-		ZSTD_CCtx_setParameter(ctx->zstd_ccontext,
-				ZSTD_c_compressionLevel, compression_level);
 	}
 #endif
 	(void)mode;
@@ -379,7 +380,8 @@ static size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 		return 0;
 #ifdef HAS_LZ4
 	case COMP_LZ4:
-		return (size_t)LZ4F_compressFrameBound((int)max_input, NULL);
+		/* This bound applies for both LZ4 and LZ4HC compressors */
+		return (size_t)LZ4_compressBound((int)max_input);
 #endif
 #ifdef HAS_ZSTD
 	case COMP_ZSTD:
@@ -414,15 +416,19 @@ static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		break;
 #ifdef HAS_LZ4
 	case COMP_LZ4: {
-		LZ4F_preferences_t prefs;
-		memset(&prefs, 0, sizeof(prefs));
-		prefs.compressionLevel = pool->compression_level;
-		size_t ws = LZ4F_compressFrame(
-				mbuf, msize, ibuf, isize, &prefs);
-		if (LZ4F_isError(ws)) {
-			wp_error("Lz4 compression failed for %d bytes in %d of space: %s",
-					(int)isize, (int)msize,
-					LZ4F_getErrorName(ws));
+		size_t ws;
+		if (pool->compression_level <= 0) {
+			ws = LZ4_compress_fast_extState(ctx->lz4_extstate, ibuf,
+					mbuf, isize, msize,
+					-pool->compression_level);
+		} else {
+			ws = LZ4_compress_HC_extStateHC(ctx->lz4_extstate, ibuf,
+					mbuf, isize, msize,
+					pool->compression_level);
+		}
+		if (ws == 0) {
+			wp_error("LZ4 compression failed for %d bytes in %d of space",
+					(int)isize, (int)msize);
 		}
 		dst->size = (size_t)ws;
 		dst->data = (char *)mbuf;
@@ -431,8 +437,8 @@ static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 #endif
 #ifdef HAS_ZSTD
 	case COMP_ZSTD: {
-		size_t ws = ZSTD_compress2(
-				ctx->zstd_ccontext, mbuf, msize, ibuf, isize);
+		size_t ws = ZSTD_compressCCtx(ctx->zstd_ccontext, mbuf, msize,
+				ibuf, isize, pool->compression_level);
 		if (ZSTD_isError(ws)) {
 			wp_error("Zstd compression failed for %d bytes in %d of space: %s",
 					(int)isize, (int)msize,
@@ -471,24 +477,13 @@ static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		break;
 #ifdef HAS_LZ4
 	case COMP_LZ4: {
-		size_t total = 0;
-		size_t read = 0;
-		while (read < isize) {
-			size_t dst_remaining = msize - total;
-			size_t src_remaining = isize - read;
-			size_t hint = LZ4F_decompress(ctx->lz4f_dcontext,
-					&mbuf[total], &dst_remaining,
-					&ibuf[read], &src_remaining, NULL);
-			read += src_remaining;
-			total += dst_remaining;
-			if (LZ4F_isError(hint)) {
-				wp_error("Lz4 decomp. failed with %d bytes and %d space remaining: %s",
-						isize - read, msize - total,
-						LZ4F_getErrorName(hint));
-				break;
-			}
+		int ws = LZ4_decompress_safe(
+				ibuf, mbuf, (int)isize, (int)msize);
+		if (ws < 0 || (size_t)ws != msize) {
+			wp_error("Lz4 decompression failed for %d bytes to %d of space, used %d",
+					(int)isize, (int)msize, ws);
 		}
-		*wsize = total;
+		*wsize = (size_t)ws;
 		*wbuf = mbuf;
 		break;
 	}
@@ -503,7 +498,7 @@ static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 					ZSTD_getErrorName(ws));
 			ws = 0;
 		}
-		*wsize = (size_t)ws;
+		*wsize = ws;
 		*wbuf = mbuf;
 		break;
 	}

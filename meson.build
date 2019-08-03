@@ -48,11 +48,11 @@ is_darwin = host_machine.system() == 'darwin'
 if (is_linux or is_darwin) and cc.has_header('sys/sdt.h')
 	config_data.set('HAS_USDT', 1, description: 'Enable static trace probes')
 endif
-liblz4 = dependency('liblz4', required: get_option('with_lz4'))
+liblz4 = dependency('liblz4', version: '>=1.7.0', required: get_option('with_lz4'))
 if liblz4.found()
 	config_data.set('HAS_LZ4', 1, description: 'Enable LZ4 compression')
 endif
-libzstd = dependency('libzstd', version: '>=1.4.0', required: get_option('with_zstd'))
+libzstd = dependency('libzstd', version: '>=0.4.6', required: get_option('with_zstd'))
 if libzstd.found()
 	config_data.set('HAS_ZSTD', 1, description: 'Enable Zstd compression')
 endif

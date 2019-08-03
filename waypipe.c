@@ -406,7 +406,7 @@ int main(int argc, char **argv)
 			} else if (!strncmp(optarg, "lz4", 3) &&
 					parse_level_choice(optarg + 3,
 							&config.compression_level,
-							1)) {
+							-1)) {
 #ifdef HAS_LZ4
 				config.compression = COMP_LZ4;
 #else

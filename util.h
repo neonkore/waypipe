@@ -150,11 +150,10 @@ struct render_data {
 	VAConfigID av_copy_config;
 };
 
-typedef struct LZ4F_dctx_s LZ4F_dctx;
 typedef struct ZSTD_CCtx_s ZSTD_CCtx;
 typedef struct ZSTD_DCtx_s ZSTD_DCtx;
 struct comp_ctx {
-	LZ4F_dctx *lz4f_dcontext;
+	void *lz4_extstate;
 	ZSTD_CCtx *zstd_ccontext;
 	ZSTD_DCtx *zstd_dcontext;
 };
