@@ -163,7 +163,9 @@ int main(int argc, char **argv)
 	long file_nwords = len / 4;
 	long cursor = 0;
 	uint32_t *data = (uint32_t *)buf;
+#if !defined(SHM_ANON)
 	char template[256];
+#endif
 	while (cursor < file_nwords) {
 		uint32_t header = data[cursor++];
 		bool to_server = header & 0x1;
@@ -186,6 +188,8 @@ int main(int argc, char **argv)
 				sprintf(template, "%x:%x", (uint32_t)cursor,
 						fsize);
 				new_fileno = memfd_create(template, 0);
+#elif defined(SHM_ANON)
+				new_fileno = shm_open(SHM_ANON, O_RDWR, 0600);
 #else
 				/* WARNING: this can be rather file-system
 				 * intensive */
