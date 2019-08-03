@@ -23,7 +23,10 @@
  * SOFTWARE.
  */
 
+#if !defined(__DragonFly__) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
+/* aligned_alloc isn't part of any X/Open version */
 #define _XOPEN_SOURCE 700
+#endif
 #include "util.h"
 
 #include <stdio.h>
