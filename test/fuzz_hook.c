@@ -127,13 +127,17 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	struct main_config config = {.drm_node = NULL,
+	struct main_config config = {
+			.drm_node = NULL,
 			.n_worker_threads = 1,
 			.compression = COMP_NONE,
+			.compression_level = 0,
 			.no_gpu = true, /* until we can construct dmabufs here
 					 */
-			.linear_dmabuf = false,
-			.video_if_possible = true};
+			.only_linear_dmabuf = false,
+			.video_if_possible = true,
+			.prefer_hwvideo = false,
+	};
 
 	pthread_t thread_a, thread_b;
 	struct copy_setup server_conf = {.conn = conn_fds[0],

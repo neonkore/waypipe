@@ -68,6 +68,13 @@ will be displayed locally.
 *-v, --version*
 	Print the version number and quit.
 
+*--allow-tiled*
+	By default, waypipe filters out all advertised DMABUF formats which have
+	format layout modifiers, as CPU access to these formats may be very slow.
+	Setting this flag disables the filtering. Since tiled images often permit
+	faster GPU operations, most OpenGL applications will select tiling modifiers
+	when they are available.
+
 *--control C*
 	For server or ssh mode, provide the path to the "control pipe" that will
 	be created the the server. Writing (with *waypipe recon C T*, or
@@ -89,12 +96,6 @@ will be displayed locally.
 *--remote-node R*
 	In ssh mode, specify the path *R* to the drm device that the remote instance
 	of waypipe (running in server mode) should use.
-
-*--linear-dmabuf*
-	Filter out all advertised DMABUF formats which have modifiers; only standard
-	linear image layouts are then permitted. Some applications by default use
-	DMABUF image layout modifiers which are very slow for waypipe to copy
-	and update; this flag can ensure that they fall back to friendlier formats.
 
 *--login-shell*
 	Only for server mode; if no command is being run, open a login shell.

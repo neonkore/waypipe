@@ -81,11 +81,11 @@ static const char usage_string[] =
 		"                         client default: /tmp/waypipe-client.sock\n"
 		"                         ssh: sets the prefix for the socket path\n"
 		"  -v, --version        print waypipe version and exit\n"
-		"      --control C      server,ssh: set control pipe to reconnect server\n\n"
+		"      --allow-tiled    allow gpu buffers (DMABUFs) with format modifiers\n"
+		"      --control C      server,ssh: set control pipe to reconnect server\n"
 		"      --display D      server,ssh: the Wayland display name or path\n"
 		"      --drm-node R     set the local render node. default: /dev/dri/renderD128\n"
 		"      --remote-node R  ssh: set the remote render node path\n"
-		"      --linear-dmabuf  only permit gpu buffers without modifier flags\n"
 		"      --login-shell    server: if server CMD is empty, run a login shell\n"
 		"      --threads T      set thread pool size, default=hardware threads/2\n"
 		"      --unlink-socket  server: unlink the socket that waypipe connects to\n"
@@ -306,7 +306,7 @@ void handle_noop(int sig) { (void)sig; }
 
 #define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
-#define ARG_LINEAR_DMABUF 1003
+#define ARG_ALLOW_TILED 1003
 #define ARG_LOGIN_SHELL 1004
 #define ARG_REMOTENODE 1005
 #define ARG_THREADS 1006
@@ -323,11 +323,11 @@ static const struct option options[] = {
 		{"oneshot", no_argument, NULL, 'o'},
 		{"socket", required_argument, NULL, 's'},
 		{"version", no_argument, NULL, 'v'},
+		{"allow-tiled", no_argument, NULL, ARG_ALLOW_TILED},
 		{"unlink-socket", no_argument, NULL, ARG_UNLINK},
 		{"drm-node", required_argument, NULL, ARG_DRMNODE},
 		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
-		{"linear-dmabuf", no_argument, NULL, ARG_LINEAR_DMABUF},
 		{"video", no_argument, NULL, ARG_VIDEO},
 		{"hwvideo", no_argument, NULL, ARG_HWVIDEO},
 		{"threads", required_argument, NULL, ARG_THREADS},
@@ -354,8 +354,9 @@ int main(int argc, char **argv)
 	struct main_config config = {.n_worker_threads = 0,
 			.drm_node = NULL,
 			.compression = COMP_NONE,
+			.compression_level = 0,
 			.no_gpu = false,
-			.linear_dmabuf = false,
+			.only_linear_dmabuf = true,
 			.video_if_possible = false,
 			.prefer_hwvideo = false};
 
@@ -478,8 +479,8 @@ int main(int argc, char **argv)
 			}
 			login_shell = true;
 			break;
-		case ARG_LINEAR_DMABUF:
-			config.linear_dmabuf = true;
+		case ARG_ALLOW_TILED:
+			config.only_linear_dmabuf = false;
 			break;
 		case ARG_VIDEO:
 			config.video_if_possible = true;
@@ -648,6 +649,7 @@ int main(int argc, char **argv)
 				     2 * (control_path != NULL) +
 				     2 * (config.compression != COMP_NONE) +
 				     config.video_if_possible +
+				     !config.only_linear_dmabuf +
 				     2 * needs_login_shell +
 				     2 * (config.n_worker_threads != 0);
 			char **arglist = calloc((size_t)(argc + nextra),
@@ -692,6 +694,10 @@ int main(int argc, char **argv)
 						config.prefer_hwvideo
 								? "--hwvideo"
 								: "--video";
+			}
+			if (!config.only_linear_dmabuf) {
+				arglist[dstidx + 1 + offset++] =
+						"--allow-tiled";
 			}
 			if (remote_drm_node) {
 				arglist[dstidx + 1 + offset++] = "--drm-node";

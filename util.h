@@ -588,7 +588,7 @@ struct main_config {
 	enum compression_mode compression;
 	int compression_level;
 	bool no_gpu;
-	bool linear_dmabuf;
+	bool only_linear_dmabuf;
 	bool video_if_possible;
 	bool prefer_hwvideo;
 };

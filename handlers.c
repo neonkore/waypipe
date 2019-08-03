@@ -1040,7 +1040,7 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 	(void)format;
 	uint64_t modifier = modifier_hi * 0x100000000uL * modifier_lo;
 	// Prevent all advertisements for dmabufs with modifiers
-	if (modifier && ctx->g->config->linear_dmabuf) {
+	if (modifier && ctx->g->config->only_linear_dmabuf) {
 		ctx->drop_this_msg = true;
 	}
 }
