@@ -29,6 +29,13 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(__linux__) && defined(__arm__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#elif defined(__FreeBSD__) && defined(__arm__)
+#include <sys/auxv.h>
+#endif
+
 int run_interval_diff_C(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i)
@@ -89,28 +96,42 @@ int run_interval_diff_C(const int diff_window_size, const int i_end,
 }
 
 #ifdef HAVE_AVX512F
-bool avx512f_available(void);
+static bool avx512f_available(void)
+{
+	return __builtin_cpu_supports("avx512f");
+}
 int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i);
 #endif
 
 #ifdef HAVE_AVX2
-bool avx2_available(void);
+static bool avx2_available(void) { return __builtin_cpu_supports("avx2"); }
 int run_interval_diff_avx2(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i);
 #endif
 
 #ifdef HAVE_NEON
-bool neon_available(void);
+static bool neon_available(void)
+{
+	/* The actual methods are platform-dependent */
+#if defined(__linux__) && defined(__arm__)
+	return (getauxval(AT_HWCAP) & HWCAP_NEON) != 0;
+#elif defined(__FreeBSD__) && defined(__arm__)
+	unsigned long hwcap = 0;
+	elf_aux_info(AT_HWCAP, &hwcap, sizeof(hwcap));
+	return (hwcap & HWCAP_NEON) != 0;
+#endif
+	return true;
+}
 int run_interval_diff_neon(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i);
 #endif
 
 #ifdef HAVE_SSE41
-bool sse41_available(void);
+static bool sse41_available(void) { return __builtin_cpu_supports("sse4.1"); }
 int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i);

@@ -33,8 +33,6 @@
 #include <tmmintrin.h> // sse3
 #include <xmmintrin.h> // ssse3
 
-bool sse41_available(void) { return __builtin_cpu_supports("sse4.1"); }
-
 int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i)

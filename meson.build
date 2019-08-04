@@ -103,6 +103,17 @@ if cc.has_argument('-msse4.1')
 endif
 if host_machine.cpu_family() == 'aarch64' or cc.has_argument('-mfpu=neon')
 	neon_args = host_machine.cpu_family() == 'aarch64' ? [] : ['-mfpu=neon']
+
+	# Clang additionally enforces that NEON code only be compiled
+	# to target a CPU that actually supports NEON instructions,
+	# so bump the host CPU version for the optionally executed code only.
+	if host_machine.cpu_family() == 'arm' and cc.get_id() == 'clang'
+		host_cpu = host_machine.cpu()
+		if host_cpu.contains('4') or host_cpu.contains('5') or host_cpu.contains('6')
+			neon_args += ['-march=armv7-a']
+		endif
+	endif
+
 	kernel_libs += static_library('kernel_neon', 'kernel_neon.c', c_args:neon_args)
 	config_data.set('HAVE_NEON', 1, description: 'Compiler supports NEON')
 endif

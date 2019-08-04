@@ -29,8 +29,6 @@
 
 #include <x86intrin.h>
 
-bool avx512f_available(void) { return __builtin_cpu_supports("avx512f"); }
-
 int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
 		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
 		uint64_t *__restrict__ diff, int i)

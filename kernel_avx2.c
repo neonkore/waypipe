@@ -29,8 +29,6 @@
 
 #include <x86intrin.h>
 
-bool avx2_available(void) { return __builtin_cpu_supports("avx2"); }
-
 #ifdef __x86_64__
 static inline int tzcnt(uint64_t v) { return (int)_tzcnt_u64(v); }
 #else
