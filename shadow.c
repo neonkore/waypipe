@@ -1391,10 +1391,10 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 	int al = threads->diff_func_alignment;
 	sfd->mem_mirror = realloc(sfd->mem_mirror, align(sfd->buffer_size, al));
 	if ((ptrdiff_t)sfd->mem_mirror % al != 0) {
-		wp_error("Alignment fixup: %d\n", sfd->buffer_size);
 		char *mem = aligned_alloc(al, align(sfd->buffer_size, al));
 		memcpy(mem, sfd->mem_mirror, old_size);
 		free(sfd->mem_mirror);
+		sfd->mem_mirror = mem;
 	}
 }
 
