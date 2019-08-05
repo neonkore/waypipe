@@ -44,8 +44,6 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 
 		int trailing_unchanged = 0;
 		for (; i < i_end; i += 4) {
-			/* Q: does it make sense to unroll by 2, cutting branch
-			 * count in half? */
 			__m128i b0 = _mm_load_si128((const __m128i *)&base[i]);
 			__m128i b1 = _mm_load_si128(
 					(const __m128i *)&base[i + 2]);

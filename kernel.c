@@ -137,34 +137,40 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		uint64_t *__restrict__ diff, int i);
 #endif
 
-interval_diff_fn_t get_fastest_diff_function(int *alignment)
+interval_diff_fn_t get_fastest_diff_function(
+		enum diff_type type, int *alignment)
 {
 #ifdef HAVE_AVX512F
-	if (avx512f_available()) {
+	if ((type == DIFF_FASTEST || type == DIFF_AVX512F) &&
+			avx512f_available()) {
 		*alignment = 64;
 		return run_interval_diff_avx512f;
 	}
 #endif
 #ifdef HAVE_AVX2
-	if (avx2_available()) {
+	if ((type == DIFF_FASTEST || type == DIFF_AVX2) && avx2_available()) {
 		*alignment = 64;
 		return run_interval_diff_avx2;
 	}
 #endif
 #ifdef HAVE_NEON
-	if (neon_available()) {
+	if ((type == DIFF_FASTEST || type == DIFF_NEON) && neon_available()) {
 		*alignment = 16;
 		return run_interval_diff_neon;
 	}
 #endif
 #ifdef HAVE_SSE41
-	if (sse41_available()) {
+	if ((type == DIFF_FASTEST || type == DIFF_SSE41) && sse41_available()) {
 		*alignment = 32;
 		return run_interval_diff_sse41;
 	}
 #endif
-	*alignment = 8;
-	return run_interval_diff_C;
+	if ((type == DIFF_FASTEST || type == DIFF_C)) {
+		*alignment = 8;
+		return run_interval_diff_C;
+	}
+	*alignment = 0;
+	return NULL;
 }
 
 /** Construct the main portion of a diff. The provided arguments should

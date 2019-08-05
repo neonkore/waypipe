@@ -780,7 +780,16 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 // kernel.c
 /** Returns a function pointer to a diff construction kernel, and indicates
  * the alignment of the data which is to be passed in */
-interval_diff_fn_t get_fastest_diff_function(int *alignment);
+enum diff_type {
+	DIFF_FASTEST,
+	DIFF_AVX512F,
+	DIFF_AVX2,
+	DIFF_SSE41,
+	DIFF_NEON,
+	DIFF_C,
+};
+interval_diff_fn_t get_fastest_diff_function(
+		enum diff_type type, int *alignment);
 int construct_diff_core(interval_diff_fn_t idiff_fn,
 		const struct interval *__restrict__ damaged_intervals,
 		int n_intervals, char *__restrict__ base,

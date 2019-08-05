@@ -228,7 +228,8 @@ void setup_thread_pool(struct thread_pool *pool,
 		enum compression_mode compression, int comp_level,
 		int n_threads)
 {
-	pool->diff_func = get_fastest_diff_function(&pool->diff_func_alignment);
+	pool->diff_func = get_fastest_diff_function(
+			DIFF_FASTEST, &pool->diff_func_alignment);
 
 	pool->compression = compression;
 	pool->compression_level = comp_level;
