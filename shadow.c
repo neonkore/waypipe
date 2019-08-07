@@ -373,7 +373,7 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	}
 }
 
-static size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
+size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 {
 	switch (pool->compression) {
 	case COMP_NONE:
@@ -395,7 +395,7 @@ static size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 /* With the selected compression method, compress the buffer
  * {isize,ibuf}, possibly modifying {msize,mbuf}, and setting
  * {wsize,wbuf} to indicate the result */
-static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
+void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		size_t isize, const char *ibuf, size_t msize, char *mbuf,
 		struct bytebuf *dst)
 {

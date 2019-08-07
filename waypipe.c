@@ -46,8 +46,16 @@ int run_server(const char *socket_path, const char *display_path,
 		char *const app_argv[]);
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool via_socket, pid_t eol_pid);
+int run_bench(float bandwidth_mBps, int n_worker_threads);
 
-enum waypipe_mode { MODE_FAIL, MODE_SSH, MODE_CLIENT, MODE_SERVER, MODE_RECON };
+enum waypipe_mode {
+	MODE_FAIL = 0x0,
+	MODE_SSH = 0x1,
+	MODE_CLIENT = 0x2,
+	MODE_SERVER = 0x4,
+	MODE_RECON = 0x8,
+	MODE_BENCH = 0x10
+};
 
 static bool log_to_tty = false;
 static enum waypipe_mode log_mode = MODE_FAIL;
@@ -69,6 +77,8 @@ static const char usage_string[] =
 		"                 instances can connect.\n"
 		"  recon C T    Reconnect a 'waypipe server' instance. Writes the new Unix\n"
 		"                 socket path T to the control pipe C.\n"
+		"  bench B      Given a connection bandwidth B in MB/sec, estimate the best\n"
+		"                 compression level used to send data\n"
 		"\n"
 		"Options:\n"
 		"  -c, --compress C     choose compression method: lz4[=#], zstd=[=#], none\n"
@@ -334,6 +344,31 @@ static const struct option options[] = {
 		{"display", required_argument, NULL, ARG_DISPLAY},
 		{"control", required_argument, NULL, ARG_CONTROL},
 		{0, 0, NULL, 0}};
+struct arg_permissions {
+	int val;
+	uint32_t mode_mask;
+};
+#define ALL_MODES (uint32_t) - 1
+static const struct arg_permissions arg_permissions[] = {
+		{'c', MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{'d', ALL_MODES},
+		{'h', ALL_MODES},
+		{'n', MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{'o', MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{'s', MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{'v', ALL_MODES},
+		{ARG_ALLOW_TILED, MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{ARG_UNLINK, MODE_SERVER},
+		{ARG_DRMNODE, MODE_SERVER},
+		{ARG_REMOTENODE, MODE_SSH},
+		{ARG_LOGIN_SHELL, MODE_SERVER},
+		{ARG_VIDEO, MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{ARG_HWVIDEO, MODE_SSH | MODE_CLIENT | MODE_SERVER},
+		{ARG_THREADS, MODE_SSH | MODE_CLIENT | MODE_SERVER |
+						MODE_BENCH},
+		{ARG_DISPLAY, MODE_SSH | MODE_SERVER},
+		{ARG_CONTROL, MODE_SSH | MODE_SERVER},
+};
 
 int main(int argc, char **argv)
 {
@@ -381,6 +416,10 @@ int main(int argc, char **argv)
 			mode = MODE_RECON;
 			break;
 		}
+		if (!strcmp(argv[mode_argc], "bench")) {
+			mode = MODE_BENCH;
+			break;
+		}
 		mode_argc++;
 	}
 
@@ -392,10 +431,24 @@ int main(int argc, char **argv)
 		if (opt == -1) {
 			break;
 		}
-		if (mode == MODE_RECON) {
-			/* no prefix arguments permitted */
+		const struct arg_permissions *perms = NULL;
+		for (size_t k = 0;
+				k < sizeof(arg_permissions) /
+						    sizeof(arg_permissions[0]);
+				k++) {
+			if (arg_permissions[k].val == opt) {
+				perms = &arg_permissions[k];
+			}
+		}
+		if (!perms) {
 			fail = true;
-			continue;
+			break;
+		}
+		if (!(mode & perms->mode_mask) && mode != MODE_FAIL) {
+			fprintf(stderr, "Option %s is not allowed in mode %s\n",
+					options[option_index].name,
+					argv[mode_argc - 1]);
+			return EXIT_FAILURE;
 		}
 
 		switch (opt) {
@@ -447,36 +500,21 @@ int main(int argc, char **argv)
 			version = true;
 			break;
 		case ARG_DISPLAY:
-			if (mode == MODE_CLIENT) {
-				fail = true;
-			}
 			wayland_display = optarg;
 			break;
 		case ARG_CONTROL:
-			if (mode == MODE_CLIENT) {
-				fail = true;
-			}
 			control_path = optarg;
 			break;
 		case ARG_UNLINK:
-			if (mode != MODE_SERVER) {
-				fail = true;
-			}
 			unlink_at_end = true;
 			break;
 		case ARG_DRMNODE:
 			config.drm_node = optarg;
 			break;
 		case ARG_REMOTENODE:
-			if (mode != MODE_SSH) {
-				fail = true;
-			}
 			remote_drm_node = optarg;
 			break;
 		case ARG_LOGIN_SHELL:
-			if (mode != MODE_SERVER) {
-				fail = true;
-			}
 			login_shell = true;
 			break;
 		case ARG_ALLOW_TILED:
@@ -524,6 +562,8 @@ int main(int argc, char **argv)
 	} else if (mode == MODE_RECON && argc != 3) {
 		// The reconnection helper takes exactly two trailing arguments
 		return usage(EXIT_FAILURE);
+	} else if (mode == MODE_BENCH && argc != 2) {
+		return usage(EXIT_FAILURE);
 	}
 	argv++;
 	argc--;
@@ -565,6 +605,15 @@ int main(int argc, char **argv)
 
 	if (mode == MODE_RECON) {
 		return run_recon(argv[0], argv[1]);
+	} else if (mode == MODE_BENCH) {
+		char *endptr = NULL;
+		float bw = strtof(argv[0], &endptr);
+		if (*endptr != 0) {
+			wp_error("Failed to parse bandwidth '%s' in MB/sec\n",
+					argv[0]);
+			return EXIT_FAILURE;
+		}
+		return run_bench(bw, config.n_worker_threads);
 	} else if (mode == MODE_CLIENT) {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";

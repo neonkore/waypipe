@@ -692,6 +692,10 @@ void extend_shm_shadow(struct fd_translation_map *map,
 		size_t new_size);
 void run_task(struct task_data *task, struct thread_data *local);
 
+size_t compress_bufsize(struct thread_pool *pool, size_t max_input);
+void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
+		size_t isize, const char *ibuf, size_t msize, char *mbuf,
+		struct bytebuf *dst);
 // parsing.c
 
 void listset_insert(struct fd_translation_map *map, struct obj_list *lst,

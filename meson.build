@@ -69,7 +69,7 @@ endif
 
 subdir('protocols')
 
-waypipe_source_files = ['client.c', 'dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
+waypipe_source_files = ['bench.c', 'client.c', 'dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
 waypipe_dependencies = [
 	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 	liblz4,          # Fast compression option
