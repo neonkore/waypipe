@@ -290,8 +290,8 @@ static bool test_mirror(int new_file_fd, size_t sz,
 
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(new_file_fd, &fdsz);
-	struct shadow_fd *src_shadow = translate_fd(
-			&src_map, rd, new_file_fd, fdtype, fdsz, slice_data);
+	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
+			fdtype, fdsz, slice_data, false);
 	struct shadow_fd *dst_shadow = NULL;
 	int rid = src_shadow->remote_id;
 

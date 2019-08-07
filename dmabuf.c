@@ -36,12 +36,13 @@ int init_render_data(struct render_data *data)
 }
 void cleanup_render_data(struct render_data *data) { (void)data; }
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		const struct dmabuf_slice_data *info)
+		struct dmabuf_slice_data *info, bool read_modifier)
 {
 	(void)rd;
 	(void)fd;
 	(void)size;
 	(void)info;
+	(void)read_modifier;
 	return NULL;
 }
 bool is_dmabuf(int fd)
@@ -177,7 +178,7 @@ static long get_dmabuf_fd_size(int fd)
 }
 
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		const struct dmabuf_slice_data *info)
+		struct dmabuf_slice_data *info, bool read_modifier)
 {
 	ssize_t endp = get_dmabuf_fd_size(fd);
 	if (endp == -1) {
@@ -185,12 +186,32 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	}
 	*size = (size_t)endp;
 
-	/* Multiplanar formats are all rather badly supported by
-	 * drivers/libgbm/libdrm/compositors/applications/everything. */
-	struct gbm_import_fd_modifier_data data;
-	if (info) {
-		// Select all plane metadata associated to planes linked to this
-		// fd
+	struct gbm_bo *bo;
+	if (!info) {
+		/* No protocol info, so guess the dimensions */
+		struct gbm_import_fd_data data;
+		data.fd = fd;
+		data.width = 256;
+		data.height = (uint32_t)(endp + 1023) / 1024;
+		data.format = GBM_FORMAT_XRGB8888;
+		data.stride = 1024;
+		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD, &data,
+				GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+	} else if (read_modifier) {
+		struct gbm_import_fd_data data;
+		data.fd = fd;
+		data.width = info->width;
+		data.height = info->height;
+		data.format = info->format;
+		data.stride = info->strides[0];
+		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD, &data,
+				GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+	} else {
+		/* Multiplanar formats are all rather badly supported by
+		 * drivers/libgbm/libdrm/compositors/applications/everything. */
+		struct gbm_import_fd_modifier_data data;
+		// Select all plane metadata associated to planes linked
+		// to this fd
 		data.modifier = info->modifier;
 		data.num_fds = 0;
 		uint32_t simple_format = 0;
@@ -214,23 +235,17 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		data.width = info->width;
 		data.height = info->height;
 		data.format = simple_format;
-	} else {
-		data.num_fds = 1;
-		data.fds[0] = fd;
-		data.offsets[0] = 0;
-		data.strides[0] = 1024;
-		data.width = 256;
-		data.height = (uint32_t)(endp + 1023) / 1024;
-		data.format = GBM_FORMAT_XRGB8888;
-		data.modifier = 0;
-	}
 
-	struct gbm_bo *bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER,
-			&data, GBM_BO_USE_RENDERING);
+		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER, &data,
+				GBM_BO_USE_RENDERING);
+	}
 	if (!bo) {
 		wp_error("Failed to import dmabuf to gbm bo: %s",
 				strerror(errno));
 		return NULL;
+	}
+	if (read_modifier) {
+		info->modifier = gbm_bo_get_modifier(bo);
 	}
 
 	return bo;

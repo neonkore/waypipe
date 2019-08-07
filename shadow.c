@@ -510,7 +510,8 @@ static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, fdcat_t type,
-		size_t file_sz, const struct dmabuf_slice_data *info)
+		size_t file_sz, const struct dmabuf_slice_data *info,
+		bool read_modifier)
 {
 	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
 	if (sfd) {
@@ -576,8 +577,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
 		init_render_data(render);
-		sfd->dmabuf_bo = import_dmabuf(
-				render, sfd->fd_local, &sfd->buffer_size, info);
+		sfd->dmabuf_bo = import_dmabuf(render, sfd->fd_local,
+				&sfd->buffer_size, &sfd->dmabuf_info,
+				read_modifier);
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
@@ -598,8 +600,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 				sizeof(struct dmabuf_slice_data));
 		// TODO: multifd-dmabuf video surface
 		init_render_data(render);
-		sfd->dmabuf_bo = import_dmabuf(
-				render, sfd->fd_local, &sfd->buffer_size, info);
+		sfd->dmabuf_bo = import_dmabuf(render, sfd->fd_local,
+				&sfd->buffer_size, &sfd->dmabuf_info,
+				read_modifier);
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
@@ -610,16 +613,17 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->buffer_size = 0;
 
 		init_render_data(render);
-		sfd->dmabuf_bo = import_dmabuf(
-				render, sfd->fd_local, &sfd->buffer_size, info);
-		if (!sfd->dmabuf_bo) {
-			return sfd;
-		}
 		if (info) {
 			memcpy(&sfd->dmabuf_info, info,
 					sizeof(struct dmabuf_slice_data));
 		} else {
 			// already zero initialized (no information).
+		}
+		sfd->dmabuf_bo = import_dmabuf(render, sfd->fd_local,
+				&sfd->buffer_size, &sfd->dmabuf_info,
+				read_modifier);
+		if (!sfd->dmabuf_bo) {
+			return sfd;
 		}
 		// to be created on first transfer
 		sfd->mem_mirror = NULL;

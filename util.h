@@ -628,12 +628,13 @@ const char *fdcat_to_str(fdcat_t cat);
 /** Given a local file descriptor, type hint, and already computed size,
  * produce matching global id, and register it into the translation map if
  * not already done. The function can also be provided with optional extra
- * information (*info).
+ * information (*info). If `read_modifier` is true, then the modifier for
+ * a DMABUF should be automatically detected.
  */
 struct dmabuf_slice_data;
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, fdcat_t type, size_t sz,
-		const struct dmabuf_slice_data *info);
+		const struct dmabuf_slice_data *info, bool read_modifier);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct thread_pool *threads, struct shadow_fd *cur,
@@ -760,7 +761,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		const struct dmabuf_slice_data *info);
 int export_dmabuf(struct gbm_bo *bo);
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		const struct dmabuf_slice_data *info);
+		struct dmabuf_slice_data *info, bool read_modifier);
 void destroy_dmabuf(struct gbm_bo *bo);
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle);
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
