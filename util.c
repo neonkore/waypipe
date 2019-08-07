@@ -301,3 +301,15 @@ bool transfer_zeropad(
 {
 	return transfer_add(transfers, size, transfers->zeros, msgno);
 }
+
+void cleanup_transfers(struct transfer_data *td)
+{
+	pthread_mutex_destroy(&td->lock);
+	for (int i = 0; i < td->end; i++) {
+		if (td->data[i].iov_base != &td->zeros) {
+			free(td->data[i].iov_base);
+		}
+	}
+	free(td->data);
+	free(td->msgno);
+}

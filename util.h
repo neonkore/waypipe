@@ -196,10 +196,11 @@ struct thread_pool {
 
 	int queue_start, queue_end, queue_size;
 	struct task_data *queue;
-	// TODO: distinct queues for wayland->channel and channel->wayland
+	// TODO: distinct queues for wayland->channel and channel->wayland,
+	// to make multithreaded decompression possible
 	int queue_in_progress;
 
-	// to wake to main loop
+	// to wake the main loop
 	int selfpipe_r, selfpipe_w;
 };
 
@@ -225,7 +226,7 @@ struct task_data {
 	enum task_type type;
 
 	struct shadow_fd *sfd;
-	struct fd_translation_map *map;
+	//	struct fd_translation_map *map;
 	/* For block compression option */
 	int zone_start, zone_end;
 	/* For diff compression option */
@@ -603,6 +604,7 @@ bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 		uint32_t msgno);
 bool transfer_zeropad(
 		struct transfer_data *transfers, size_t size, uint32_t msgno);
+void cleanup_transfers(struct transfer_data *transfers);
 
 /* chanfd: connected socket to channel
  * progfd: connected socket to Wayland program
@@ -634,11 +636,12 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		const struct dmabuf_slice_data *info);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
-void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
-		struct shadow_fd *cur, struct transfer_data *transfers);
+void collect_update(struct thread_pool *threads, struct shadow_fd *cur,
+		struct transfer_data *transfers);
 /** After all thread pool tasks have completed, reduce refcounts and clean up
- * related data */
-void finish_update(struct fd_translation_map *map, struct shadow_fd *sfd);
+ * related data. The caller should then invoke destroy_shadow_if_unreferenced.
+ */
+void finish_update(struct shadow_fd *sfd);
 /** Apply a data update message to an element in the translation map, creating
  * an entry when there is none */
 void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
@@ -678,6 +681,10 @@ bool shadow_decref_transfer(struct fd_translation_map *map, struct shadow_fd *);
  * owned. For convenience, returns the passed-in structure. */
 struct shadow_fd *shadow_incref_protocol(struct shadow_fd *);
 struct shadow_fd *shadow_incref_transfer(struct shadow_fd *);
+/** If the shadow structure has no references, destroy it and remove it from the
+ * map */
+bool destroy_shadow_if_unreferenced(
+		struct fd_translation_map *map, struct shadow_fd *sfd);
 /** Decrease reference count for all objects in the given list, deleting
  * iff they are owned by protocol objects and have refcount zero */
 void decref_transferred_fds(
@@ -690,6 +697,11 @@ void decref_transferred_rids(
 void extend_shm_shadow(struct fd_translation_map *map,
 		struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size);
+
+/* Return true if there is a work task (not a stop task) remaining for the
+ * main thread to work on; also set *is_done if all tasks have completed. */
+bool request_work_task(struct thread_pool *pool, struct task_data *task,
+		bool *is_done);
 void run_task(struct task_data *task, struct thread_data *local);
 
 size_t compress_bufsize(struct thread_pool *pool, size_t max_input);

@@ -164,7 +164,7 @@ void cleanup_translation_map(struct fd_translation_map *map)
 		destroy_unlinked_sfd(map, tmp);
 	}
 }
-static bool destroy_shadow_if_unreferenced(
+bool destroy_shadow_if_unreferenced(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
 	if (sfd->refcount_protocol == 0 && sfd->refcount_transfer == 0 &&
@@ -781,9 +781,8 @@ end:
 
 /* Optionally compress the data in mem_mirror, and set up the initial
  * transfer blocks */
-static void queue_fill_transfers(struct fd_translation_map *map,
-		struct thread_pool *threads, struct shadow_fd *sfd,
-		struct transfer_data *transfers)
+static void queue_fill_transfers(struct thread_pool *threads,
+		struct shadow_fd *sfd, struct transfer_data *transfers)
 {
 	// new transfer, we send file contents verbatim
 	const int chunksize = 262144;
@@ -807,7 +806,6 @@ static void queue_fill_transfers(struct fd_translation_map *map,
 		struct task_data task;
 		task.type = TASK_COMPRESS_BLOCK;
 		task.sfd = sfd;
-		task.map = map;
 		task.transfers = transfers;
 
 		int range = (region_end - region_start);
@@ -822,9 +820,8 @@ static void queue_fill_transfers(struct fd_translation_map *map,
 	pthread_cond_broadcast(&threads->work_cond);
 }
 
-static void queue_diff_transfers(struct fd_translation_map *map,
-		struct thread_pool *threads, struct shadow_fd *sfd,
-		struct transfer_data *transfers)
+static void queue_diff_transfers(struct thread_pool *threads,
+		struct shadow_fd *sfd, struct transfer_data *transfers)
 {
 	const int chunksize = 262144;
 	if (!sfd->damage.damage) {
@@ -911,7 +908,6 @@ static void queue_diff_transfers(struct fd_translation_map *map,
 		struct task_data task;
 		task.type = TASK_COMPRESS_DIFF;
 		task.sfd = sfd;
-		task.map = map;
 		task.transfers = transfers;
 
 		task.damage_len = offsets[i + 1] - offsets[i];
@@ -964,7 +960,7 @@ static void add_file_create_request(
 	pthread_mutex_unlock(&transfers->lock);
 }
 
-void finish_update(struct fd_translation_map *map, struct shadow_fd *sfd)
+void finish_update(struct shadow_fd *sfd)
 {
 	if (!sfd->refcount_compute) {
 		return;
@@ -980,11 +976,10 @@ void finish_update(struct fd_translation_map *map, struct shadow_fd *sfd)
 		sfd->damage_task_interval_store = NULL;
 	}
 	sfd->refcount_compute = false;
-	destroy_shadow_if_unreferenced(map, sfd);
 }
 
-void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
-		struct shadow_fd *sfd, struct transfer_data *transfers)
+void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
+		struct transfer_data *transfers)
 {
 	if (sfd->type == FDC_FILE) {
 		if (!sfd->is_dirty) {
@@ -1009,7 +1004,7 @@ void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
 			sfd->remote_bufsize = 0;
 
 			add_file_create_request(transfers, sfd);
-			queue_fill_transfers(map, threads, sfd, transfers);
+			queue_fill_transfers(threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
 			return;
 		}
@@ -1032,11 +1027,11 @@ void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
 					sfd->mem_local + sfd->remote_bufsize,
 					sfd->buffer_size - sfd->remote_bufsize);
 
-			queue_fill_transfers(map, threads, sfd, transfers);
+			queue_fill_transfers(threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
 		}
 
-		queue_diff_transfers(map, threads, sfd, transfers);
+		queue_diff_transfers(threads, sfd, transfers);
 	} else if (sfd->type == FDC_DMABUF) {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
@@ -1071,11 +1066,11 @@ void collect_update(struct fd_translation_map *map, struct thread_pool *threads,
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
 
-			queue_fill_transfers(map, threads, sfd, transfers);
+			queue_fill_transfers(threads, sfd, transfers);
 		} else {
 			damage_everything(&sfd->damage);
 
-			queue_diff_transfers(map, threads, sfd, transfers);
+			queue_diff_transfers(threads, sfd, transfers);
 		}
 		/* Unmapping will be handled by finish_update() */
 
@@ -1835,6 +1830,26 @@ void run_task(struct task_data *task, struct thread_data *local)
 	} else if (task->type == TASK_COMPRESS_DIFF) {
 		worker_run_compress_diff(task, local);
 	}
+}
+
+bool request_work_task(
+		struct thread_pool *pool, struct task_data *task, bool *is_done)
+{
+	pthread_mutex_lock(&pool->work_mutex);
+	*is_done = pool->queue_end == pool->queue_start &&
+		   pool->queue_in_progress == 0;
+	bool has_task = false;
+	if (pool->queue_start < pool->queue_end) {
+		int i = pool->queue_start;
+		if (pool->queue[i].type != TASK_STOP) {
+			*task = pool->queue[i];
+			has_task = true;
+			pool->queue_start++;
+			pool->queue_in_progress++;
+		}
+	}
+	pthread_mutex_unlock(&pool->work_mutex);
+	return has_task;
 }
 
 static void *worker_thread_main(void *arg)

@@ -185,18 +185,6 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 	return pass;
 }
 
-static void cleanup_transfer(struct transfer_data *td)
-{
-	pthread_mutex_destroy(&td->lock);
-	for (int i = td->start; i < td->end; i++) {
-		if (td->data[i].iov_base != &td->zeros) {
-			free(td->data[i].iov_base);
-		}
-	}
-	free(td->data);
-	free(td->msgno);
-}
-
 static void wait_for_thread_pool(struct thread_pool *pool)
 {
 	bool done = false;
@@ -207,21 +195,9 @@ static void wait_for_thread_pool(struct thread_pool *pool)
 		/* Also run tasks on main thread, just like the real version */
 		// TODO: create a 'threadpool.c'
 		struct task_data task;
-		task.type = TASK_STOP;
-		pthread_mutex_lock(&pool->work_mutex);
-		done = pool->queue_end == pool->queue_start &&
-		       pool->queue_in_progress == 0;
-		if (pool->queue_start < pool->queue_end) {
-			int i = pool->queue_start;
-			if (pool->queue[i].type != TASK_STOP) {
-				task = pool->queue[i];
-				pool->queue_start++;
-				pool->queue_in_progress++;
-			}
-		}
-		pthread_mutex_unlock(&pool->work_mutex);
+		bool has_task = request_work_task(pool, &task, &done);
 
-		if (task.type != TASK_STOP) {
+		if (has_task) {
 			run_task(&task, &pool->threads[0]);
 
 			pthread_mutex_lock(&pool->work_mutex);
@@ -245,16 +221,16 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	pthread_mutex_init(&transfer_data.lock, NULL);
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
-	collect_update(src_map, src_pool, src_shadow, &transfer_data);
+	collect_update(src_pool, src_shadow, &transfer_data);
 	wait_for_thread_pool(src_pool);
-	finish_update(src_map, src_shadow);
+	finish_update(src_shadow);
 
 	if (ndiff == 0) {
 		long ns = 0;
 		for (int i = transfer_data.start; i < transfer_data.end; i++) {
 			ns += transfer_data.data[i].iov_len;
 		}
-		cleanup_transfer(&transfer_data);
+		cleanup_transfers(&transfer_data);
 		if (transfer_data.end > 0) {
 			wp_error("Collecting updates gave a transfer (%ld bytes, %d blocks) when none was expected",
 					ns, transfer_data.end);
@@ -265,11 +241,11 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	if (transfer_data.end == 0) {
 		wp_error("Collecting updates gave a unexpected number (%d) of transfers",
 				transfer_data.end);
-		cleanup_transfer(&transfer_data);
+		cleanup_transfers(&transfer_data);
 		return false;
 	}
 	struct bytebuf res = combine_transfer_blocks(&transfer_data);
-	cleanup_transfer(&transfer_data);
+	cleanup_transfers(&transfer_data);
 
 	size_t start = 0;
 	while (start < res.size) {

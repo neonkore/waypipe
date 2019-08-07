@@ -718,22 +718,10 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 	bool is_done = false;
 	struct task_data task;
-	task.type = TASK_STOP;
-	pthread_mutex_lock(&g->threads.work_mutex);
-	is_done = g->threads.queue_end == g->threads.queue_start &&
-		  g->threads.queue_in_progress == 0;
-	if (g->threads.queue_start < g->threads.queue_end) {
-		int i = g->threads.queue_start;
-		if (g->threads.queue[i].type != TASK_STOP) {
-			task = g->threads.queue[i];
-			g->threads.queue_start++;
-			g->threads.queue_in_progress++;
-		}
-	}
-	pthread_mutex_unlock(&g->threads.work_mutex);
+	bool has_task = request_work_task(&g->threads, &task, &is_done);
 
 	/* Run a task ourselves, making use of the main thread */
-	if (task.type != TASK_STOP) {
+	if (has_task) {
 		run_task(&task, &g->threads.threads[0]);
 
 		pthread_mutex_lock(&g->threads.work_mutex);
@@ -765,7 +753,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 				cur = nxt) {
 			/* Note: finish_update() may delete `cur` */
 			nxt = cur->next;
-			finish_update(&g->map, cur);
+			finish_update(cur);
+			destroy_shadow_if_unreferenced(&g->map, cur);
 		}
 		/* Reset work queue */
 		pthread_mutex_lock(&g->threads.work_mutex);
@@ -879,7 +868,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	}
 
 	for (struct shadow_fd *cur = g->map.list; cur; cur = cur->next) {
-		collect_update(&g->map, &g->threads, cur, &wmsg->transfers);
+		collect_update(&g->threads, cur, &wmsg->transfers);
 	}
 
 	if (rc > 0) {
@@ -1347,15 +1336,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	free(way_msg.fds.data);
 	free(way_msg.rbuffer);
 	free(way_msg.dbuffer_edited);
-	pthread_mutex_destroy(&way_msg.transfers.lock);
-	for (int i = 0; i < way_msg.transfers.end; i++) {
-		if (way_msg.transfers.data[i].iov_base !=
-				way_msg.transfers.zeros) {
-			free(way_msg.transfers.data[i].iov_base);
-		}
-	}
-	free(way_msg.transfers.msgno);
-	free(way_msg.transfers.data);
+	cleanup_transfers(&way_msg.transfers);
 	for (int i = 0; i < way_msg.ntrailing; i++) {
 		free(way_msg.trailing[i].iov_base);
 	}

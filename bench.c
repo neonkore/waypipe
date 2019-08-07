@@ -53,12 +53,9 @@ static const struct compression_range comp_ranges[] = {
 #endif
 };
 
-#define MAX_ALIGNMENT 64
-
 static void *create_text_like_image(size_t size)
 {
-	uint8_t *data = aligned_alloc(
-			MAX_ALIGNMENT, alignu(size, MAX_ALIGNMENT));
+	uint8_t *data = malloc(size);
 	int step = 0;
 	for (size_t i = 0; i < size; i++) {
 		step = i / 203 - i / 501;
@@ -72,8 +69,7 @@ static void *create_text_like_image(size_t size)
 }
 static void *create_video_like_image(size_t size)
 {
-	uint8_t *data = aligned_alloc(
-			MAX_ALIGNMENT, alignu(size, MAX_ALIGNMENT));
+	uint8_t *data = malloc(size);
 	for (size_t i = 0; i < size; i++) {
 		/* primary sequence, with runs, but avoiding obvious repetition
 		 */
@@ -133,7 +129,229 @@ static int compare_bench_result(const void *a, const void *b)
 	return 0;
 }
 
+struct diff_comp_results {
+	/* Compressed packet size, in bytes */
+	float packet_size;
+	/* Time to construct compressed diff, in seconds */
+	float diffcomp_time;
+	/* Diff size / buffer size */
+	float diff_frac;
+	/* Compressed size / original size */
+	float comp_frac;
+};
+
+static int compare_timespec(const struct timespec *a, const struct timespec *b)
+{
+	if (a->tv_sec != b->tv_sec)
+		return a->tv_sec < b->tv_sec ? -1 : 1;
+	if (a->tv_nsec != b->tv_nsec)
+		return a->tv_nsec < b->tv_nsec ? -1 : 1;
+	return 0;
+}
+
 #define NSAMPLES 5
+
+static struct bench_result run_sub_bench(bool first,
+		const struct compression_range *rng, int level,
+		float bandwidth_mBps, int n_worker_threads, unsigned int seed,
+		bool text_like, size_t test_size, void *image)
+{
+	/* Reset seed, so that all random image
+	 * perturbations are consistent between runs */
+	srand(seed);
+
+	/* Setup a shadow structure */
+	struct thread_pool pool;
+	setup_thread_pool(&pool, rng->mode, level, n_worker_threads);
+	if (first) {
+		printf("Running compression level benchmarks, assuming bandwidth=%g MB/s, with %d threads\n",
+				bandwidth_mBps, pool.nthreads);
+	}
+
+	struct fd_translation_map map;
+	setup_translation_map(&map, false);
+
+	struct wmsg_open_file file_msg;
+	file_msg.remote_id = 0;
+	file_msg.file_size = test_size;
+	file_msg.size_and_type = transfer_header(
+			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
+
+	struct render_data render;
+	memset(&render, 0, sizeof(render));
+	render.disabled = true;
+	render.drm_fd = 1;
+	render.av_disabled = true;
+
+	struct bytebuf msg = {.size = sizeof(sizeof(struct wmsg_open_file)),
+			.data = (char *)&file_msg};
+	apply_update(&map, &pool, &render, WMSG_OPEN_FILE, 0, &msg);
+	struct shadow_fd *sfd = get_shadow_for_rid(&map, 0);
+
+	int iter = 0;
+	float samples[NSAMPLES];
+	float diff_frac[NSAMPLES], comp_frac[NSAMPLES];
+	for (; !shutdown_flag && iter < NSAMPLES; iter++) {
+
+		/* Reset image state */
+		memcpy(sfd->mem_local, image, test_size);
+		memcpy(sfd->mem_mirror, image, test_size);
+		perturb(sfd->mem_local, test_size);
+		sfd->is_dirty = true;
+		damage_everything(&sfd->damage);
+
+		/* Create transfer queue */
+		struct transfer_data transfer_data;
+		memset(&transfer_data, 0, sizeof(struct transfer_data));
+		pthread_mutex_init(&transfer_data.lock, NULL);
+
+		struct timespec t0, t1;
+		clock_gettime(CLOCK_REALTIME, &t0);
+		collect_update(&pool, sfd, &transfer_data);
+
+		/* A restricted main loop, in which transfer blocks are
+		 * instantaneously consumed when previous blocks have been
+		 * 'sent' */
+		struct timespec next_write_time = {.tv_sec = 0, .tv_nsec = 0};
+		size_t total_wire_size = 0;
+		size_t net_diff_size = 0;
+		while (1) {
+			uint8_t flush[64];
+			(void)read(pool.selfpipe_r, flush, sizeof(flush));
+
+			/* Run tasks on main thread, just like the main loop */
+			bool done = false;
+			struct task_data task;
+			bool has_task = request_work_task(&pool, &task, &done);
+			if (has_task) {
+				run_task(&task, &pool.threads[0]);
+
+				pthread_mutex_lock(&pool.work_mutex);
+				pool.queue_in_progress--;
+				pthread_mutex_unlock(&pool.work_mutex);
+			}
+
+			struct timespec cur_time;
+			clock_gettime(CLOCK_REALTIME, &cur_time);
+			if (compare_timespec(&next_write_time, &cur_time) < 0) {
+				pthread_mutex_lock(&transfer_data.lock);
+				if (transfer_data.end != transfer_data.start) {
+					struct iovec v =
+							transfer_data.data
+									[transfer_data.start++];
+					float delay_s = v.iov_len /
+							(bandwidth_mBps * 1e6);
+					total_wire_size += v.iov_len;
+					/* Only one message type will be
+					 * produced for diffs */
+					struct wmsg_buffer_diff *header =
+							v.iov_base;
+					net_diff_size += (size_t)(
+							header->diff_size +
+							header->ntrailing);
+
+					/* Advance timer for next receipt */
+					int64_t delay_ns = (int64_t)(
+							delay_s * 1000000000LL);
+					next_write_time.tv_sec =
+							cur_time.tv_sec +
+							delay_ns / 1000000000LL;
+					next_write_time.tv_nsec =
+							cur_time.tv_nsec +
+							delay_ns % 1000000000LL;
+					if (next_write_time.tv_nsec >
+							1000000000LL) {
+						next_write_time.tv_nsec -=
+								1000000000LL;
+						next_write_time.tv_sec++;
+					}
+				}
+				pthread_mutex_unlock(&transfer_data.lock);
+			} else {
+				/* Very short delay, for poll loop */
+				bool tasks_remaining = false;
+				pthread_mutex_lock(&pool.work_mutex);
+				tasks_remaining = pool.queue_end >
+						  pool.queue_start;
+				pthread_mutex_unlock(&pool.work_mutex);
+
+				struct timespec delay_time;
+				delay_time.tv_sec = 0;
+				delay_time.tv_nsec = 10000;
+				if (!tasks_remaining) {
+					int64_t nsecs_left =
+							(next_write_time.tv_sec -
+									cur_time.tv_sec) *
+									1000000000LL +
+							(next_write_time.tv_nsec -
+									cur_time.tv_nsec);
+					if (nsecs_left > 1000000000LL) {
+						nsecs_left = 1000000000LL;
+					}
+					if (nsecs_left > delay_time.tv_nsec) {
+						delay_time.tv_nsec = nsecs_left;
+					}
+				}
+				nanosleep(&delay_time, NULL);
+			}
+			bool all_sent = false;
+			pthread_mutex_lock(&transfer_data.lock);
+			all_sent = transfer_data.start == transfer_data.end;
+			pthread_mutex_unlock(&transfer_data.lock);
+
+			if (done && all_sent) {
+				break;
+			}
+		}
+
+		finish_update(sfd);
+		cleanup_transfers(&transfer_data);
+		clock_gettime(CLOCK_REALTIME, &t1);
+
+		struct diff_comp_results r;
+		r.packet_size = (float)total_wire_size;
+		r.diffcomp_time = 1.0f * (t1.tv_sec - t0.tv_sec) +
+				  1e-9f * (t1.tv_nsec - t0.tv_nsec);
+		r.comp_frac = r.packet_size / net_diff_size;
+		r.diff_frac = net_diff_size / (float)test_size;
+
+		float transfer_time = r.packet_size / (bandwidth_mBps * 1e6f);
+
+		int nthreads = pool.nthreads;
+		double net_time = transfer_time + r.diffcomp_time / nthreads;
+
+		samples[iter] = net_time;
+		diff_frac[iter] = r.diff_frac;
+		comp_frac[iter] = r.comp_frac;
+	}
+
+	/* Cleanup sfd and helper structures */
+	cleanup_thread_pool(&pool);
+	cleanup_translation_map(&map);
+
+	qsort(samples, (size_t)iter, sizeof(float), float_compare);
+	qsort(diff_frac, (size_t)iter, sizeof(float), float_compare);
+	qsort(comp_frac, (size_t)iter, sizeof(float), float_compare);
+	/* Using order statistics, because moment statistics a) require
+	 * libm; b) don't work well with outliers. */
+	float median = samples[iter / 2];
+	float hiqr = (samples[(iter * 3) / 4] - samples[iter / 4]) / 2;
+	float dmedian = diff_frac[iter / 2];
+	float dhiqr = (diff_frac[(iter * 3) / 4] - diff_frac[iter / 4]) / 2;
+	float cmedian = comp_frac[iter / 2];
+	float chiqr = (comp_frac[(iter * 3) / 4] - comp_frac[iter / 4]) / 2;
+
+	struct bench_result res;
+	res.rng = rng;
+	res.level = level;
+	printf("%s, %s=%d: transfer %f+/-%f sec, diff %f+/-%f, comp %f+/-%f\n",
+			text_like ? "txt" : "img", rng->desc, level, median,
+			hiqr, dmedian, dhiqr, cmedian, chiqr);
+
+	res.comp_time = median;
+	res.dcomp_time = hiqr;
+	return res;
+}
 
 int run_bench(float bandwidth_mBps, int n_worker_threads)
 {
@@ -144,7 +362,6 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 
 	srand((unsigned int)tp.tv_nsec);
 	size_t test_size = (1u << 22) + 13;
-	size_t alloc_size = alignu(test_size, MAX_ALIGNMENT);
 	void *text_image = create_text_like_image(test_size);
 	void *vid_image = create_video_like_image(test_size);
 
@@ -155,11 +372,6 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 			c++) {
 		ntests += comp_ranges[c].max_val - comp_ranges[c].min_val + 1;
 	}
-
-	void *base = aligned_alloc(MAX_ALIGNMENT, alloc_size);
-	void *mod = aligned_alloc(MAX_ALIGNMENT, alloc_size);
-	size_t max_diff_size = alignu(alloc_size + 8, MAX_ALIGNMENT);
-	void *diff = aligned_alloc(MAX_ALIGNMENT, max_diff_size);
 
 	/* For the content, the mode is generally consistent */
 
@@ -183,131 +395,14 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 					lvl <= comp_ranges[c].max_val;
 					lvl++) {
 
-				/* Reset seed, so that all random image
-				 * perturbations are consistent between runs */
-				srand((unsigned int)tp.tv_nsec);
-
-				struct thread_pool pool;
-				setup_thread_pool(&pool, comp_ranges[c].mode,
-						lvl, n_worker_threads);
-				if (j == 0) {
-
-					printf("Running compression level benchmarks, assuming bandwidth=%g MB/s, %d hardware threads\n",
-							bandwidth_mBps,
-							pool.nthreads);
-				}
-
-				size_t comp_size = compress_bufsize(
-						&pool, max_diff_size);
-				void *comp = malloc(comp_size);
-
-				int alignment;
-				interval_diff_fn_t diff_fn =
-						get_fastest_diff_function(
-								DIFF_FASTEST,
-								&alignment);
-
-				struct interval damage;
-				damage.start = 0;
-				damage.end = test_size - test_size % alignment;
-
-				int iter = 0;
-				float samples[NSAMPLES];
-				float diff_frac[NSAMPLES], comp_frac[NSAMPLES];
-				for (; !shutdown_flag && iter < NSAMPLES;
-						iter++) {
-					memcpy(base,
-							text_like ? text_image
-								  : vid_image,
-							test_size);
-					memcpy(mod,
-							text_like ? text_image
-								  : vid_image,
-							test_size);
-					perturb(mod, test_size);
-
-					struct timespec t0, t2;
-					clock_gettime(CLOCK_MONOTONIC, &t0);
-					int diffsize = 0;
-					if (damage.start < damage.end) {
-						diffsize = construct_diff_core(
-								diff_fn,
-								&damage, 1,
-								base, mod,
-								diff);
-					}
-					int ntrailing = ntrailing = construct_diff_trailing(
-							test_size, alignment,
-							base, mod,
-							(char *)diff + diffsize);
-					struct bytebuf dst;
-					compress_buffer(&pool,
-							&pool.threads[0].comp_ctx,
-							diffsize + ntrailing,
-							diff, comp_size, comp,
-							&dst);
-					clock_gettime(CLOCK_MONOTONIC, &t2);
-
-					float packet_size = (float)dst.size;
-					float diffcomp_time =
-							1.0f * (t2.tv_sec - t0.tv_sec) +
-							1e-9f * (t2.tv_nsec - t0.tv_nsec);
-					float transfer_time =
-							packet_size /
-							(bandwidth_mBps * 1e6f);
-
-					int nthreads = pool.nthreads;
-					double net_time =
-							transfer_time +
-							diffcomp_time / nthreads;
-
-					samples[iter] = net_time;
-					diff_frac[iter] =
-							(diffsize + ntrailing) /
-							(float)test_size;
-					comp_frac[iter] =
-							packet_size /
-							(diffsize + ntrailing);
-				}
-				qsort(samples, (size_t)iter, sizeof(float),
-						float_compare);
-				qsort(diff_frac, (size_t)iter, sizeof(float),
-						float_compare);
-				qsort(comp_frac, (size_t)iter, sizeof(float),
-						float_compare);
-				/* Using order statistics, because moment
-				 * statistics a) require libm; b) don't work
-				 * well with outliers.  */
-				float median = samples[iter / 2];
-				float hiqr = (samples[(iter * 3) / 4] -
-							     samples[iter / 4]) /
-					     2;
-				float dmedian = diff_frac[iter / 2];
-				float dhiqr = (diff_frac[(iter * 3) / 4] -
-							      diff_frac[iter /
-									      4]) /
-					      2;
-				float cmedian = comp_frac[iter / 2];
-				float chiqr = (comp_frac[(iter * 3) / 4] -
-							      comp_frac[iter /
-									      4]) /
-					      2;
-
-				free(comp);
-				cleanup_thread_pool(&pool);
-
-				struct bench_result res;
-				res.rng = &comp_ranges[c];
-				res.level = lvl;
-				printf("%s, %s=%d: transfer %f+/-%f sec, diff %f+/-%f, comp %f+/-%f\n",
-						text_like ? "txt" : "img",
-						comp_ranges[c].desc, lvl,
-						median, hiqr, dmedian, dhiqr,
-						cmedian, chiqr);
-
-				res.comp_time = median;
-				res.dcomp_time = hiqr;
-
+				struct bench_result res = run_sub_bench(j == 0,
+						&comp_ranges[c], lvl,
+						bandwidth_mBps,
+						n_worker_threads,
+						(unsigned int)tp.tv_nsec,
+						text_like, test_size,
+						text_like ? text_image
+							  : vid_image);
 				results[j++] = res;
 				(*nresults)++;
 			}
@@ -335,9 +430,6 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 	free(tresults);
 	free(iresults);
 
-	free(mod);
-	free(base);
-	free(diff);
 	free(vid_image);
 	free(text_image);
 	return EXIT_SUCCESS;
