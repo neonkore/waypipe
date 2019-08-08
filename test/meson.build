@@ -22,7 +22,7 @@ test_mirror = executable(
 	dependencies: [libgbm]
 )
 # disable leak checking, because library code is often responsible
-test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 10)
+test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 40)
 test_fnlist = files('test_fnlist.txt')
 testproto_src = custom_target(
 	'test-proto code',
