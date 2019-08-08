@@ -65,7 +65,7 @@ for k, v in list(sub_tests.items()):
     else:
         del sub_tests[k]
 
-xdg_runtime_dir = os.path.abspath("./test/")
+xdg_runtime_dir = os.path.abspath("./run/")
 
 
 # weston does not currently appear to support setting absolute socket paths

@@ -22,7 +22,7 @@ ld_library_path = (
     os.environ["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in os.environ else ""
 )
 
-xdg_runtime_dir = os.path.abspath("./test/")
+xdg_runtime_dir = os.path.abspath("./run/")
 os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
 os.chmod(xdg_runtime_dir, 0o700)
 

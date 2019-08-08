@@ -1,7 +1,7 @@
 
 # todo: make function list dependency explicit
 
-gen_path = join_paths(meson.current_source_dir(), 'symgen.py')
+symgen_path = join_paths(meson.current_source_dir(), 'symgen.py')
 fn_list = join_paths(meson.current_source_dir(), 'function_list.txt')
 
 wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
@@ -34,13 +34,13 @@ foreach xml : protocols
 		'@0@ code'.format(xml.underscorify()),
 		output: '@BASENAME@-data.c',
 		input: xml,
-		command: [python3, gen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
+		command: [python3, symgen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 	protocols_headers += custom_target(
 		'@0@ client-header'.format(xml.underscorify()),
 		output: '@BASENAME@-defs.h',
 		input: xml,
-		command: [python3, gen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
+		command: [python3, symgen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 endforeach
 

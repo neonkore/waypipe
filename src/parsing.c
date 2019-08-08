@@ -25,10 +25,10 @@
 
 #include "util.h"
 
-#include <protocols/symgen_types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <symgen_types.h>
 
 static const char *get_type_name(struct wp_object *obj)
 {
