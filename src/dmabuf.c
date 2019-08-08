@@ -24,6 +24,7 @@
  */
 
 #define _XOPEN_SOURCE 700
+#include "dmabuf.h"
 #include "util.h"
 
 #ifndef HAS_DMABUF
@@ -158,7 +159,6 @@ void cleanup_render_data(struct render_data *data)
 		data->dev = NULL;
 		data->drm_fd = -1;
 	}
-	cleanup_hwcontext(data);
 }
 
 static ssize_t get_dmabuf_fd_size(int fd)

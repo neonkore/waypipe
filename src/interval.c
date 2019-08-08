@@ -24,7 +24,7 @@
  */
 
 #define _XOPEN_SOURCE 700
-#include "util.h"
+#include "shadow.h"
 
 #include <stdlib.h>
 #include <string.h>

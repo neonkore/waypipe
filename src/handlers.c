@@ -24,7 +24,10 @@
  */
 
 #define _XOPEN_SOURCE 700
-#include "util.h"
+
+#include "main.h"
+#include "parsing.h"
+#include "shadow.h"
 
 #include <errno.h>
 #include <stdlib.h>

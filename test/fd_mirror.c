@@ -24,7 +24,7 @@
  */
 
 #define _GNU_SOURCE
-#include "util.h"
+#include "shadow.h"
 
 #include <errno.h>
 #include <fcntl.h>

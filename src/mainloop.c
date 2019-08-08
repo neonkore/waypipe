@@ -28,7 +28,7 @@
 #define _XOPEN_SOURCE 700
 #endif
 
-#include "util.h"
+#include "main.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1336,6 +1336,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	cleanup_message_tracker(&g.map, &g.tracker);
 	cleanup_translation_map(&g.map);
 	cleanup_render_data(&g.render);
+	cleanup_hwcontext(&g.render);
 	free(way_msg.dbuffer);
 	free(way_msg.fds.data);
 	free(way_msg.rbuffer);

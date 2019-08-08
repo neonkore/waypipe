@@ -23,6 +23,7 @@
  * SOFTWARE.
  */
 
+#include "parsing.h"
 #include "util.h"
 
 #include <errno.h>
@@ -109,20 +110,17 @@ int main(int argc, char **argv)
 	listset_remove(&mt.objects, old_display);
 	destroy_wp_object(NULL, old_display);
 
-	struct fd_translation_map map;
-	setup_translation_map(&map, false);
-
 	struct wp_object xobj;
 	xobj.type = &intf_xtype;
 	xobj.is_zombie = false;
 	xobj.obj_id = 991;
-	listset_insert(&map, &mt.objects, &xobj);
+	listset_insert(NULL, &mt.objects, &xobj);
 
 	struct wp_object yobj;
 	yobj.type = &intf_ytype;
 	yobj.is_zombie = false;
 	yobj.obj_id = 992;
-	listset_insert(&map, &mt.objects, &yobj);
+	listset_insert(NULL, &mt.objects, &yobj);
 
 	struct context ctx = {.obj = &xobj, .g = NULL};
 
@@ -192,8 +190,7 @@ int main(int argc, char **argv)
 
 	listset_remove(&mt.objects, &xobj);
 	listset_remove(&mt.objects, &yobj);
-	cleanup_message_tracker(&map, &mt);
-	cleanup_translation_map(&map);
+	cleanup_message_tracker(NULL, &mt);
 
 	printf("Net result: %s\n", all_success ? "pass" : "FAIL");
 	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;

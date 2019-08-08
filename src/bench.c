@@ -27,6 +27,7 @@
 /* aligned_alloc isn't part of any X/Open version */
 #define _XOPEN_SOURCE 700
 #endif
+#include "shadow.h"
 #include "util.h"
 
 #include <fcntl.h>

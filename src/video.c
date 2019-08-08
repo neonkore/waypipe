@@ -25,7 +25,7 @@
 
 #define _XOPEN_SOURCE 700
 
-#include "util.h"
+#include "shadow.h"
 
 #if !defined(HAS_VIDEO) || !defined(HAS_DMABUF)
 

@@ -28,7 +28,7 @@
 #define _XOPEN_SOURCE 700
 #endif
 
-#include "util.h"
+#include "shadow.h"
 
 #include <errno.h>
 #include <fcntl.h>

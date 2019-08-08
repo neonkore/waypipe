@@ -23,6 +23,8 @@
  * SOFTWARE.
  */
 
+#include "parsing.h"
+#include "main.h"
 #include "util.h"
 
 #include <stdio.h>

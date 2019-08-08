@@ -25,7 +25,7 @@
 
 #define _XOPEN_SOURCE 700
 
-#include "util.h"
+#include "main.h"
 
 #include <fcntl.h>
 #include <getopt.h>
@@ -39,14 +39,6 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
-
-int run_server(const char *socket_path, const char *display_path,
-		const char *control_path, const struct main_config *config,
-		bool oneshot, bool unlink_at_end, const char *application,
-		char *const app_argv[]);
-int run_client(const char *socket_path, const struct main_config *config,
-		bool oneshot, bool via_socket, pid_t eol_pid);
-int run_bench(float bandwidth_mBps, int n_worker_threads);
 
 enum waypipe_mode {
 	MODE_FAIL = 0x0,
