@@ -22,8 +22,8 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef WAYPIPE_DAMAGE_H
-#define WAYPIPE_DAMAGE_H
+#ifndef WAYPIPE_INTERVAL_H
+#define WAYPIPE_INTERVAL_H
 
 #include <stdint.h>
 
@@ -87,4 +87,4 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		int *dst_count, struct interval **dst_list, int merge_margin,
 		int alignment_bits);
 
-#endif // WAYPIPE_DAMAGE_H
+#endif // WAYPIPE_INTERVAL_H

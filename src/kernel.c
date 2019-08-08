@@ -23,7 +23,7 @@
  * SOFTWARE.
  */
 
-#include "damage.h"
+#include "interval.h"
 #include "util.h"
 
 #include <inttypes.h>

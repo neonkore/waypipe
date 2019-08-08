@@ -30,8 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "damage.h"
 #include "dmabuf.h"
+#include "interval.h"
 #include "kernel.h"
 #include "util.h"
 
