@@ -87,9 +87,6 @@ static void destroy_unlinked_sfd(
 	if (sfd->type == FDC_FILE) {
 		munmap(sfd->mem_local, sfd->buffer_size);
 		free(sfd->mem_mirror);
-		if (sfd->file_shm_buf_name[0]) {
-			shm_unlink(sfd->file_shm_buf_name);
-		}
 	} else if (sfd->type == FDC_DMABUF || sfd->type == FDC_DMAVID_IR ||
 			sfd->type == FDC_DMAVID_IW) {
 		destroy_dmabuf(sfd->dmabuf_bo);
@@ -1209,20 +1206,25 @@ static void create_from_update(struct fd_translation_map *map,
 
 		// The PID should be unique during the lifetime of the
 		// program
-		sprintf(sfd->file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
+		char file_shm_buf_name[256];
+		sprintf(file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
 				sfd->remote_id);
 
-		sfd->fd_local = shm_open(sfd->file_shm_buf_name,
+		sfd->fd_local = shm_open(file_shm_buf_name,
 				O_RDWR | O_CREAT | O_TRUNC, 0644);
 		if (sfd->fd_local == -1) {
 			wp_error("Failed to create shm file for object %d: %s",
 					sfd->remote_id, strerror(errno));
 			return;
 		}
+		if (shm_unlink(file_shm_buf_name) == -1) {
+			wp_error("Failed to unlink new shm file for object %d: %s",
+					sfd->remote_id, strerror(errno));
+		}
 		if (ftruncate(sfd->fd_local, sfd->buffer_size) == -1) {
 			wp_error("Failed to resize shm file %s to size %zu for reason: %s",
-					sfd->file_shm_buf_name,
-					sfd->buffer_size, strerror(errno));
+					file_shm_buf_name, sfd->buffer_size,
+					strerror(errno));
 			return;
 		}
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,

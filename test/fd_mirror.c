@@ -350,8 +350,8 @@ int main(int argc, char **argv)
 
 	/* to avoid warnings when the driver dmabuf size constraints require
 	 * significant alignment, the width/height are already 64 aligned */
-	const size_t test_width = 256;
-	const size_t test_height = 320;
+	const size_t test_width = 1024;
+	const size_t test_height = 1280;
 	const size_t test_cpp = 2;
 	const size_t test_size = test_width * test_height * test_cpp;
 	const struct dmabuf_slice_data slice_data = {
@@ -385,14 +385,15 @@ int main(int argc, char **argv)
 			c++) {
 		for (int gt = 1; gt <= 5; gt++) {
 			for (int rt = 1; rt <= 5; rt++) {
-				int file_fd = open("test/file",
-						O_CREAT | O_RDWR | O_TRUNC,
+				int file_fd = shm_open("/waypipe-fd_mirror",
+						O_RDWR | O_CREAT | O_TRUNC,
 						0644);
 				if (file_fd == -1) {
 					wp_error("Failed to create test file: %s",
 							strerror(errno));
 					continue;
 				}
+				shm_unlink("/waypipe-fd_mirror");
 				if (write(file_fd, test_pattern, test_size) !=
 						(ssize_t)test_size) {
 					wp_error("Failed to write to test file: %s",

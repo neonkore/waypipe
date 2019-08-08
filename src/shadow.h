@@ -175,7 +175,6 @@ struct shadow_fd {
 
 	// File data
 	size_t remote_bufsize; // used to check for and send file extensions
-	char file_shm_buf_name[256];
 
 	// Pipe data
 	struct pipe_buffer pipe_send;
