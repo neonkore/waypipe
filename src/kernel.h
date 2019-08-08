@@ -44,8 +44,7 @@ enum diff_type {
 
 /** Returns a function pointer to a diff construction kernel, and indicates
  * the alignment of the data which is to be passed in */
-interval_diff_fn_t get_fastest_diff_function(
-		enum diff_type type, int *alignment);
+interval_diff_fn_t get_diff_function(enum diff_type type, int *alignment_bits);
 int construct_diff_core(interval_diff_fn_t idiff_fn,
 		const struct interval *__restrict__ damaged_intervals,
 		int n_intervals, char *__restrict__ base,

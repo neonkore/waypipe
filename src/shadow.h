@@ -69,7 +69,7 @@ struct thread_pool {
 	int compression_level;
 
 	interval_diff_fn_t diff_func;
-	int diff_func_alignment;
+	int diff_alignment_bits;
 
 	// Mutable state
 	pthread_mutex_t work_mutex;

@@ -140,39 +140,38 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		uint64_t *__restrict__ diff, int i);
 #endif
 
-interval_diff_fn_t get_fastest_diff_function(
-		enum diff_type type, int *alignment)
+interval_diff_fn_t get_diff_function(enum diff_type type, int *alignment_bits)
 {
 #ifdef HAVE_AVX512F
 	if ((type == DIFF_FASTEST || type == DIFF_AVX512F) &&
 			avx512f_available()) {
-		*alignment = 64;
+		*alignment_bits = 6;
 		return run_interval_diff_avx512f;
 	}
 #endif
 #ifdef HAVE_AVX2
 	if ((type == DIFF_FASTEST || type == DIFF_AVX2) && avx2_available()) {
-		*alignment = 64;
+		*alignment_bits = 6;
 		return run_interval_diff_avx2;
 	}
 #endif
 #ifdef HAVE_NEON
 	if ((type == DIFF_FASTEST || type == DIFF_NEON) && neon_available()) {
-		*alignment = 16;
+		*alignment_bits = 4;
 		return run_interval_diff_neon;
 	}
 #endif
 #ifdef HAVE_SSE41
 	if ((type == DIFF_FASTEST || type == DIFF_SSE41) && sse41_available()) {
-		*alignment = 32;
+		*alignment_bits = 5;
 		return run_interval_diff_sse41;
 	}
 #endif
 	if ((type == DIFF_FASTEST || type == DIFF_C)) {
-		*alignment = 8;
+		*alignment_bits = 3;
 		return run_interval_diff_C;
 	}
-	*alignment = 0;
+	*alignment_bits = 0;
 	return NULL;
 }
 
@@ -198,9 +197,11 @@ int construct_diff_core(interval_diff_fn_t idiff_fn,
 	}
 	return cursor * 8;
 }
-int construct_diff_trailing(int size, int alignment, char *__restrict__ base,
-		const char *__restrict__ changed, char *__restrict__ diff)
+int construct_diff_trailing(int size, int alignment_bits,
+		char *__restrict__ base, const char *__restrict__ changed,
+		char *__restrict__ diff)
 {
+	int alignment = 1 << alignment_bits;
 	int ntrailing = (int)size % alignment;
 	int offset = size - ntrailing;
 	bool tail_change = false;

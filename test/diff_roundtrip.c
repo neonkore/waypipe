@@ -100,7 +100,7 @@ static const char *diff_names[5] = {
 
 static bool run_subtest(int i, const struct subtest test, char *diff,
 		char *source, char *mirror, char *target1, char *target2,
-		interval_diff_fn_t diff_fn, int alignment,
+		interval_diff_fn_t diff_fn, int alignment_bits,
 		const char *diff_name)
 {
 	uint64_t ns01 = 0, ns12 = 0;
@@ -124,6 +124,7 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 			struct interval damage;
 			damage.start = (s * (int)test.size) / test.shards;
 			damage.end = ((s + 1) * (int)test.size) / test.shards;
+			int alignment = 1 << alignment_bits;
 			damage.start = alignment * (damage.start / alignment);
 			damage.end = alignment * (damage.end / alignment);
 
@@ -137,7 +138,7 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 			int ntrailing = 0;
 			if (s == test.shards - 1) {
 				ntrailing = construct_diff_trailing(test.size,
-						alignment, mirror, source,
+						alignment_bits, mirror, source,
 						diff + diffsize);
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -198,15 +199,15 @@ int main(int argc, char **argv)
 		char *target2 = aligned_alloc(64, bufsize);
 		const int ntypes = sizeof(diff_types) / sizeof(diff_types[0]);
 		for (int a = 0; a < ntypes; a++) {
-			int alignment;
-			interval_diff_fn_t diff_fn = get_fastest_diff_function(
-					diff_types[a], &alignment);
+			int alignment_bits;
+			interval_diff_fn_t diff_fn = get_diff_function(
+					diff_types[a], &alignment_bits);
 			if (!diff_fn) {
 				continue;
 			}
 			all_success &= run_subtest(i, test, diff, source,
 					mirror, target1, target2, diff_fn,
-					alignment, diff_names[a]);
+					alignment_bits, diff_names[a]);
 		}
 		free(diff);
 		free(source);

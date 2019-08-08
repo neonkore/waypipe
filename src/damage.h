@@ -63,19 +63,28 @@ struct damage {
 	struct interval *damage;
 	int ndamage_intvs;
 
-	int acc_damage_stat, acc_count;
+	int64_t acc_damage_stat;
+	int acc_count;
 };
 
 /** Given an array of extended intervals, update the base damage structure
  * so that it contains a reasonably small disjoint set of extended intervals
- * which contains the old base set and the new set. */
+ * which contains the old base set and the new set. Before merging, all
+ * interval boundaries will be rounded to the next multiple of
+ * `1 << alignment_bits`. */
 void merge_damage_records(struct damage *base, int nintervals,
-		const struct ext_interval *const new_list);
+		const struct ext_interval *const new_list, int alignment_bits);
 /** Return the total area covered by the damage region */
 int get_damage_area(const struct damage *base);
 /** Set damage to empty  */
 void reset_damage(struct damage *base);
 /** Expand damage to cover everything */
 void damage_everything(struct damage *base);
+
+/* internal merge driver, made visible for testing */
+void merge_mergesort(const int old_count, struct interval *old_list,
+		const int new_count, const struct ext_interval *const new_list,
+		int *dst_count, struct interval **dst_list, int merge_margin,
+		int alignment_bits);
 
 #endif // WAYPIPE_DAMAGE_H

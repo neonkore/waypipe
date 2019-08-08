@@ -31,11 +31,6 @@
 #include <string.h>
 #include <time.h>
 
-// Test targets
-void merge_mergesort(const int old_count, struct interval *old_list,
-		const int new_count, const struct ext_interval *const new_list,
-		int *dst_count, struct interval **dst_list, int merge_margin);
-
 static void fill_overcopy_pattern(
 		int Ntotal, int margin, struct ext_interval *data)
 {
@@ -369,7 +364,7 @@ int main(int argc, char **argv)
 				} else if (k == 1) {
 					merge_mergesort(0, NULL, nvec[z], data,
 							&dst_count, &dst_list,
-							margin);
+							margin, 0);
 				}
 
 				clock_gettime(CLOCK_MONOTONIC, &t1);

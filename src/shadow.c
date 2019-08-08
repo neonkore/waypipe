@@ -229,8 +229,8 @@ void setup_thread_pool(struct thread_pool *pool,
 		enum compression_mode compression, int comp_level,
 		int n_threads)
 {
-	pool->diff_func = get_fastest_diff_function(
-			DIFF_FASTEST, &pool->diff_func_alignment);
+	pool->diff_func = get_diff_function(
+			DIFF_FASTEST, &pool->diff_alignment_bits);
 
 	pool->compression = compression;
 	pool->compression_level = comp_level;
@@ -654,7 +654,7 @@ static void worker_run_compress_diff(
 		damage_space += (size_t)(task->damage_intervals[i].end -
 						task->damage_intervals[i]
 								.start) +
-				8 + pool->diff_func_alignment;
+				8 + (1 << pool->diff_alignment_bits);
 	}
 	DTRACE_PROBE1(waypipe, worker_compdiff_enter, damage_space);
 
@@ -677,7 +677,7 @@ static void worker_run_compress_diff(
 	int ntrailing = 0;
 	if (task->damaged_end) {
 		ntrailing = construct_diff_trailing(sfd->buffer_size,
-				pool->diff_func_alignment, sfd->mem_mirror,
+				pool->diff_alignment_bits, sfd->mem_mirror,
 				sfd->mem_local, diff_target + diffsize);
 	}
 	DTRACE_PROBE1(waypipe, construct_diff_exit, diffsize);
@@ -840,7 +840,7 @@ static void queue_diff_transfers(struct thread_pool *threads,
 	/* Keep sfd alive at least until write to channel is done */
 	sfd->refcount_compute = true;
 
-	int bs = threads->diff_func_alignment;
+	int bs = 1 << threads->diff_alignment_bits;
 	int align_end = bs * ((int)sfd->buffer_size / bs);
 	bool check_tail = false;
 
@@ -851,7 +851,8 @@ static void queue_diff_transfers(struct thread_pool *threads,
 				.width = align_end,
 				.rep = 1,
 				.stride = 0};
-		merge_damage_records(&sfd->damage, 1, &all);
+		merge_damage_records(&sfd->damage, 1, &all,
+				threads->diff_alignment_bits);
 		check_tail = true;
 		net_damage = align_end;
 	} else {
@@ -860,9 +861,11 @@ static void queue_diff_transfers(struct thread_pool *threads,
 			struct interval e = sfd->damage.damage[i];
 			check_tail |= e.end > align_end;
 			e.end = min(e.end, align_end);
-			e.start = floordiv(e.start, bs) * bs;
-			e.end = ceildiv(e.end, bs) * bs;
 			sfd->damage.damage[i] = e;
+			if (e.end & (bs - 1) || e.start & (bs - 1)) {
+				wp_error("Interval [%d, %d) is not aligned",
+						e.start, e.end);
+			}
 			net_damage += e.end - e.start;
 		}
 	}
@@ -1003,10 +1006,9 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
-			sfd->mem_mirror = aligned_alloc(
-					threads->diff_func_alignment,
-					align(sfd->buffer_size,
-							threads->diff_func_alignment));
+			size_t alignment = 1u << threads->diff_alignment_bits;
+			sfd->mem_mirror = aligned_alloc(alignment,
+					align(sfd->buffer_size, alignment));
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
 
@@ -1050,10 +1052,9 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 
 		bool first = false;
 		if (!sfd->mem_mirror) {
-			sfd->mem_mirror = aligned_alloc(
-					threads->diff_func_alignment,
-					align(sfd->buffer_size,
-							threads->diff_func_alignment));
+			size_t alignment = 1u << threads->diff_alignment_bits;
+			sfd->mem_mirror = aligned_alloc(alignment,
+					align(sfd->buffer_size, alignment));
 			first = true;
 
 			add_dmabuf_create_request(
@@ -1202,9 +1203,9 @@ static void create_from_update(struct fd_translation_map *map,
 		sfd->mem_local = NULL;
 		sfd->buffer_size = header.file_size;
 		sfd->remote_bufsize = sfd->buffer_size;
-		sfd->mem_mirror = aligned_alloc(threads->diff_func_alignment,
-				align(sfd->buffer_size,
-						threads->diff_func_alignment));
+		size_t alignment = 1u << threads->diff_alignment_bits;
+		sfd->mem_mirror = aligned_alloc(
+				alignment, align(sfd->buffer_size, alignment));
 
 		// The PID should be unique during the lifetime of the
 		// program
@@ -1351,9 +1352,9 @@ static void create_from_update(struct fd_translation_map *map,
 		memcpy(&sfd->dmabuf_info,
 				msg->data + sizeof(struct wmsg_open_dmabuf),
 				sizeof(struct dmabuf_slice_data));
-		sfd->mem_mirror = aligned_alloc(threads->diff_func_alignment,
-				align(sfd->buffer_size,
-						threads->diff_func_alignment));
+		size_t alignment = 1u << threads->diff_alignment_bits;
+		sfd->mem_mirror = aligned_alloc(
+				alignment, align(sfd->buffer_size, alignment));
 
 		wp_debug("Creating remote DMAbuf of %d bytes",
 				(int)sfd->buffer_size);
@@ -1393,7 +1394,7 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 
 	/* Reallocation here is complicated by the requirement that the mirror
 	 * memory be aligned; unfortunately, there is no aligned_realloc */
-	int al = threads->diff_func_alignment;
+	int al = 1 << threads->diff_alignment_bits;
 	sfd->mem_mirror = realloc(sfd->mem_mirror, align(sfd->buffer_size, al));
 	if ((ptrdiff_t)sfd->mem_mirror % al != 0) {
 		char *mem = aligned_alloc(al, align(sfd->buffer_size, al));

@@ -122,7 +122,8 @@ static int fix_merge_stack_property(int size, struct merge_stack_elem *stack,
  * TODO: explicit time limiting/adaptive margin! */
 void merge_mergesort(const int old_count, struct interval *old_list,
 		const int new_count, const struct ext_interval *const new_list,
-		int *dst_count, struct interval **dst_list, int merge_margin)
+		int *dst_count, struct interval **dst_list, int merge_margin,
+		int alignment_bits)
 {
 	/* Stack-based mergesort: the buffer at position `i+1`
 	 * should be <= 1/2 times the size of the buffer at
@@ -155,6 +156,7 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		if (e.width <= 0 || e.rep <= 0 || e.start < 0) {
 			continue;
 		}
+
 		/* To limit CPU time, if it is very likely that
 		 * an interval would be merged anyway, then
 		 * replace it with its containing interval. */
@@ -181,21 +183,36 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 				&base.size, (void **)&base.data);
 
 		struct interval *vec = &base.data[base.count];
-		for (int k = 0; k < e.rep; k++) {
-			vec[k].start = e.start + k * e.stride;
-			vec[k].end = vec[k].start + e.width;
+		int iw = 0;
+		int last_end = INT32_MIN;
+		for (int ir = 0; ir < e.rep; ir++) {
+			int start = e.start + ir * e.stride;
+			int end = start + e.width;
+			start = (start >> alignment_bits) << alignment_bits;
+			end = ((end + (1 << alignment_bits) - 1) >>
+					      alignment_bits)
+			      << alignment_bits;
+
+			if (start > last_end) {
+				vec[iw].start = start;
+				vec[iw].end = end;
+				last_end = end;
+				iw++;
+			} else {
+				vec[iw - 1].end = end;
+			}
 		}
 		/* end sentinel */
-		vec[e.rep] = (struct interval){
+		vec[iw] = (struct interval){
 				.start = INT32_MAX, .end = INT32_MAX};
 
-		src_count += e.rep;
+		src_count += iw;
 
 		substack[substack_size] = (struct merge_stack_elem){
-				.offset = base.count, .count = e.rep};
+				.offset = base.count, .count = iw};
 		substack_size++;
 
-		base.count += e.rep + 1;
+		base.count += iw + 1;
 
 		/* merge down the stack as far as possible */
 		substack_size = fix_merge_stack_property(substack_size,
@@ -215,7 +232,7 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 /* This value must be larger than 8, or diffs will explode */
 #define MERGE_MARGIN 256
 void merge_damage_records(struct damage *base, int nintervals,
-		const struct ext_interval *const new_list)
+		const struct ext_interval *const new_list, int alignment_bits)
 {
 	for (int i = 0; i < nintervals; i++) {
 		base->acc_damage_stat += new_list[i].width * new_list[i].rep;
@@ -228,7 +245,8 @@ void merge_damage_records(struct damage *base, int nintervals,
 	}
 
 	merge_mergesort(base->ndamage_intvs, base->damage, nintervals, new_list,
-			&base->ndamage_intvs, &base->damage, MERGE_MARGIN);
+			&base->ndamage_intvs, &base->damage, MERGE_MARGIN,
+			alignment_bits);
 }
 
 int get_damage_area(const struct damage *base)

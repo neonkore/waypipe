@@ -666,7 +666,8 @@ void do_wl_surface_req_commit(struct context *ctx)
 		}
 	}
 
-	merge_damage_records(&sfd->damage, i, damage_array);
+	merge_damage_records(&sfd->damage, i, damage_array,
+			ctx->g->threads.diff_alignment_bits);
 	free(damage_array);
 	free(surface->damage_list);
 	surface->damage_list = NULL;
@@ -868,7 +869,8 @@ void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 			.width = buffer->shm_height * buffer->shm_stride,
 			.stride = 0,
 			.rep = 1};
-	merge_damage_records(&sfd->damage, 1, &interval);
+	merge_damage_records(&sfd->damage, 1, &interval,
+			ctx->g->threads.diff_alignment_bits);
 
 	(void)tv_sec_lo;
 	(void)tv_sec_hi;
