@@ -28,6 +28,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +71,8 @@ static void atomic_logger(const char *file, int line, enum log_level level,
 	pthread_t tid = pthread_self();
 	char msg[1024];
 	int nwri = 0;
-	nwri += sprintf(msg + nwri, "%lx [%s:%3d] ", (long)tid, file, line);
+	nwri += sprintf(msg + nwri, "%" PRIx64 " [%s:%3d] ", (uint64_t)tid,
+			file, line);
 
 	va_list args;
 	va_start(args, fmt);
@@ -104,18 +106,18 @@ int main(int argc, char **argv)
 		printf("Failed to open '%s'", argv[1]);
 		return EXIT_FAILURE;
 	}
-	long len = lseek(fd, 0, SEEK_END);
+	int64_t len = (int64_t)lseek(fd, 0, SEEK_END);
 	if (len == 0) {
 		close(fd);
 		return EXIT_SUCCESS;
 	}
 	lseek(fd, 0, SEEK_SET);
-	char *buf = malloc(len);
-	if (read(fd, buf, len) == -1) {
+	char *buf = malloc((size_t)len);
+	if (read(fd, buf, (size_t)len) == -1) {
 		return EXIT_FAILURE;
 	}
 	close(fd);
-	printf("Loaded %ld bytes\n", len);
+	printf("Loaded %" PRId64 " bytes\n", len);
 
 	int srv_fds[2], cli_fds[2], conn_fds[2], srv_links[2], cli_links[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, srv_fds) == -1 ||
@@ -160,8 +162,8 @@ int main(int argc, char **argv)
 	char *ignore_buf = malloc(65536);
 
 	/* Main loop: RW from socketpairs with sendmsg, with short wait */
-	long file_nwords = len / 4;
-	long cursor = 0;
+	int64_t file_nwords = len / 4;
+	int64_t cursor = 0;
 	uint32_t *data = (uint32_t *)buf;
 #if !defined(SHM_ANON)
 	char template[256];
@@ -208,11 +210,12 @@ int main(int argc, char **argv)
 		}
 
 		uint32_t packet_size = header >> 2;
-		if ((long)packet_size > file_nwords - cursor) {
-			packet_size = (uint32_t)(file_nwords - cursor);
-		}
+		int64_t words_left = file_nwords - cursor;
 		if (packet_size > 2048) {
 			packet_size = 2048;
+		}
+		if (packet_size > (uint32_t)words_left) {
+			packet_size = (uint32_t)words_left;
 		}
 		/* 2 msec max delay for 8KB of data, assuming no system
 		 * interference, should be easily attainable */

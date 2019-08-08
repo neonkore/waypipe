@@ -162,7 +162,8 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		bool force_combine = (absorbed > 30000) ||
 				     10 * remaining < src_count;
 
-		long end = e.start + e.stride * (long)(e.rep - 1) + e.width;
+		int64_t end = e.start + e.stride * (int64_t)(e.rep - 1) +
+			      e.width;
 		if (end >= INT32_MAX) {
 			/* overflow protection */
 			e.width = INT32_MAX - 1 - e.start;

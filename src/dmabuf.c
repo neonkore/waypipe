@@ -161,7 +161,7 @@ void cleanup_render_data(struct render_data *data)
 	cleanup_hwcontext(data);
 }
 
-static long get_dmabuf_fd_size(int fd)
+static ssize_t get_dmabuf_fd_size(int fd)
 {
 	ssize_t endp = lseek(fd, 0, SEEK_END);
 	if (endp == -1) {
@@ -334,15 +334,15 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 			return NULL;
 		}
 		int tfd = gbm_bo_get_fd(bo);
-		long csize = get_dmabuf_fd_size(tfd);
+		ssize_t csize = get_dmabuf_fd_size(tfd);
 		close(tfd);
-		if (csize != (long)size) {
-			wp_error("Created DMABUF size (%ld disagrees with original size (%ld), %s",
+		if (csize != (ssize_t)size) {
+			wp_error("Created DMABUF size (%zd disagrees with original size (%zu), %s",
 					csize, size,
-					(csize > (long)size)
+					(csize > (ssize_t)size)
 							? "keeping anyway"
 							: "attempting taller");
-			if (csize < (long)size) {
+			if (csize < (ssize_t)size) {
 				// Retry, with height increased to hopefully
 				// contain enough bytes
 				uint32_t nheight =
@@ -361,10 +361,10 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 					return NULL;
 				}
 				int nfd = gbm_bo_get_fd(bo);
-				long nsize = get_dmabuf_fd_size(nfd);
+				ssize_t nsize = get_dmabuf_fd_size(nfd);
 				close(nfd);
-				if (nsize < (long)size) {
-					wp_error("Trying to fudge dmabuf height to reach target size of %ld bytes; failed, got %ld",
+				if (nsize < (ssize_t)size) {
+					wp_error("Trying to fudge dmabuf height to reach target size of %zu bytes; failed, got %zd",
 							size, nsize);
 				}
 			}

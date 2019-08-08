@@ -202,11 +202,11 @@ static bool parse_level_choice(const char *str, int *dest, int defval)
 		return false;
 	}
 	char *endptr = NULL;
-	long dv = strtol(str + 1, &endptr, 10);
+	int dv = (int)strtol(str + 1, &endptr, 10);
 	if (*endptr != 0) {
 		return false;
 	}
-	*dest = (int)dv;
+	*dest = dv;
 	return true;
 }
 

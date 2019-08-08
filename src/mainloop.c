@@ -32,6 +32,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -567,7 +568,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			wp_debug("Write to the %s would block", progdesc);
 			return 0;
 		} else if (wc == -1) {
-			wp_error("%s write failure %ld: %s", progdesc, wc,
+			wp_error("%s write failure %zd: %s", progdesc, wc,
 					strerror(errno));
 			return -1;
 		} else if (wc == 0) {
@@ -575,7 +576,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			return -1;
 		} else {
 			cmsg->dbuffer_start += wc;
-			wp_debug("Wrote to %s, %d/%d bytes in chunk %ld, %d/%d fds",
+			wp_debug("Wrote to %s, %d/%d bytes in chunk %zd, %d/%d fds",
 					progdesc, cmsg->dbuffer_start,
 					cmsg->dbuffer_end, wc, nfds_written,
 					cmsg->tfbuffer_count);
@@ -895,7 +896,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			wmsg->ntrailing++;
 		}
 		if (dst.zone_end > 0) {
-			wp_debug("We are transferring a data buffer with %ld bytes",
+			wp_debug("We are transferring a data buffer with %d bytes",
 					dst.zone_end);
 			size_t act_size = dst.zone_end + sizeof(uint32_t);
 			uint32_t protoh = transfer_header(
@@ -1324,7 +1325,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 
 	/* Attempt to notify remote end that the application has closed */
 	uint32_t close_msg[4] = {transfer_header(16, WMSG_CLOSE), 0, 0, 0};
-	(void)write(chanfd, close_msg, sizeof(close_msg));
+	if (write(chanfd, close_msg, sizeof(close_msg)) == -1) {
+		wp_error("Failed to send close notification");
+	}
 
 	free(pfds);
 	free(recon_fds.data);

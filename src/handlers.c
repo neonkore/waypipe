@@ -112,12 +112,12 @@ struct waypipe_presentation {
 	struct wp_object base;
 
 	// reference clock - given clock
-	long clock_delta_nsec;
+	int64_t clock_delta_nsec;
 	int clock_id;
 };
 struct waypipe_presentation_feedback {
 	struct wp_object base;
-	long clock_delta_nsec;
+	int64_t clock_delta_nsec;
 };
 
 struct wp_linux_dmabuf_params {
@@ -734,7 +734,7 @@ void do_wl_keyboard_evt_keymap(
 	size_t fdsz = 0;
 	fdcat_t fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_FILE || fdsz != size) {
-		wp_error("keymap candidate fd %d was not file-like (type=%s), and with size=%ld did not match %d",
+		wp_error("keymap candidate fd %d was not file-like (type=%s), and with size=%zu did not match %u",
 				fd, fdcat_to_str(fdtype), fdsz, size);
 		return;
 	}
@@ -764,7 +764,7 @@ void do_wl_shm_req_create_pool(
 	 * which then increases the size
 	 */
 	if (fdtype != FDC_FILE || (int32_t)fdsz < size) {
-		wp_error("File type or size mismatch for fd %d with claimed: %s %s | %ld %d",
+		wp_error("File type or size mismatch for fd %d with claimed: %s %s | %zu %u",
 				fd, fdcat_to_str(fdtype),
 				fdcat_to_str(FDC_FILE), fdsz, size);
 		return;
@@ -884,10 +884,10 @@ void do_zwlr_screencopy_frame_v1_req_copy(
 	frame->buffer_id = buf->obj_id;
 }
 
-static long timespec_diff(struct timespec val, struct timespec sub)
+static int64_t timespec_diff(struct timespec val, struct timespec sub)
 {
 	// Overflows only with 68 year error, insignificant
-	return (val.tv_sec - sub.tv_sec) * 1000000000L +
+	return (val.tv_sec - sub.tv_sec) * 1000000000LL +
 	       (val.tv_nsec - sub.tv_nsec);
 }
 void do_wp_presentation_evt_clock_id(struct context *ctx, uint32_t clk_id)
@@ -907,8 +907,8 @@ void do_wp_presentation_evt_clock_id(struct context *ctx, uint32_t clk_id)
 		clock_gettime(pres->clock_id, &t0);
 		clock_gettime(reference_clock, &t1);
 		clock_gettime(pres->clock_id, &t2);
-		long diff1m0 = timespec_diff(t1, t0);
-		long diff2m1 = timespec_diff(t2, t1);
+		int64_t diff1m0 = timespec_diff(t1, t0);
+		int64_t diff2m1 = timespec_diff(t2, t1);
 		pres->clock_delta_nsec = (diff1m0 - diff2m1) / 2;
 	}
 }
@@ -939,18 +939,18 @@ void do_wp_presentation_feedback_evt_presented(struct context *ctx,
 	/* convert local to reference, on display side */
 	int dir = ctx->on_display_side ? 1 : -1;
 
-	uint64_t sec = tv_sec_lo + tv_sec_hi * 0x100000000L;
-	long nsec = tv_nsec;
+	uint64_t sec = tv_sec_lo + tv_sec_hi * 0x100000000LL;
+	int64_t nsec = tv_nsec;
 	nsec += dir * feedback->clock_delta_nsec;
-	sec = (uint64_t)((long)sec + nsec / 1000000000L);
+	sec = (uint64_t)((int64_t)sec + nsec / 1000000000LL);
 	nsec = nsec % 1000000000L;
 	if (nsec < 0) {
 		nsec += 1000000000L;
 		sec--;
 	}
 	// Size not changed, no other edits required
-	ctx->message[2] = (uint32_t)(sec / 0x100000000L);
-	ctx->message[3] = (uint32_t)(sec % 0x100000000L);
+	ctx->message[2] = (uint32_t)(sec / 0x100000000uLL);
+	ctx->message[3] = (uint32_t)(sec % 0x100000000uLL);
 	ctx->message[4] = (uint32_t)nsec;
 }
 

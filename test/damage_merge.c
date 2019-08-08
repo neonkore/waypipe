@@ -107,15 +107,19 @@ static void fill_circle_pattern(
 	srand((uint32_t)(Ntotal + 165 * margin));
 
 	int i = 0;
-	long R = (int)((2 * margin + Ntotal) * 0.3);
+	int R = (int)((2 * margin + Ntotal) * 0.3);
 	int s = (2 * margin + Ntotal) / 2;
 	while (i < Ntotal) {
 		int x = randint(2 * R);
 		int w = randint(2 * R - x) + 1;
 		int y = randint(2 * R);
 		int h = randint(2 * R - y) + 1;
-		long x2 = max((x - R) * (x - R), (x + w - R) * (x + w - R));
-		long y2 = max((y - R) * (y - R), (y + w - R) * (y + w - R));
+		int64_t x2a = (x - R) * (x - R);
+		int64_t x2b = (x + w - R) * (x + w - R);
+		int64_t x2 = x2a < x2b ? x2b : x2a;
+		int64_t y2a = (y - R) * (y - R);
+		int64_t y2b = (y + w - R) * (y + w - R);
+		int64_t y2 = y2a < y2b ? y2b : y2a;
 		if (x2 + y2 >= R * R) {
 			continue;
 		}
@@ -330,12 +334,12 @@ int main(int argc, char **argv)
 			(*patterns[ip].func)(nvec[z], margins[z], data);
 
 			// check that minv >= 0, maxv is <= 1GB
-			long minv = 0, maxv = 0;
+			int64_t minv = 0, maxv = 0;
 			for (int i = 0; i < nvec[z]; i++) {
-				long high = data[i].start +
-					    ((long)data[i].rep) *
-							    data[i].stride +
-					    data[i].width;
+				int64_t high = data[i].start +
+					       ((int64_t)data[i].rep) *
+							       data[i].stride +
+					       data[i].width;
 				maxv = maxv > high ? maxv : high;
 				minv = minv < data[i].start ? minv
 							    : data[i].start;
@@ -344,7 +348,7 @@ int main(int argc, char **argv)
 				printf("generated interval set violates lower bound, skipping\n");
 				continue;
 			}
-			if (maxv > 0x40000000L) {
+			if (maxv > 0x40000000LL) {
 				printf("generated interval set would use too much memory to check, skipping\n");
 				continue;
 			}

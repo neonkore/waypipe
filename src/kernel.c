@@ -24,6 +24,7 @@
  */
 #include "util.h"
 
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -219,31 +220,30 @@ void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize, size_t ntrailing,
 		const char *__restrict__ diff)
 {
-	uint64_t nblocks = size / 8;
-	uint64_t ndiffblocks = diffsize / 8;
+	size_t nblocks = size / 8;
+	size_t ndiffblocks = diffsize / 8;
 	uint64_t *__restrict__ t1_blocks = (uint64_t *)target1;
 	uint64_t *__restrict__ t2_blocks = (uint64_t *)target2;
 	uint64_t *__restrict__ diff_blocks = (uint64_t *)diff;
-	for (uint64_t i = 0; i < ndiffblocks;) {
+	for (size_t i = 0; i < ndiffblocks;) {
 		union {
 			uint64_t u;
 			uint32_t v[2];
 		} block;
 		block.u = diff_blocks[i];
-		uint64_t nfrom = block.v[0];
-		uint64_t nto = block.v[1];
+		size_t nfrom = (size_t)block.v[0];
+		size_t nto = (size_t)block.v[1];
+		size_t span = nto - nfrom;
 		if (nto > nblocks || nfrom >= nto ||
 				i + (nto - nfrom) >= ndiffblocks) {
-			wp_error("Invalid copy range [%ld,%ld) > %ld=nblocks or [%ld,%ld) > %ld=ndiffblocks",
+			wp_error("Invalid copy range [%zu,%zu) > %zu=nblocks or [%zu,%zu) > %zu=ndiffblocks",
 					nfrom, nto, nblocks, i + 1,
-					i + 1 + (nto - nfrom), ndiffblocks);
+					i + 1 + span, ndiffblocks);
 			return;
 		}
-		memcpy(t1_blocks + nfrom, diff_blocks + i + 1,
-				8 * (nto - nfrom));
-		memcpy(t2_blocks + nfrom, diff_blocks + i + 1,
-				8 * (nto - nfrom));
-		i += nto - nfrom + 1;
+		memcpy(t1_blocks + nfrom, diff_blocks + i + 1, 8 * span);
+		memcpy(t2_blocks + nfrom, diff_blocks + i + 1, 8 * span);
+		i += span + 1;
 	}
 	if (ntrailing > 0) {
 		size_t offset = size - ntrailing;

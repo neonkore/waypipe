@@ -34,7 +34,7 @@
 #include <string.h>
 #include <time.h>
 
-static long rand_gap_fill(char *data, size_t size, int max_run)
+static int64_t rand_gap_fill(char *data, size_t size, int max_run)
 {
 	if (max_run == -1) {
 		memset(data, rand(), size);
@@ -46,7 +46,7 @@ static long rand_gap_fill(char *data, size_t size, int max_run)
 
 	max_run = max(2, max_run);
 	size_t pos = 0;
-	long nruns = 0;
+	int64_t nruns = 0;
 	while (pos < size) {
 		int gap1 = (rand() % max_run);
 		gap1 = min(size - pos, gap1);
@@ -104,7 +104,7 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 		const char *diff_name)
 {
 	uint64_t ns01 = 0, ns12 = 0;
-	long nruns = 0;
+	int64_t nruns = 0;
 	size_t net_diffsize = 0;
 	srand((uint32_t)test.seed);
 	memset(mirror, 0, test.size);

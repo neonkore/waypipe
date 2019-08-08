@@ -32,6 +32,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -235,8 +236,8 @@ void setup_thread_pool(struct thread_pool *pool,
 	pool->compression_level = comp_level;
 	if (n_threads <= 0) {
 		// platform dependent
-		long nt = sysconf(_SC_NPROCESSORS_ONLN);
-		pool->nthreads = max((int)nt / 2, 1);
+		int nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+		pool->nthreads = max(nt / 2, 1);
 	} else {
 		pool->nthreads = n_threads;
 	}
@@ -339,12 +340,16 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	} else if (S_ISFIFO(fsdata.st_mode) || S_ISCHR(fsdata.st_mode) ||
 			S_ISSOCK(fsdata.st_mode)) {
 		if (S_ISCHR(fsdata.st_mode)) {
-			wp_error("The fd %d, size %ld, mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
-					fd, fsdata.st_size, fsdata.st_mode);
+			wp_error("The fd %d, size %" PRId64
+				 ", mode %x is a character device. Proceeding under the assumption that it is pipe-like.",
+					fd, (int64_t)fsdata.st_size,
+					fsdata.st_mode);
 		}
 		if (S_ISSOCK(fsdata.st_mode)) {
-			wp_error("The fd %d, size %ld, mode %x is a socket. Proceeding under the assumption that it is pipe-like.",
-					fd, fsdata.st_size, fsdata.st_mode);
+			wp_error("The fd %d, size %" PRId64
+				 ", mode %x is a socket. Proceeding under the assumption that it is pipe-like.",
+					fd, (int64_t)fsdata.st_size,
+					fsdata.st_mode);
 		}
 		int flags = fcntl(fd, F_GETFL, 0);
 		if (flags == -1) {
@@ -541,8 +546,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	wp_debug("Creating new shadow buffer for local fd %d", fd);
 	if (sfd->type == FDC_FILE) {
 		if (file_sz >= UINT32_MAX / 2) {
-			wp_error("Failed to create shadow structure, file size %ld too large to transfer",
-					(uint64_t)file_sz);
+			wp_error("Failed to create shadow structure, file size %zu too large to transfer",
+					file_sz);
 			return sfd;
 		}
 		sfd->buffer_size = file_sz;
@@ -1214,7 +1219,7 @@ static void create_from_update(struct fd_translation_map *map,
 			return;
 		}
 		if (ftruncate(sfd->fd_local, sfd->buffer_size) == -1) {
-			wp_error("Failed to resize shm file %s to size %ld for reason: %s",
+			wp_error("Failed to resize shm file %s to size %zu for reason: %s",
 					sfd->file_shm_buf_name,
 					sfd->buffer_size, strerror(errno));
 			return;
@@ -1458,15 +1463,12 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		// `memsize+8*remote_nthreads` is the worst-case diff
 		// expansion
 		if (header->end > sfd->buffer_size) {
-			wp_error("Transfer end overflow %ld > %ld",
-					(uint64_t)header->end,
-					(uint64_t)sfd->buffer_size);
+			wp_error("Transfer end overflow %" PRIu32 " > %zu",
+					header->end, sfd->buffer_size);
 		}
 		if (act_size != header->end - header->start) {
-			wp_error("Transfer size mismatch %ld %ld",
-					(uint64_t)act_size,
-					(uint64_t)(header->end -
-							header->start));
+			wp_error("Transfer size mismatch %zu %" PRIu32,
+					act_size, header->end - header->start);
 		}
 		memcpy(sfd->mem_mirror + header->start, act_buffer,
 				header->end - header->start);
@@ -1514,7 +1516,7 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		// `memsize+8*remote_nthreads` is the worst-case diff
 		// expansion
 		if (act_size != header->diff_size + header->ntrailing) {
-			wp_error("Transfer size mismatch %ld %ld", act_size,
+			wp_error("Transfer size mismatch %zu %u", act_size,
 					header->diff_size + header->ntrailing);
 		}
 
@@ -1718,7 +1720,7 @@ void flush_writable_pipes(struct fd_translation_map *map)
 		if (fdcat_ispipe(cur->type) && cur->pipe_writable &&
 				cur->pipe_send.used > 0) {
 			cur->pipe_writable = false;
-			wp_debug("Flushing %ld bytes into RID=%d",
+			wp_debug("Flushing %zd bytes into RID=%d",
 					cur->pipe_send.used, cur->remote_id);
 			ssize_t changed =
 					write(cur->pipe_fd, cur->pipe_send.data,
@@ -1765,7 +1767,7 @@ void read_readable_pipes(struct fd_translation_map *map)
 			} else if (changed == 0) {
 				wp_debug("Zero write event");
 			} else {
-				wp_debug("Read %ld more bytes from RID=%d",
+				wp_debug("Read %zd more bytes from RID=%d",
 						changed, cur->remote_id);
 				cur->pipe_recv.used += changed;
 			}

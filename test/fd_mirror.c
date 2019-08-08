@@ -226,13 +226,13 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	finish_update(src_shadow);
 
 	if (ndiff == 0) {
-		long ns = 0;
+		size_t ns = 0;
 		for (int i = transfer_data.start; i < transfer_data.end; i++) {
 			ns += transfer_data.data[i].iov_len;
 		}
 		cleanup_transfers(&transfer_data);
 		if (transfer_data.end > 0) {
-			wp_error("Collecting updates gave a transfer (%ld bytes, %d blocks) when none was expected",
+			wp_error("Collecting updates gave a transfer (%zd bytes, %d blocks) when none was expected",
 					ns, transfer_data.end);
 			return false;
 		}
