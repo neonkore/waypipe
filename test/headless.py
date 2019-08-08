@@ -3,7 +3,12 @@
 if __name__ != "__main__":
     quit(1)
 
-import os, subprocess, time, signal
+import os, subprocess, time, signal, sys
+
+if sys.version_info.minor < 4 or sys.version_info.major < 3:
+    print("Python version is too old")
+    quit(0)
+import asyncio
 
 
 def try_unlink(path):
@@ -61,14 +66,11 @@ for k, v in list(sub_tests.items()):
         del sub_tests[k]
 
 xdg_runtime_dir = os.path.abspath("./test/")
-os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
-os.chmod(xdg_runtime_dir, 0o700)
+
 
 # weston does not currently appear to support setting absolute socket paths
 socket_path = "w_sock"
 abs_socket_path = os.path.join(xdg_runtime_dir, socket_path)
-try_unlink(abs_socket_path)
-try_unlink(abs_socket_path + ".lock")
 
 mainenv = {"XDG_RUNTIME_DIR": xdg_runtime_dir, "LD_LIBRARY_PATH": ld_library_path}
 
@@ -77,55 +79,47 @@ weston_command = [
     "--backend=headless-backend.so",
     "--socket=" + socket_path,
     # "--use-pixman",
-    "--width=-2000",
-    "--height=2000",
+    "--width=1111",
+    "--height=777",
 ]
-
-weston_log_path = os.path.join(xdg_runtime_dir, "weston_out.txt")
-weston_out = open(weston_log_path, "wb")
-weston_proc = subprocess.Popen(
-    weston_command,
-    env=mainenv,
-    stdin=subprocess.DEVNULL,
-    stdout=weston_out,
-    stderr=subprocess.STDOUT,
-)
-
-subenv = {
-    "WAYLAND_DISPLAY": abs_socket_path,
-    "WAYLAND_DEBUG": "1",
-    "XDG_RUNTIME_DIR": xdg_runtime_dir,
-    "LD_LIBRARY_PATH": ld_library_path,
-}
-
-wp_serv_env = {
-    "WAYLAND_DEBUG": "1",
-    "XDG_RUNTIME_DIR": xdg_runtime_dir,
-    "LD_LIBRARY_PATH": ld_library_path,
-}
-
-subproc_args = {"env": subenv, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT}
-
-wp_serv_args = {
-    "env": wp_serv_env,
-    "stdin": subprocess.DEVNULL,
-    "stderr": subprocess.STDOUT,
-}
-
-# Otherwise it's a race between weston and the clients
-if not wait_until_exists(abs_socket_path):
-    raise Exception(
-        "weston failed to create expected display socket path, " + abs_socket_path
-    )
-
-processes = {}
 
 try:
     import psutil
 except ImportError:
     psutil = None
 
-for sub_test_name, command in sub_tests.items():
+nontrivial_failures = False
+
+
+@asyncio.coroutine
+def run_sub_test(sub_test_name, command):
+    global nontrivial_failures
+
+    subenv = {
+        "WAYLAND_DISPLAY": abs_socket_path,
+        "WAYLAND_DEBUG": "1",
+        "XDG_RUNTIME_DIR": xdg_runtime_dir,
+        "LD_LIBRARY_PATH": ld_library_path,
+    }
+
+    wp_serv_env = {
+        "WAYLAND_DEBUG": "1",
+        "XDG_RUNTIME_DIR": xdg_runtime_dir,
+        "LD_LIBRARY_PATH": ld_library_path,
+    }
+
+    subproc_args = {
+        "env": subenv,
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.STDOUT,
+    }
+
+    wp_serv_args = {
+        "env": wp_serv_env,
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.STDOUT,
+    }
+
     ref_log_path = os.path.join(xdg_runtime_dir, sub_test_name + "_ref_out.txt")
     ref_out = open(ref_log_path, "wb")
     ref_proc = subprocess.Popen(command, stdout=ref_out, **subproc_args)
@@ -133,11 +127,14 @@ for sub_test_name, command in sub_tests.items():
     wp_log_path = os.path.join(xdg_runtime_dir, sub_test_name + "_wp_out.txt")
     wp_out = open(wp_log_path, "wb")
 
+    control_path = os.path.join(xdg_runtime_dir, sub_test_name + "_ctrl")
     wp_socket_path = os.path.join(xdg_runtime_dir, sub_test_name + "_socket")
     try_unlink(wp_socket_path)
+    try_unlink(control_path)
+    # '--oneshot', to make cleanup easier
     wp_prefix = [waypipe_path, "--debug", "--oneshot", "--socket", wp_socket_path]
     wp_client_command = wp_prefix + ["client"]
-    wp_server_command = wp_prefix + ["server"] + command
+    wp_server_command = wp_prefix + ["--control", control_path, "server"] + command
     wp_client = subprocess.Popen(wp_client_command, stdout=wp_out, **subproc_args)
     if not wait_until_exists(wp_socket_path):
         raise Exception(
@@ -174,33 +171,16 @@ for sub_test_name, command in sub_tests.items():
                 except psutil.NoSuchProcess:
                     pass
 
-    processes[sub_test_name] = (
-        ref_proc,
-        ref_out,
-        ref_log_path,
-        wp_client,
-        wp_server,
-        wp_child,
-        wp_out,
-        wp_log_path,
-    )
-
-time.sleep(0.5)
-
-# i.e., did running the program directly work, but via waypipe fail ?
-nontrivial_failures = False
-
-for sub_test_name, bundle in processes.items():
-    (
-        ref_proc,
-        ref_out,
-        ref_log_path,
-        wp_client,
-        wp_server,
-        wp_child,
-        wp_out,
-        wp_log_path,
-    ) = bundle
+    print("Launched", sub_test_name)
+    yield from asyncio.sleep(1)
+    # Verify that replacing the control pipe (albeit with itself) doesn't break anything
+    # (Since the connection is a unix domain socket, almost no packets will be in flight,
+    # so the test isn't that comprehensive)
+    print("Resetting", sub_test_name)
+    open(control_path, "w").write(wp_socket_path)
+    try_unlink(control_path)
+    yield from asyncio.sleep(1)
+    print("Closing", sub_test_name)
 
     # Beware sudden PID reuse...
     safe_cleanup(ref_proc)
@@ -222,6 +202,7 @@ for sub_test_name, bundle in processes.items():
         time.sleep(0.05)
         safe_cleanup(wp_client)
     wp_out.close()
+    try_unlink(wp_socket_path)
 
     # -2, because applications sometimes return with the sigint error
     if ref_proc.returncode not in (0, -2):
@@ -243,6 +224,35 @@ for sub_test_name, bundle in processes.items():
                 )
             )
             nontrivial_failures = True
+
+
+os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
+os.chmod(xdg_runtime_dir, 0o700)
+try_unlink(abs_socket_path)
+try_unlink(abs_socket_path + ".lock")
+
+weston_log_path = os.path.join(xdg_runtime_dir, "weston_out.txt")
+weston_out = open(weston_log_path, "wb")
+weston_proc = subprocess.Popen(
+    weston_command,
+    env=mainenv,
+    stdin=subprocess.DEVNULL,
+    stdout=weston_out,
+    stderr=subprocess.STDOUT,
+)
+
+
+# Otherwise it's a race between weston and the clients
+if not wait_until_exists(abs_socket_path):
+    raise Exception(
+        "weston failed to create expected display socket path, " + abs_socket_path
+    )
+
+loop = asyncio.get_event_loop()
+tasks = []
+for k, v in sub_tests.items():
+    tasks.append(asyncio.get_event_loop().create_task(run_sub_test(k, v)))
+loop.run_until_complete(asyncio.gather(*tasks))
 
 safe_cleanup(weston_proc)
 weston_out.close()

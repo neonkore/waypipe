@@ -162,13 +162,13 @@ test_diff = executable(
 	include_directories: waypipe_includes,
 	link_with: lib_waypipe_src,
 )
-test('Whether diff operations successfully roundtrip', test_diff)
+test('Whether diff operations successfully roundtrip', test_diff, timeout: 60)
 test_damage = executable(
 	'damage_merge',
 	['test/damage_merge.c'],
 	link_with: lib_waypipe_src
 )
-test('If damage rectangles merge efficiently', test_damage)
+test('If damage rectangles merge efficiently', test_damage, timeout: 5)
 test_mirror = executable(
 	'fd_mirror',
 	['test/fd_mirror.c'],
@@ -176,7 +176,7 @@ test_mirror = executable(
 	dependencies: [libgbm]
 )
 # disable leak checking, because library code is often responsible
-test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'])
+test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 10)
 gen_path = join_paths(meson.current_source_dir(), 'protocols/symgen.py')
 test_fnlist = files('test/test_fnlist.txt')
 testproto_src = custom_target(
@@ -197,7 +197,7 @@ test_parse = executable(
 	link_with: lib_waypipe_src,
 	dependencies: [protos]
 )
-test('That protocol parsing fails cleanly', test_parse)
+test('That protocol parsing fails cleanly', test_parse, timeout: 5)
 
 weston_dep = dependency('weston', required: false)
 testprog_paths = []
@@ -214,7 +214,7 @@ if weston_prog.found()
 endif
 test_programs = [
 	['TEST_WESTON_SHM_PATH', 'weston-simple-shm'],
-	['TEST_WESTON_EGL_PATH', 'weston-simple-egl'],
+	# ['TEST_WESTON_EGL_PATH', 'weston-simple-egl'],
 	['TEST_WESTON_DMA_PATH', 'weston-simple-dmabuf-drm'],
 	['TEST_WESTON_TERM_PATH', 'weston-terminal'],
 	['TEST_WESTON_PRES_PATH', 'weston-presentation-shm'],
@@ -236,10 +236,10 @@ endforeach
 
 if weston_prog.found() and have_test_progs
 	test_headless = join_paths(meson.current_source_dir(), 'test/headless.py')
-	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: envlist)
+	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: envlist, timeout: 10)
 endif
 test_startup = join_paths(meson.current_source_dir(), 'test/startup_failure.py')
-test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist)
+test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist, timeout: 10)
 fuzz_hook = executable(
 	'fuzz_hook',
 	['test/fuzz_hook.c'],

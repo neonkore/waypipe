@@ -201,4 +201,7 @@ run_test(
     True,
 )
 
+
+try_unlink(client_socket_path)
+try_unlink(wayland_display_path)
 quit(0 if all_succeeding else 1)
