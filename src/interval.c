@@ -200,6 +200,7 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 				iw++;
 			} else {
 				vec[iw - 1].end = end;
+				last_end = end;
 			}
 		}
 		/* end sentinel */

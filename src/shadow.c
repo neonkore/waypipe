@@ -648,10 +648,12 @@ static void worker_run_compress_diff(
 
 	size_t damage_space = 0;
 	for (int i = 0; i < task->damage_len; i++) {
-		damage_space += (size_t)(task->damage_intervals[i].end -
-						task->damage_intervals[i]
-								.start) +
-				8 + (1u << pool->diff_alignment_bits);
+		int range = task->damage_intervals[i].end -
+			    task->damage_intervals[i].start;
+		damage_space += (size_t)range + 8;
+	}
+	if (task->damaged_end) {
+		damage_space += 1u << pool->diff_alignment_bits;
 	}
 	DTRACE_PROBE1(waypipe, worker_compdiff_enter, damage_space);
 
@@ -854,17 +856,21 @@ static void queue_diff_transfers(struct thread_pool *threads,
 		check_tail = true;
 		net_damage = align_end;
 	} else {
-		for (int i = 0; i < sfd->damage.ndamage_intvs; i++) {
+		for (int ir = 0, iw = 0; ir < sfd->damage.ndamage_intvs; ir++) {
 			/* Extend all damage to the nearest alignment block */
-			struct interval e = sfd->damage.damage[i];
+			struct interval e = sfd->damage.damage[ir];
 			check_tail |= e.end > align_end;
 			e.end = min(e.end, align_end);
-			sfd->damage.damage[i] = e;
+			if (e.start < e.end) {
+				/* End clipping may produce empty/degenerate
+				 * intervals, so filter them out now */
+				sfd->damage.damage[iw++] = e;
+				net_damage += e.end - e.start;
+			}
 			if (e.end & (bs - 1) || e.start & (bs - 1)) {
 				wp_error("Interval [%d, %d) is not aligned",
 						e.start, e.end);
 			}
-			net_damage += e.end - e.start;
 		}
 	}
 	int nshards = ceildiv(net_damage, chunksize);
@@ -884,7 +890,8 @@ static void queue_diff_transfers(struct thread_pool *threads,
 		int s_upper = (int)((shard + 1) * (int64_t)tot_blocks) /
 			      nshards;
 
-		while (acc_prev_blocks < s_upper) {
+		while (acc_prev_blocks < s_upper &&
+				ir < sfd->damage.ndamage_intvs) {
 			struct interval e = sfd->damage.damage[ir];
 			const int w = (e.end - e.start) / bs;
 
