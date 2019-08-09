@@ -29,9 +29,9 @@
 #include <stdint.h>
 
 struct interval;
-typedef int (*interval_diff_fn_t)(const int diff_window_size, const int i_end,
-		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
-		uint64_t *__restrict__ diff, int i);
+typedef size_t (*interval_diff_fn_t)(const int diff_window_size,
+		const void *__restrict__ imod, void *__restrict__ ibase,
+		uint32_t *__restrict__ diff, size_t i, const size_t i_end);
 
 enum diff_type {
 	DIFF_FASTEST,
@@ -45,12 +45,13 @@ enum diff_type {
 /** Returns a function pointer to a diff construction kernel, and indicates
  * the alignment of the data which is to be passed in */
 interval_diff_fn_t get_diff_function(enum diff_type type, int *alignment_bits);
-int construct_diff_core(interval_diff_fn_t idiff_fn,
+size_t construct_diff_core(interval_diff_fn_t idiff_fn, int alignment_bits,
 		const struct interval *__restrict__ damaged_intervals,
-		int n_intervals, char *__restrict__ base,
-		const char *__restrict__ changed, char *__restrict__ diff);
-int construct_diff_trailing(size_t size, int alignment, char *__restrict__ base,
-		const char *__restrict__ changed, char *__restrict__ diff);
+		int n_intervals, void *__restrict__ base,
+		const void *__restrict__ changed, void *__restrict__ diff);
+size_t construct_diff_trailing(size_t size, int alignment_bits,
+		char *__restrict__ base, const char *__restrict__ changed,
+		char *__restrict__ diff);
 void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize, size_t ntrailing,
 		const char *__restrict__ diff);

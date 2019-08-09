@@ -668,10 +668,11 @@ static void worker_run_compress_diff(
 	}
 
 	DTRACE_PROBE1(waypipe, construct_diff_enter, task->damage_len);
-	int diffsize = construct_diff_core(pool->diff_func,
-			task->damage_intervals, task->damage_len,
-			sfd->mem_mirror, sfd->mem_local, diff_target);
-	int ntrailing = 0;
+	size_t diffsize = construct_diff_core(pool->diff_func,
+			pool->diff_alignment_bits, task->damage_intervals,
+			task->damage_len, sfd->mem_mirror, sfd->mem_local,
+			diff_target);
+	size_t ntrailing = 0;
 	if (task->damaged_end) {
 		ntrailing = construct_diff_trailing(sfd->buffer_size,
 				pool->diff_alignment_bits, sfd->mem_mirror,
@@ -685,7 +686,7 @@ static void worker_run_compress_diff(
 
 	uint8_t *msg;
 	size_t sz;
-	size_t net_diff_sz = (size_t)(diffsize + ntrailing);
+	size_t net_diff_sz = diffsize + ntrailing;
 	if (pool->compression == COMP_NONE) {
 		sz = net_diff_sz + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)diff_buffer;

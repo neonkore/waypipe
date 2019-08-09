@@ -130,21 +130,21 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 
 			struct timespec t0, t1, t2;
 			clock_gettime(CLOCK_MONOTONIC, &t0);
-			int diffsize = 0;
+			size_t diffsize = 0;
 			if (damage.start < damage.end) {
-				diffsize = construct_diff_core(diff_fn, &damage,
-						1, mirror, source, diff);
+				diffsize = construct_diff_core(diff_fn,
+						alignment_bits, &damage, 1,
+						mirror, source, diff);
 			}
-			int ntrailing = 0;
+			size_t ntrailing = 0;
 			if (s == test.shards - 1) {
 				ntrailing = construct_diff_trailing(test.size,
 						alignment_bits, mirror, source,
 						diff + diffsize);
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t1);
-			apply_diff(test.size, target1, target2,
-					(size_t)diffsize, (size_t)ntrailing,
-					diff);
+			apply_diff(test.size, target1, target2, diffsize,
+					ntrailing, diff);
 			clock_gettime(CLOCK_MONOTONIC, &t2);
 			ns01 += (uint64_t)(
 					(t1.tv_sec - t0.tv_sec) * 1000000000LL +
@@ -152,19 +152,25 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 			ns12 += (uint64_t)(
 					(t2.tv_sec - t1.tv_sec) * 1000000000LL +
 					(t2.tv_nsec - t1.tv_nsec));
-			net_diffsize += (size_t)(diffsize + ntrailing);
+			net_diffsize += diffsize + ntrailing;
 		}
 
 		if (memcmp(target1, source, test.size)) {
 			printf("Failed to synchronize\n");
+			int ndiff = 0;
 			for (size_t k = 0; k < test.size; k++) {
 				if (target1[k] != source[k] ||
 						mirror[k] != source[k]) {
+					if (ndiff > 300) {
+						printf("and still more differences\n");
+						break;
+					}
 					printf("i %d: target1 %02x mirror %02x source %02x\n",
 							(int)k,
 							(uint8_t)target1[k],
 							(uint8_t)mirror[k],
 							(uint8_t)source[k]);
+					ndiff++;
 				}
 			}
 			all_success = false;

@@ -40,27 +40,27 @@ static inline int lzcnt(uint64_t v) { return (int)_lzcnt_u64(v); }
 static inline int lzcnt(uint64_t v) { return v ? __builtin_clzll(v) : 64; }
 #endif
 
-int run_interval_diff_avx2(const int diff_window_size, const int i_end,
-		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
-		uint64_t *__restrict__ diff, int i)
+size_t run_interval_diff_avx2(const int diff_window_size,
+		const void *__restrict__ imod, void *__restrict__ ibase,
+		uint32_t *__restrict__ diff, size_t i, const size_t i_end)
 {
-	int dc = 0;
+	const __m256i *__restrict__ mod = imod;
+	__m256i *__restrict__ base = ibase;
+
+	size_t dc = 0;
 	while (1) {
 		/* Loop: no changes */
-		uint32_t *ctrl_blocks = (uint32_t *)&diff[dc++];
+		uint32_t *ctrl_blocks = &diff[dc];
+		dc += 2;
 
 		int trailing_unchanged = 0;
-		for (; i < i_end; i += 8) {
-			__m256i m0 = _mm256_load_si256(
-					(const __m256i *)&mod[i]);
-			__m256i m1 = _mm256_load_si256(
-					(const __m256i *)&mod[i + 4]);
-			__m256i b0 = _mm256_load_si256(
-					(const __m256i *)&base[i]);
-			__m256i b1 = _mm256_load_si256(
-					(const __m256i *)&base[i + 4]);
-			__m256i eq0 = _mm256_cmpeq_epi64(m0, b0);
-			__m256i eq1 = _mm256_cmpeq_epi64(m1, b1);
+		for (; i < i_end; i++) {
+			__m256i m0 = _mm256_load_si256(&mod[2 * i]);
+			__m256i m1 = _mm256_load_si256(&mod[2 * i + 1]);
+			__m256i b0 = _mm256_load_si256(&base[2 * i]);
+			__m256i b1 = _mm256_load_si256(&base[2 * i + 1]);
+			__m256i eq0 = _mm256_cmpeq_epi32(m0, b0);
+			__m256i eq1 = _mm256_cmpeq_epi32(m1, b1);
 
 			/* It's very hard to tell which loop exit method is
 			 * better, since the routine is typically bandwidth
@@ -79,72 +79,60 @@ int run_interval_diff_avx2(const int diff_window_size, const int i_end,
 						eq1);
 				uint64_t mask = mask0 + mask1 * 0x100000000uLL;
 #endif
-				_mm256_store_si256((__m256i *)&base[i], m0);
-				_mm256_store_si256((__m256i *)&base[i + 4], m1);
+				_mm256_store_si256(&base[2 * i], m0);
+				_mm256_store_si256(&base[2 * i + 1], m1);
 
 				/* Write the changed bytes, starting at the
 				 * first modified term,
 				 * and set the n_unchanged counter */
-				int ncom = tzcnt(~mask) >> 3;
+				size_t ncom = (size_t)tzcnt(~mask) >> 2;
 
-#if 1
-				int block_shift = ncom & 3;
+				size_t block_shift = (ncom & 7);
 				uint64_t mask = 0xffffffffuLL
-						<< (block_shift * 8);
+						<< (block_shift * 4);
 				__m128i halfsize = _mm_set_epi64x(
 						0uLL, (long long)mask);
 				__m256i storemask =
 						_mm256_cvtepi8_epi64(halfsize);
-				_mm256_maskstore_epi64(
-						(long long *)&diff[dc -
-								   block_shift],
-						storemask, ncom < 4 ? m0 : m1);
-				if (ncom < 4) {
+				_mm256_maskstore_epi32(
+						(int *)&diff[dc - block_shift],
+						storemask, ncom < 8 ? m0 : m1);
+				if (ncom < 8) {
 					_mm256_storeu_si256(
 							(__m256i *)&diff[dc +
-									 4 -
+									 8 -
 									 block_shift],
 							m1);
 				}
-				dc += 8 - ncom;
-#else
-				for (unsigned int z = (unsigned int)ncom; z < 8;
-						z++) {
-					diff[dc++] = mod[i + z];
-				}
-#endif
+				dc += 16 - ncom;
 
-				trailing_unchanged = lzcnt(~mask) >> 3;
-				ctrl_blocks[0] = (uint32_t)(i + ncom);
+				trailing_unchanged = lzcnt(~mask) >> 2;
+				ctrl_blocks[0] = (uint32_t)(16 * i + ncom);
 
-				i += 8;
+				i++;
 				if (i >= i_end) {
 					/* Last block, hence will not enter copy
 					 * loop */
-					ctrl_blocks[1] = (uint32_t)i;
-					dc++;
+					ctrl_blocks[1] = (uint32_t)(16 * i);
+					dc += 2;
 				}
 
 				break;
 			}
 		}
 		if (i >= i_end) {
-			dc--;
+			dc -= 2;
 			break;
 		}
 
 		/* Loop: until no changes for DIFF_WINDOW +/- 4 spaces */
-		for (; i < i_end; i += 8) {
-			__m256i m0 = _mm256_load_si256(
-					(const __m256i *)&mod[i]);
-			__m256i m1 = _mm256_load_si256(
-					(const __m256i *)&mod[i + 4]);
-			__m256i b0 = _mm256_load_si256(
-					(const __m256i *)&base[i]);
-			__m256i b1 = _mm256_load_si256(
-					(const __m256i *)&base[i + 4]);
-			__m256i eq0 = _mm256_cmpeq_epi64(m0, b0);
-			__m256i eq1 = _mm256_cmpeq_epi64(m1, b1);
+		for (; i < i_end; i++) {
+			__m256i m0 = _mm256_load_si256(&mod[2 * i]);
+			__m256i m1 = _mm256_load_si256(&mod[2 * i + 1]);
+			__m256i b0 = _mm256_load_si256(&base[2 * i]);
+			__m256i b1 = _mm256_load_si256(&base[2 * i + 1]);
+			__m256i eq0 = _mm256_cmpeq_epi32(m0, b0);
+			__m256i eq1 = _mm256_cmpeq_epi32(m1, b1);
 			uint32_t mask0 = (uint32_t)_mm256_movemask_epi8(eq0);
 			uint32_t mask1 = (uint32_t)_mm256_movemask_epi8(eq1);
 			uint64_t mask = mask0 + mask1 * 0x100000000uLL;
@@ -152,21 +140,22 @@ int run_interval_diff_avx2(const int diff_window_size, const int i_end,
 			/* Reset trailing counter if anything changed */
 			bool clear = ~mask == 0;
 			trailing_unchanged = clear * trailing_unchanged +
-					     (lzcnt(~mask) >> 3);
+					     (lzcnt(~mask) >> 2);
 
 			_mm256_storeu_si256((__m256i *)&diff[dc], m0);
-			_mm256_storeu_si256((__m256i *)&diff[dc + 4], m1);
-			dc += 8;
+			_mm256_storeu_si256((__m256i *)&diff[dc + 8], m1);
+			dc += 16;
 			if (trailing_unchanged > diff_window_size) {
-				i += 8;
+				i++;
 				break;
 			}
-			_mm256_store_si256((__m256i *)&base[i], m0);
-			_mm256_store_si256((__m256i *)&base[i + 4], m1);
+			_mm256_store_si256(&base[2 * i], m0);
+			_mm256_store_si256(&base[2 * i + 1], m1);
 		}
 		/* Write coda */
-		dc -= trailing_unchanged;
-		ctrl_blocks[1] = (uint32_t)(i - trailing_unchanged);
+		dc -= (size_t)trailing_unchanged;
+		ctrl_blocks[1] =
+				(uint32_t)(16 * i - (size_t)trailing_unchanged);
 
 		if (i >= i_end) {
 			break;

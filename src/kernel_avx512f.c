@@ -29,79 +29,88 @@
 
 #include <x86intrin.h>
 
-int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
-		const uint64_t *__restrict__ mod, uint64_t *__restrict__ base,
-		uint64_t *__restrict__ diff, int i)
+size_t run_interval_diff_avx512f(const int diff_window_size,
+		const void *__restrict__ imod, void *__restrict__ ibase,
+		uint32_t *__restrict__ diff, size_t i, const size_t i_end)
 {
-	int dc = 0;
+	const __m512i *mod = imod;
+	__m512i *base = ibase;
+
+	size_t dc = 0;
 	while (1) {
 		/* Loop: no changes */
-		uint32_t *ctrl_blocks = (uint32_t *)&diff[dc++];
+		uint32_t *ctrl_blocks = (uint32_t *)&diff[dc];
+		dc += 2;
 
 		int trailing_unchanged = 0;
-		for (; i < i_end; i += 8) {
+		for (; i < i_end; i++) {
 			__m512i m = _mm512_load_si512(&mod[i]);
 			__m512i b = _mm512_load_si512(&base[i]);
-			__mmask8 mask = _mm512_cmpeq_epi64_mask(m, b);
-			if (mask != 0xff) {
+			uint32_t mask = _cvtmask16_u32(
+					_mm512_cmpeq_epi32_mask(m, b));
+			if (mask != 0xffff) {
 				_mm512_store_si512(&base[i], m);
 
-				int ncom = (int)_tzcnt_u32(~(unsigned int)mask);
-				__mmask8 storemask = (__mmask8)(0xffu << ncom);
+				size_t ncom = (size_t)_tzcnt_u32(
+						~(unsigned int)mask);
+				__mmask16 storemask =
+						(__mmask16)(0xffffu << ncom);
 #if 0
-				__m512i v = _mm512_maskz_compress_epi64(
+				__m512i v = _mm512_maskz_compress_epi32(
 						storemask, m);
 				_mm512_storeu_si512(&diff[dc], v);
 #else
-				_mm512_mask_storeu_epi64(
+				_mm512_mask_storeu_epi32(
 						&diff[dc - ncom], storemask, m);
 #endif
-				dc += 8 - ncom;
+				dc += 16 - ncom;
 
-				trailing_unchanged =
-						(int)_lzcnt_u32(~mask & 0xff) -
-						24;
-				ctrl_blocks[0] = (uint32_t)(i + ncom);
+				trailing_unchanged = (int)_lzcnt_u32(~mask &
+								     0xffff) -
+						     16;
+				ctrl_blocks[0] = (uint32_t)(16 * i + ncom);
 
-				i += 8;
+				i++;
 				if (i >= i_end) {
 					/* Last block, hence will not enter copy
 					 * loop */
-					ctrl_blocks[1] = (uint32_t)i;
-					dc++;
+					ctrl_blocks[1] = (uint32_t)(16 * i);
+					dc += 2;
 				}
 
 				break;
 			}
 		}
 		if (i >= i_end) {
-			dc--;
+			dc -= 2;
 			break;
 		}
 
 		/* Loop: until an entire window is clear */
-		for (; i < i_end; i += 8) {
+		for (; i < i_end; i++) {
 			__m512i m = _mm512_load_si512(&mod[i]);
 			__m512i b = _mm512_load_si512(&base[i]);
-			__mmask8 mask = _mm512_cmpeq_epi64_mask(m, b);
+			uint32_t mask = _cvtmask16_u32(
+					_mm512_cmpeq_epi32_mask(m, b));
 
 			/* Reset trailing counter if anything changed */
-			uint32_t amask = ~((uint32_t)mask << 24);
-			int clear = (mask == 0xff) ? 1 : 0;
+			uint32_t amask = ~(mask << 16);
+			int clear = (mask == 0xffff) ? 1 : 0;
 			trailing_unchanged = clear * trailing_unchanged +
 					     (int)_lzcnt_u32(amask);
 
 			_mm512_storeu_si512(&diff[dc], m);
-			dc += 8;
+			dc += 16;
 			if (trailing_unchanged > diff_window_size) {
-				i += 8;
+				i++;
 				break;
 			}
 			_mm512_store_si512(&base[i], m);
 		}
 		/* Write coda */
-		dc -= trailing_unchanged;
-		ctrl_blocks[1] = (uint32_t)(i - trailing_unchanged);
+		dc -= (size_t)trailing_unchanged;
+		ctrl_blocks[1] =
+				(uint32_t)(16 * i - (size_t)trailing_unchanged);
 
 		if (i >= i_end) {
 			break;
