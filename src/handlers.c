@@ -502,9 +502,9 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 		 *         789 789
 		 *         00000000
 		 */
-		bool xyexch = magic & (1 << (4 * transform));
-		bool xflip = magic & (1 << (4 * transform + 1));
-		bool yflip = magic & (1 << (4 * transform + 2));
+		bool xyexch = magic & (1u << (4 * transform));
+		bool xflip = magic & (1u << (4 * transform + 1));
+		bool yflip = magic & (1u << (4 * transform + 2));
 		int ew = xyexch ? buf_height : buf_width;
 		int eh = xyexch ? buf_width : buf_height;
 		if (xflip) {
@@ -795,7 +795,7 @@ void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)
 	/* The display side will be updated already via buffer update msg */
 	if (!ctx->on_display_side) {
 		extend_shm_shadow(&ctx->g->map, &ctx->g->threads,
-				the_shm_pool->owned_buffer, size);
+				the_shm_pool->owned_buffer, (size_t)size);
 	}
 }
 void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
@@ -944,7 +944,7 @@ void do_wp_presentation_feedback_evt_presented(struct context *ctx,
 	/* convert local to reference, on display side */
 	int dir = ctx->on_display_side ? 1 : -1;
 
-	uint64_t sec = tv_sec_lo + tv_sec_hi * 0x100000000LL;
+	uint64_t sec = tv_sec_lo + tv_sec_hi * 0x100000000uLL;
 	int64_t nsec = tv_nsec;
 	nsec += dir * feedback->clock_delta_nsec;
 	sec = (uint64_t)((int64_t)sec + nsec / 1000000000LL);
@@ -1209,8 +1209,8 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 	if (!ctx->on_display_side) {
 		reintroduce_add_msgs(ctx, params);
 	}
-	struct dmabuf_slice_data info = {.width = width,
-			.height = height,
+	struct dmabuf_slice_data info = {.width = (uint32_t)width,
+			.height = (uint32_t)height,
 			.format = format,
 			.num_planes = params->nplanes,
 			.strides = {params->add[0].stride,
@@ -1333,7 +1333,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 	struct dmabuf_slice_data info = {.width = frame->width,
 			.height = frame->height,
 			.format = frame->format,
-			.num_planes = frame->nobjects,
+			.num_planes = (int32_t)frame->nobjects,
 			.strides = {frame->objects[0].stride,
 					frame->objects[1].stride,
 					frame->objects[2].stride,

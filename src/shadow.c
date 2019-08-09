@@ -419,19 +419,19 @@ void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		break;
 #ifdef HAS_LZ4
 	case COMP_LZ4: {
-		size_t ws;
+		int ws;
 		if (pool->compression_level <= 0) {
 			ws = LZ4_compress_fast_extState(ctx->lz4_extstate, ibuf,
-					mbuf, isize, msize,
+					mbuf, (int)isize, (int)msize,
 					-pool->compression_level);
 		} else {
 			ws = LZ4_compress_HC_extStateHC(ctx->lz4_extstate, ibuf,
-					mbuf, isize, msize,
+					mbuf, (int)isize, (int)msize,
 					pool->compression_level);
 		}
 		if (ws == 0) {
-			wp_error("LZ4 compression failed for %d bytes in %d of space",
-					(int)isize, (int)msize);
+			wp_error("LZ4 compression failed for %zu bytes in %zu of space",
+					isize, msize);
 		}
 		dst->size = (size_t)ws;
 		dst->data = (char *)mbuf;
@@ -651,7 +651,7 @@ static void worker_run_compress_diff(
 		damage_space += (size_t)(task->damage_intervals[i].end -
 						task->damage_intervals[i]
 								.start) +
-				8 + (1 << pool->diff_alignment_bits);
+				8 + (1u << pool->diff_alignment_bits);
 	}
 	DTRACE_PROBE1(waypipe, worker_compdiff_enter, damage_space);
 
@@ -685,24 +685,24 @@ static void worker_run_compress_diff(
 
 	uint8_t *msg;
 	size_t sz;
+	size_t net_diff_sz = (size_t)(diffsize + ntrailing);
 	if (pool->compression == COMP_NONE) {
-		sz = (diffsize + ntrailing) + sizeof(struct wmsg_buffer_diff);
+		sz = net_diff_sz + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)diff_buffer;
 	} else {
 		struct bytebuf dst;
-		size_t comp_size =
-				compress_bufsize(pool, (diffsize + ntrailing));
-		char *comp_buf = malloc(alignu(comp_size, 16) +
+		size_t comp_size = compress_bufsize(pool, net_diff_sz);
+		char *comp_buf = malloc(alignz(comp_size, 16) +
 					sizeof(struct wmsg_buffer_diff));
-		compress_buffer(pool, &local->comp_ctx, (diffsize + ntrailing),
+		compress_buffer(pool, &local->comp_ctx, net_diff_sz,
 				diff_target, comp_size,
 				comp_buf + sizeof(struct wmsg_buffer_diff),
 				&dst);
 		sz = dst.size + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)comp_buf;
 	}
-	msg = realloc(msg, alignu(sz, 16));
-	memset(msg + sz, 0, alignu(sz, 16) - sz);
+	msg = realloc(msg, alignz(sz, 16));
+	memset(msg + sz, 0, alignz(sz, 16) - sz);
 	struct wmsg_buffer_diff header;
 	header.size_and_type = transfer_header(sz, WMSG_BUFFER_DIFF);
 	header.remote_id = sfd->remote_id;
@@ -713,7 +713,7 @@ static void worker_run_compress_diff(
 	struct transfer_data *transfers = task->transfers;
 
 	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, alignu(sz, 16), msg, transfers->last_msgno++);
+	transfer_add(transfers, alignz(sz, 16), msg, transfers->last_msgno++);
 	pthread_mutex_unlock(&transfers->lock);
 
 end:
@@ -746,7 +746,7 @@ static void worker_run_compress_block(
 		sz = sizeof(struct wmsg_buffer_fill) +
 		     (source_end - source_start);
 
-		msg = malloc(alignu(sz, 16));
+		msg = malloc(alignz(sz, 16));
 		memcpy(msg + sizeof(struct wmsg_buffer_fill),
 				sfd->mem_mirror + source_start,
 				source_end - source_start);
@@ -754,7 +754,7 @@ static void worker_run_compress_block(
 		size_t comp_size = compress_bufsize(
 				pool, source_end - source_start);
 		struct bytebuf dst;
-		msg = malloc(alignu(comp_size, 16) +
+		msg = malloc(alignz(comp_size, 16) +
 				sizeof(struct wmsg_buffer_fill));
 		compress_buffer(pool, &local->comp_ctx,
 				source_end - source_start,
@@ -762,11 +762,11 @@ static void worker_run_compress_block(
 				(char *)msg + sizeof(struct wmsg_buffer_fill),
 				&dst);
 		msg = realloc(msg,
-				alignu(dst.size, 16) +
+				alignz(dst.size, 16) +
 						sizeof(struct wmsg_buffer_fill));
 		sz = dst.size + sizeof(struct wmsg_buffer_fill);
 	}
-	memset(msg + sz, 0, alignu(sz, 16) - sz);
+	memset(msg + sz, 0, alignz(sz, 16) - sz);
 	struct wmsg_buffer_fill header;
 	header.size_and_type = transfer_header(sz, WMSG_BUFFER_FILL);
 	header.remote_id = sfd->remote_id;
@@ -777,7 +777,7 @@ static void worker_run_compress_block(
 	struct transfer_data *transfers = task->transfers;
 
 	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, alignu(sz, 16), msg, transfers->last_msgno++);
+	transfer_add(transfers, alignz(sz, 16), msg, transfers->last_msgno++);
 	pthread_mutex_unlock(&transfers->lock);
 
 end:
@@ -939,11 +939,11 @@ static void add_dmabuf_create_request(struct transfer_data *transfers,
 {
 	size_t actual_len = sizeof(struct wmsg_open_dmabuf) +
 			    sizeof(struct dmabuf_slice_data);
-	size_t padded_len = alignu(actual_len, 16);
+	size_t padded_len = alignz(actual_len, 16);
 
 	uint8_t *data = calloc(1, padded_len);
 	struct wmsg_open_dmabuf *header = (struct wmsg_open_dmabuf *)data;
-	header->file_size = sfd->buffer_size;
+	header->file_size = (uint32_t)sfd->buffer_size;
 	header->remote_id = sfd->remote_id;
 	header->size_and_type = transfer_header(actual_len, variant);
 	memcpy(data + sizeof(struct wmsg_open_dmabuf), &sfd->dmabuf_info,
@@ -958,7 +958,7 @@ static void add_file_create_request(
 {
 	struct wmsg_open_file *header =
 			calloc(1, sizeof(struct wmsg_open_file));
-	header->file_size = sfd->buffer_size;
+	header->file_size = (uint32_t)sfd->buffer_size;
 	header->remote_id = sfd->remote_id;
 	header->size_and_type = transfer_header(
 			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
@@ -1005,7 +1005,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			// writing this buffer along with padding
 			size_t alignment = 1u << threads->diff_alignment_bits;
 			sfd->mem_mirror = aligned_alloc(alignment,
-					align(sfd->buffer_size, alignment));
+					alignz(sfd->buffer_size, alignment));
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
 
@@ -1020,7 +1020,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		if (sfd->remote_bufsize != sfd->buffer_size) {
 			struct wmsg_open_file *header = calloc(
 					1, sizeof(struct wmsg_open_file));
-			header->file_size = sfd->buffer_size;
+			header->file_size = (uint32_t)sfd->buffer_size;
 			header->remote_id = sfd->remote_id;
 			header->size_and_type = transfer_header(
 					sizeof(struct wmsg_open_file),
@@ -1051,7 +1051,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		if (!sfd->mem_mirror) {
 			size_t alignment = 1u << threads->diff_alignment_bits;
 			sfd->mem_mirror = aligned_alloc(alignment,
-					align(sfd->buffer_size, alignment));
+					alignz(sfd->buffer_size, alignment));
 			first = true;
 
 			add_dmabuf_create_request(
@@ -1132,16 +1132,17 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			struct wmsg_basic *header =
 					calloc(1, sizeof(struct wmsg_basic));
 			size_t msgsz = sizeof(struct wmsg_basic) +
-				       sfd->pipe_recv.used;
+				       (size_t)sfd->pipe_recv.used;
 			header->size_and_type = transfer_header(
 					msgsz, WMSG_PIPE_TRANSFER);
 			header->remote_id = sfd->remote_id;
 
-			size_t psz = alignu(sfd->pipe_recv.used, 16);
+			size_t psz = alignz((size_t)sfd->pipe_recv.used, 16);
 			char *buf = malloc(psz);
-			memcpy(buf, sfd->pipe_recv.data, sfd->pipe_recv.used);
+			memcpy(buf, sfd->pipe_recv.data,
+					(size_t)sfd->pipe_recv.used);
 			memset(buf + sfd->pipe_recv.used, 0,
-					psz - sfd->pipe_recv.used);
+					psz - (size_t)sfd->pipe_recv.used);
 
 			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_basic),
@@ -1202,7 +1203,7 @@ static void create_from_update(struct fd_translation_map *map,
 		sfd->remote_bufsize = sfd->buffer_size;
 		size_t alignment = 1u << threads->diff_alignment_bits;
 		sfd->mem_mirror = aligned_alloc(
-				alignment, align(sfd->buffer_size, alignment));
+				alignment, alignz(sfd->buffer_size, alignment));
 
 		// The PID should be unique during the lifetime of the
 		// program
@@ -1221,7 +1222,7 @@ static void create_from_update(struct fd_translation_map *map,
 			wp_error("Failed to unlink new shm file for object %d: %s",
 					sfd->remote_id, strerror(errno));
 		}
-		if (ftruncate(sfd->fd_local, sfd->buffer_size) == -1) {
+		if (ftruncate(sfd->fd_local, (off_t)sfd->buffer_size) == -1) {
 			wp_error("Failed to resize shm file %s to size %zu for reason: %s",
 					file_shm_buf_name, sfd->buffer_size,
 					strerror(errno));
@@ -1356,7 +1357,7 @@ static void create_from_update(struct fd_translation_map *map,
 				sizeof(struct dmabuf_slice_data));
 		size_t alignment = 1u << threads->diff_alignment_bits;
 		sfd->mem_mirror = aligned_alloc(
-				alignment, align(sfd->buffer_size, alignment));
+				alignment, alignz(sfd->buffer_size, alignment));
 
 		wp_debug("Creating remote DMAbuf of %d bytes",
 				(int)sfd->buffer_size);
@@ -1396,10 +1397,11 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 
 	/* Reallocation here is complicated by the requirement that the mirror
 	 * memory be aligned; unfortunately, there is no aligned_realloc */
-	int al = 1 << threads->diff_alignment_bits;
-	sfd->mem_mirror = realloc(sfd->mem_mirror, align(sfd->buffer_size, al));
-	if ((ptrdiff_t)sfd->mem_mirror % al != 0) {
-		char *mem = aligned_alloc(al, align(sfd->buffer_size, al));
+	size_t al = 1u << threads->diff_alignment_bits;
+	sfd->mem_mirror =
+			realloc(sfd->mem_mirror, alignz(sfd->buffer_size, al));
+	if ((size_t)sfd->mem_mirror % al != 0) {
+		char *mem = aligned_alloc(al, alignz(sfd->buffer_size, al));
 		memcpy(mem, sfd->mem_mirror, old_size);
 		free(sfd->mem_mirror);
 		sfd->mem_mirror = mem;
@@ -1435,11 +1437,11 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 		const struct wmsg_open_file *header =
 				(const struct wmsg_open_file *)msg->data;
-		if (ftruncate(sfd->fd_local, header->file_size) == -1) {
+		if (ftruncate(sfd->fd_local, (off_t)header->file_size) == -1) {
 			wp_error("Failed to resize file buffer: %s",
 					strerror(errno));
 		}
-		increase_buffer_sizes(sfd, threads, header->file_size);
+		increase_buffer_sizes(sfd, threads, (size_t)header->file_size);
 	} else if (type == WMSG_BUFFER_FILL) {
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
@@ -1566,9 +1568,10 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 		if (sfd->pipe_send.data) {
 			sfd->pipe_send.data = realloc(sfd->pipe_send.data,
-					sfd->pipe_send.size);
+					(size_t)sfd->pipe_send.size);
 		} else {
-			sfd->pipe_send.data = calloc(sfd->pipe_send.size, 1);
+			sfd->pipe_send.data =
+					calloc((size_t)sfd->pipe_send.size, 1);
 		}
 		memcpy(sfd->pipe_send.data + sfd->pipe_send.used,
 				msg->data + sizeof(struct wmsg_basic),
@@ -1725,9 +1728,9 @@ void flush_writable_pipes(struct fd_translation_map *map)
 			cur->pipe_writable = false;
 			wp_debug("Flushing %zd bytes into RID=%d",
 					cur->pipe_send.used, cur->remote_id);
-			ssize_t changed =
-					write(cur->pipe_fd, cur->pipe_send.data,
-							cur->pipe_send.used);
+			ssize_t changed = write(cur->pipe_fd,
+					cur->pipe_send.data,
+					(size_t)cur->pipe_send.used);
 
 			if (changed == -1) {
 				wp_error("Failed to write into pipe with remote_id=%d: %s",
@@ -1741,7 +1744,8 @@ void flush_writable_pipes(struct fd_translation_map *map)
 					memmove(cur->pipe_send.data,
 							cur->pipe_send.data +
 									changed,
-							cur->pipe_send.used);
+							(size_t)cur->pipe_send
+									.used);
 				} else {
 					free(cur->pipe_send.data);
 					cur->pipe_send.data = NULL;
@@ -1761,8 +1765,8 @@ void read_readable_pipes(struct fd_translation_map *map)
 			ssize_t changed = read(cur->pipe_fd,
 					cur->pipe_recv.data +
 							cur->pipe_recv.used,
-					cur->pipe_recv.size -
-							cur->pipe_recv.used);
+					(size_t)(cur->pipe_recv.size -
+							cur->pipe_recv.used));
 			if (changed == -1) {
 				wp_error("Failed to read from pipe with remote_id=%d: %s",
 						cur->remote_id,

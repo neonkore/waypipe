@@ -195,27 +195,27 @@ int construct_diff_core(interval_diff_fn_t idiff_fn,
 		cursor += (uint64_t)(*idiff_fn)(12, bend, changed_blocks,
 				base_blocks, diff_blocks + cursor, bstart);
 	}
-	return cursor * 8;
+	return (int)cursor * 8;
 }
-int construct_diff_trailing(int size, int alignment_bits,
+int construct_diff_trailing(size_t size, int alignment_bits,
 		char *__restrict__ base, const char *__restrict__ changed,
 		char *__restrict__ diff)
 {
-	int alignment = 1 << alignment_bits;
-	int ntrailing = (int)size % alignment;
-	int offset = size - ntrailing;
+	size_t alignment = 1u << alignment_bits;
+	size_t ntrailing = size % alignment;
+	size_t offset = size - ntrailing;
 	bool tail_change = false;
 	if (ntrailing > 0) {
-		for (int i = 0; i < ntrailing; i++) {
+		for (size_t i = 0; i < ntrailing; i++) {
 			tail_change |= base[offset + i] != changed[offset + i];
 		}
 	}
 	if (tail_change) {
-		for (int i = 0; i < ntrailing; i++) {
+		for (size_t i = 0; i < ntrailing; i++) {
 			diff[i] = changed[offset + i];
 			base[offset + i] = changed[offset + i];
 		}
-		return ntrailing;
+		return (int)ntrailing;
 	}
 	return 0;
 }

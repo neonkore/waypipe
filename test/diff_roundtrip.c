@@ -49,13 +49,13 @@ static int64_t rand_gap_fill(char *data, size_t size, int max_run)
 	int64_t nruns = 0;
 	while (pos < size) {
 		int gap1 = (rand() % max_run);
-		gap1 = min(size - pos, gap1);
-		pos += gap1;
+		gap1 = min((int)(size - pos), gap1);
+		pos += (size_t)gap1;
 		int gap2 = (rand() % max_run);
-		gap2 = min(size - pos, gap2);
+		gap2 = min((int)(size - pos), gap2);
 		int val = rand();
-		memset(&data[pos], val, gap2);
-		pos += gap2;
+		memset(&data[pos], val, (size_t)gap2);
+		pos += (size_t)gap2;
 		nruns++;
 	}
 	return nruns;
@@ -111,7 +111,7 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 	memset(target1, 0, test.size);
 	memset(target2, 0, test.size);
 
-	int roughtime = test.size + test.shards * 500;
+	int roughtime = (int)test.size + test.shards * 500;
 	int repetitions = min(100, max(1000000000 / roughtime, 1));
 
 	bool all_success = true;
@@ -142,14 +142,17 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 						diff + diffsize);
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t1);
-			apply_diff(test.size, target1, target2, diffsize,
-					ntrailing, diff);
+			apply_diff(test.size, target1, target2,
+					(size_t)diffsize, (size_t)ntrailing,
+					diff);
 			clock_gettime(CLOCK_MONOTONIC, &t2);
-			ns01 += (t1.tv_sec - t0.tv_sec) * 1000000000L +
-				(t1.tv_nsec - t0.tv_nsec);
-			ns12 += (t2.tv_sec - t1.tv_sec) * 1000000000L +
-				(t2.tv_nsec - t1.tv_nsec);
-			net_diffsize += diffsize + ntrailing;
+			ns01 += (uint64_t)(
+					(t1.tv_sec - t0.tv_sec) * 1000000000LL +
+					(t1.tv_nsec - t0.tv_nsec));
+			ns12 += (uint64_t)(
+					(t2.tv_sec - t1.tv_sec) * 1000000000LL +
+					(t2.tv_nsec - t1.tv_nsec));
+			net_diffsize += (size_t)(diffsize + ntrailing);
 		}
 
 		if (memcmp(target1, source, test.size)) {
@@ -169,12 +172,13 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 		}
 	}
 
-	double scale = 1.0 / (repetitions * test.size);
+	double scale = 1.0 / ((double)repetitions * (double)test.size);
 	printf("%s #%2d, : %6.3f,%6.3f,%6.3f ns/byte create,apply,net (%d/%d@%d), %.1f bytes/run\n",
-			diff_name, i, ns01 * scale, ns12 * scale,
-			(ns01 + ns12) * scale, (int)net_diffsize,
-			(int)test.size, test.shards,
-			repetitions * test.size / (double)nruns);
+			diff_name, i, (double)ns01 * scale,
+			(double)ns12 * scale, (double)(ns01 + ns12) * scale,
+			(int)net_diffsize, (int)test.size, test.shards,
+			(double)repetitions * (double)test.size /
+					(double)nruns);
 	return all_success;
 }
 
@@ -191,7 +195,7 @@ int main(int argc, char **argv)
 		struct subtest test = subtests[i];
 
 		/* Use maximum alignment */
-		const int bufsize = align(test.size + 8 + 64, 64);
+		const size_t bufsize = alignz(test.size + 8 + 64, 64);
 		char *diff = aligned_alloc(64, bufsize);
 		char *source = aligned_alloc(64, bufsize);
 		char *mirror = aligned_alloc(64, bufsize);

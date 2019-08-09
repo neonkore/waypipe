@@ -262,7 +262,8 @@ int get_damage_area(const struct damage *base)
 		for (int i = 0; i < base->ndamage_intvs; i++) {
 			tca += base->damage[i].end - base->damage[i].start;
 		}
-		double cover_fraction = base->acc_damage_stat / (double)tca;
+		float cover_fraction =
+				(float)base->acc_damage_stat / (float)tca;
 		wp_debug("Damage interval: {%d(%d)} -> [%d, %d) [%d], %f",
 				base->ndamage_intvs, base->acc_count, low, high,
 				tca, cover_fraction);

@@ -174,7 +174,7 @@ int main(int argc, char **argv)
 						wt->nfds);
 
 				bool sp = size_check(wt->data, wt->words,
-						length, fdlen);
+						(unsigned int)length, fdlen);
 				if (sp != expect_success) {
 					wp_error("size check FAIL (%c, expected %c) at %d/%d chars, %d/%d fds",
 							sp ? 'Y' : 'n',

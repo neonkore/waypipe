@@ -167,7 +167,8 @@ static void write_eint(
 		struct ext_interval e, char *buf, int minv, uint8_t value)
 {
 	for (int k = 0; k < e.rep; k++) {
-		memset(&buf[e.start + e.stride * k - minv], value, e.width);
+		memset(&buf[e.start + e.stride * k - minv], value,
+				(size_t)e.width);
 	}
 }
 
@@ -192,7 +193,7 @@ static bool check_solution_properties(int nsub, const struct ext_interval *sub,
 	}
 	minv -= margin;
 	maxv += margin;
-	char *test = calloc(maxv - minv, 1);
+	char *test = calloc((size_t)(maxv - minv), 1);
 	// Fast & stupid containment test
 	for (int i = 0; i < nsub; i++) {
 		write_eint(sub[i], test, minv, 1);
@@ -200,15 +201,16 @@ static bool check_solution_properties(int nsub, const struct ext_interval *sub,
 	for (int i = 0; i < nsup; i++) {
 		struct interval e = sup[i];
 		if (memchr(&test[e.start - minv - margin], 2,
-				    e.end - e.start + 2 * margin) != NULL) {
+				    (size_t)(e.end - e.start + 2 * margin)) !=
+				NULL) {
 			printf("Internal overlap failure\n");
 			free(test);
 			return false;
 		}
 
-		memset(&test[e.start - minv], 2, e.end - e.start);
+		memset(&test[e.start - minv], 2, (size_t)(e.end - e.start));
 	}
-	bool yes = memchr(test, 1, maxv - minv) == NULL;
+	bool yes = memchr(test, 1, (size_t)(maxv - minv)) == NULL;
 	int count = 0;
 	if (!yes) {
 		for (int i = 0; i < maxv - minv; i++) {
@@ -271,7 +273,7 @@ merge_simple(const int old_count, struct ext_interval *old_list,
 	convert_to_simple(&vec[base], new_count, new_list);
 
 	// divide and conquer would be faster here
-	qsort(vec, nintervals, sizeof(struct interval), simple_lexsort);
+	qsort(vec, (size_t)nintervals, sizeof(struct interval), simple_lexsort);
 
 	int r = 0, w = 0;
 	while (r < nintervals) {
@@ -370,8 +372,10 @@ int main(int argc, char **argv)
 				clock_gettime(CLOCK_MONOTONIC, &t1);
 
 				double elapsed01 =
-						1.0 * (t1.tv_sec - t0.tv_sec) +
-						1e-9 * (t1.tv_nsec - t0.tv_nsec);
+						1.0 * (double)(t1.tv_sec -
+								      t0.tv_sec) +
+						1e-9 * (double)(t1.tv_nsec -
+								       t0.tv_nsec);
 
 				bool pass = check_solution_properties(nvec[z],
 						data, dst_count, dst_list,

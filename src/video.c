@@ -294,8 +294,8 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd,
 	buffer_desc.flags = 0;
 	buffer_desc.width = width;
 	buffer_desc.height = height;
-	buffer_desc.data_size = sfd->buffer_size;
-	buffer_desc.num_planes = (int)sfd->dmabuf_info.num_planes;
+	buffer_desc.data_size = (uint32_t)sfd->buffer_size;
+	buffer_desc.num_planes = (uint32_t)sfd->dmabuf_info.num_planes;
 	for (int i = 0; i < (int)sfd->dmabuf_info.num_planes; i++) {
 		buffer_desc.offsets[i] = sfd->dmabuf_info.offsets[i];
 		buffer_desc.pitches[i] = sfd->dmabuf_info.strides[i];
@@ -328,9 +328,9 @@ static int setup_vaapi_pipeline(struct shadow_fd *sfd, struct render_data *rd,
 		return -1;
 	}
 
-	stat = vaCreateContext(vadisp, rd->av_copy_config, buffer_desc.width,
-			buffer_desc.height, 0, &sfd->video_va_surface, 1,
-			&sfd->video_va_context);
+	stat = vaCreateContext(vadisp, rd->av_copy_config,
+			(int)buffer_desc.width, (int)buffer_desc.height, 0,
+			&sfd->video_va_surface, 1, &sfd->video_va_context);
 	if (stat != VA_STATUS_SUCCESS) {
 		wp_error("Create context failed %s", vaErrorStr(stat));
 		vaDestroySurfaces(vadisp, &sfd->video_va_surface, 1);
@@ -865,9 +865,10 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 
 	struct AVPacket *pkt = av_packet_alloc();
 
-	pad_video_mirror_size(sfd->dmabuf_info.width, sfd->dmabuf_info.height,
-			sfd->dmabuf_info.strides[0], &ctx->width, &ctx->height,
-			NULL);
+	pad_video_mirror_size((int)sfd->dmabuf_info.width,
+			(int)sfd->dmabuf_info.height,
+			(int)sfd->dmabuf_info.strides[0], &ctx->width,
+			&ctx->height, NULL);
 	ctx->pix_fmt = videofmt;
 	configure_low_latency_enc_context(ctx, true);
 
@@ -980,9 +981,9 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	} else {
 		ctx->pix_fmt = videofmt;
 		/* set context dimensions */
-		pad_video_mirror_size(sfd->dmabuf_info.width,
-				sfd->dmabuf_info.height,
-				sfd->dmabuf_info.strides[0], &ctx->width,
+		pad_video_mirror_size((int)sfd->dmabuf_info.width,
+				(int)sfd->dmabuf_info.height,
+				(int)sfd->dmabuf_info.strides[0], &ctx->width,
 				&ctx->height, NULL);
 	}
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
@@ -1001,7 +1002,8 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	if (ctx->hw_device_ctx) {
 #ifdef HAS_VAAPI
 		if (rd->av_vadisplay) {
-			setup_vaapi_pipeline(sfd, rd, ctx->width, ctx->height);
+			setup_vaapi_pipeline(sfd, rd, (uint32_t)ctx->width,
+					(uint32_t)ctx->height);
 		}
 #endif
 	}
@@ -1060,15 +1062,16 @@ void collect_video_from_mirror(
 		struct AVPacket *pkt = sfd->video_packet;
 		struct wmsg_basic *header =
 				calloc(1, sizeof(struct wmsg_basic));
+		size_t pktsz = (size_t)pkt->buf->size;
 		header->size_and_type = transfer_header(
-				sizeof(struct wmsg_basic) + pkt->buf->size,
+				sizeof(struct wmsg_basic) + pktsz,
 				WMSG_SEND_DMAVID_PACKET);
 		header->remote_id = sfd->remote_id;
 
-		size_t padded_len = alignu(pkt->buf->size, 16);
+		size_t padded_len = alignz(pktsz, 16);
 		uint8_t *data = malloc(padded_len);
-		memset(data + pkt->buf->size, 0, padded_len - pkt->buf->size);
-		memcpy(data, pkt->buf->data, pkt->buf->size);
+		memset(data + pktsz, 0, padded_len - pktsz);
+		memcpy(data, pkt->buf->data, pktsz);
 
 		pthread_mutex_lock(&transfers->lock);
 		transfer_add(transfers, sizeof(struct wmsg_basic), header,

@@ -304,9 +304,9 @@ struct chan_msg_state {
 
 #define RECV_GOAL_READ_SIZE 131072
 	char *recv_buffer; // ring-like buffer for message data
-	int recv_size;
-	int recv_start; // (recv_buffer+rev_start) should be a message header
-	int recv_end;   // last byte read from channel, always >=recv_start
+	size_t recv_size;
+	size_t recv_start; // (recv_buffer+rev_start) should be a message header
+	size_t recv_end;   // last byte read from channel, always >=recv_start
 	int recv_unhandled_messages; // number of messages to parse
 };
 
@@ -361,7 +361,8 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 
 	if (type == WMSG_INJECT_RIDS) {
 		const int32_t *fds = &((const int32_t *)packet)[1];
-		int nfds = (unpadded_size - sizeof(uint32_t)) / sizeof(int32_t);
+		int nfds = (int)((unpadded_size - sizeof(uint32_t)) /
+				 sizeof(int32_t));
 
 		cmsg->tfbuffer_count = nfds;
 		untranslate_ids(&g->map, nfds, fds, cmsg->tfbuffer);
@@ -379,7 +380,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		 * guaranteed that all file descriptors provided will be used by
 		 * the messages. This makes fd handling more complicated. */
 		struct char_window src;
-		size_t protosize = unpadded_size - sizeof(uint32_t);
+		int protosize = (int)(unpadded_size - sizeof(uint32_t));
 		src.data = packet + sizeof(uint32_t);
 		src.zone_start = 0;
 		src.zone_end = protosize;
@@ -441,11 +442,14 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 			vec[0].iov_base = cmsg->recv_buffer;
 			vec[0].iov_len = (size_t)(cmsg->recv_size / 2);
 		} else if (cmsg->recv_end <
-				cmsg->recv_start + (int)sizeof(uint32_t)) {
+				cmsg->recv_start + sizeof(uint32_t)) {
 			/* Didn't quite finish reading the header */
-			buf_ensure_size(cmsg->recv_end + RECV_GOAL_READ_SIZE, 1,
-					&cmsg->recv_size,
+			int recvsz = (int)cmsg->recv_size;
+			buf_ensure_size((int)cmsg->recv_end +
+							RECV_GOAL_READ_SIZE,
+					1, &recvsz,
 					(void **)&cmsg->recv_buffer);
+			cmsg->recv_size = (size_t)recvsz;
 
 			nvec = 1;
 			vec[0].iov_base = cmsg->recv_buffer + cmsg->recv_end;
@@ -455,7 +459,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 			 * time */
 			uint32_t *header = (uint32_t *)&cmsg->recv_buffer
 							   [cmsg->recv_start];
-			size_t sz = alignu(transfer_size(*header), 16);
+			size_t sz = alignz(transfer_size(*header), 16);
 
 			size_t read_end = cmsg->recv_start + sz;
 			bool wraparound =
@@ -465,12 +469,14 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 						cmsg->recv_end +
 								RECV_GOAL_READ_SIZE);
 			}
-			buf_ensure_size((int)read_end, 1, &cmsg->recv_size,
+			int recvsz = (int)cmsg->recv_size;
+			buf_ensure_size((int)read_end, 1, &recvsz,
 					(void **)&cmsg->recv_buffer);
+			cmsg->recv_size = (size_t)recvsz;
 
 			nvec = 1;
 			vec[0].iov_base = cmsg->recv_buffer + cmsg->recv_end;
-			vec[0].iov_len = read_end - (size_t)cmsg->recv_end;
+			vec[0].iov_len = read_end - cmsg->recv_end;
 			if (wraparound) {
 				nvec = 2;
 				vec[1].iov_base = cmsg->recv_buffer;
@@ -500,23 +506,23 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 				}
 
 				cmsg->recv_start = 0;
-				cmsg->recv_end = (int)r - (int)vec[0].iov_len;
+				cmsg->recv_end = (size_t)r - vec[0].iov_len;
 
 				if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
 					goto next_stage;
 				}
 			} else {
-				cmsg->recv_end += r;
+				cmsg->recv_end += (size_t)r;
 			}
 		}
 	}
 
 	/* Recount unhandled messages */
 	cmsg->recv_unhandled_messages = 0;
-	int i = cmsg->recv_start;
-	while (i + (int)sizeof(uint32_t) < cmsg->recv_end) {
+	size_t i = cmsg->recv_start;
+	while (i + sizeof(uint32_t) < cmsg->recv_end) {
 		uint32_t *header = (uint32_t *)&cmsg->recv_buffer[i];
-		size_t sz = alignu(transfer_size(*header), 16);
+		size_t sz = alignz(transfer_size(*header), 16);
 		if (sz == 0) {
 			wp_error("Encountered malformed zero size packet");
 			return -1;
@@ -536,7 +542,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 				    packet_start) == -1) {
 			return -1;
 		}
-		cmsg->recv_start += alignu(sz, 16);
+		cmsg->recv_start += alignz(sz, 16);
 		cmsg->recv_unhandled_messages--;
 
 		if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
@@ -575,7 +581,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			wp_error("%s has closed", progdesc);
 			return -1;
 		} else {
-			cmsg->dbuffer_start += wc;
+			cmsg->dbuffer_start += (int)wc;
 			wp_debug("Wrote to %s, %d/%d bytes in chunk %zd, %d/%d fds",
 					progdesc, cmsg->dbuffer_start,
 					cmsg->dbuffer_end, wc, nfds_written,
@@ -628,10 +634,10 @@ static void clear_old_transfers(
 		k = i + 1;
 	}
 	if (k > 0) {
+		size_t nshift = (size_t)(td->end - k);
 		memmove(td->msgno, td->msgno + k,
-				(td->end - k) * sizeof(td->msgno[0]));
-		memmove(td->data, td->data + k,
-				(td->end - k) * sizeof(td->data[0]));
+				nshift * sizeof(td->msgno[0]));
+		memmove(td->data, td->data + k, nshift * sizeof(td->data[0]));
 		td->start -= k;
 		td->end -= k;
 	}
@@ -667,7 +673,7 @@ static int partial_write_transfer(
 		}
 
 		size_t uwr = (size_t)wr;
-		*total_written += wr;
+		*total_written += (int)wr;
 		while (uwr > 0 && td->start < td->end) {
 			/* Skip past zero-length blocks */
 			if (td->data[td->start].iov_len == 0) {
@@ -766,12 +772,12 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		pthread_mutex_unlock(&g->threads.work_mutex);
 
 		DTRACE_PROBE(waypipe, channel_write_end);
-		int unacked_bytes = 0;
+		size_t unacked_bytes = 0;
 		for (int i = 0; i < td->end; i++) {
 			unacked_bytes += td->data[i].iov_len;
 		}
 
-		wp_debug("Sent %d-byte message from %s to channel; %d-bytes in flight",
+		wp_debug("Sent %d-byte message from %s to channel; %zu-bytes in flight",
 				wmsg->total_written, progdesc, unacked_bytes);
 
 		/* do not delete the used transfers yet; we need a remote
@@ -877,14 +883,15 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		/* Inject file descriptors and parse the protocol after
 		 * collecting the updates produced from them */
 		if (wmsg->rbuffer_count > 0) {
-			size_t act_size =
-					wmsg->rbuffer_count * sizeof(int32_t) +
-					sizeof(uint32_t);
-			size_t pad_size = alignu(act_size, 16);
+			size_t act_size = (size_t)wmsg->rbuffer_count *
+							  sizeof(int32_t) +
+					  sizeof(uint32_t);
+			size_t pad_size = alignz(act_size, 16);
 			uint32_t *msg = malloc(pad_size);
 			msg[0] = transfer_header(act_size, WMSG_INJECT_RIDS);
 			memcpy(&msg[1], wmsg->rbuffer,
-					wmsg->rbuffer_count * sizeof(int32_t));
+					(size_t)wmsg->rbuffer_count *
+							sizeof(int32_t));
 			memset(&msg[1 + wmsg->rbuffer_count], 0,
 					pad_size - act_size);
 			decref_transferred_rids(&g->map, wmsg->rbuffer_count,
@@ -898,19 +905,20 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		if (dst.zone_end > 0) {
 			wp_debug("We are transferring a data buffer with %d bytes",
 					dst.zone_end);
-			size_t act_size = dst.zone_end + sizeof(uint32_t);
+			size_t act_size =
+					(size_t)dst.zone_end + sizeof(uint32_t);
 			uint32_t protoh = transfer_header(
 					act_size, WMSG_PROTOCOL);
 
-			uint8_t *copy_proto = malloc(alignu(act_size, 16));
+			uint8_t *copy_proto = malloc(alignz(act_size, 16));
 			memcpy(copy_proto, &protoh, sizeof(uint32_t));
 			memcpy(copy_proto + sizeof(uint32_t), dst.data,
-					dst.zone_end);
+					(size_t)dst.zone_end);
 			memset(copy_proto + sizeof(uint32_t) + dst.zone_end, 0,
-					alignu(act_size, 16) - act_size);
+					alignz(act_size, 16) - act_size);
 
 			wmsg->trailing[wmsg->ntrailing].iov_len =
-					alignu(act_size, 16);
+					alignz(act_size, 16);
 			wmsg->trailing[wmsg->ntrailing].iov_base = copy_proto;
 			wmsg->ntrailing++;
 		}
@@ -1140,7 +1148,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
 	chan_msg.tfbuffer_count = 0;
 	chan_msg.recv_size = 2 * RECV_GOAL_READ_SIZE;
-	chan_msg.recv_buffer = malloc(chan_msg.recv_size);
+	chan_msg.recv_buffer = malloc((size_t)chan_msg.recv_size);
 	chan_msg.recv_start = 0;
 	chan_msg.recv_end = 0;
 	chan_msg.dbuffer_start = 0;

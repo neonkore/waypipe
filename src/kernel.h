@@ -49,7 +49,7 @@ int construct_diff_core(interval_diff_fn_t idiff_fn,
 		const struct interval *__restrict__ damaged_intervals,
 		int n_intervals, char *__restrict__ base,
 		const char *__restrict__ changed, char *__restrict__ diff);
-int construct_diff_trailing(int size, int alignment, char *__restrict__ base,
+int construct_diff_trailing(size_t size, int alignment, char *__restrict__ base,
 		const char *__restrict__ changed, char *__restrict__ diff);
 void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize, size_t ntrailing,

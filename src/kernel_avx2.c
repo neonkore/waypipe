@@ -89,9 +89,10 @@ int run_interval_diff_avx2(const int diff_window_size, const int i_end,
 
 #if 1
 				int block_shift = ncom & 3;
-				__m128i halfsize = _mm_set_epi64x(0uLL,
-						0xffffffffuLL << (block_shift *
-								  8));
+				uint64_t mask = 0xffffffffuLL
+						<< (block_shift * 8);
+				__m128i halfsize = _mm_set_epi64x(
+						0uLL, (long long)mask);
 				__m256i storemask =
 						_mm256_cvtepi8_epi64(halfsize);
 				_mm256_maskstore_epi64(
@@ -114,13 +115,13 @@ int run_interval_diff_avx2(const int diff_window_size, const int i_end,
 #endif
 
 				trailing_unchanged = lzcnt(~mask) >> 3;
-				ctrl_blocks[0] = i + ncom;
+				ctrl_blocks[0] = (uint32_t)(i + ncom);
 
 				i += 8;
 				if (i >= i_end) {
 					/* Last block, hence will not enter copy
 					 * loop */
-					ctrl_blocks[1] = i;
+					ctrl_blocks[1] = (uint32_t)i;
 					dc++;
 				}
 
@@ -165,7 +166,7 @@ int run_interval_diff_avx2(const int diff_window_size, const int i_end,
 		}
 		/* Write coda */
 		dc -= trailing_unchanged;
-		ctrl_blocks[1] = i - trailing_unchanged;
+		ctrl_blocks[1] = (uint32_t)(i - trailing_unchanged);
 
 		if (i >= i_end) {
 			break;

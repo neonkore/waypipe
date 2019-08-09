@@ -46,7 +46,7 @@ int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
 			if (mask != 0xff) {
 				_mm512_store_si512(&base[i], m);
 
-				int ncom = (int)_tzcnt_u32(~mask);
+				int ncom = (int)_tzcnt_u32(~(unsigned int)mask);
 				__mmask8 storemask = (__mmask8)(0xffu << ncom);
 #if 0
 				__m512i v = _mm512_maskz_compress_epi64(
@@ -61,13 +61,13 @@ int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
 				trailing_unchanged =
 						(int)_lzcnt_u32(~mask & 0xff) -
 						24;
-				ctrl_blocks[0] = i + ncom;
+				ctrl_blocks[0] = (uint32_t)(i + ncom);
 
 				i += 8;
 				if (i >= i_end) {
 					/* Last block, hence will not enter copy
 					 * loop */
-					ctrl_blocks[1] = i;
+					ctrl_blocks[1] = (uint32_t)i;
 					dc++;
 				}
 
@@ -87,9 +87,9 @@ int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
 
 			/* Reset trailing counter if anything changed */
 			uint32_t amask = ~((uint32_t)mask << 24);
-			bool clear = mask == 0xff;
+			int clear = (mask == 0xff) ? 1 : 0;
 			trailing_unchanged = clear * trailing_unchanged +
-					     (_lzcnt_u32(amask));
+					     (int)_lzcnt_u32(amask);
 
 			_mm512_storeu_si512(&diff[dc], m);
 			dc += 8;
@@ -101,7 +101,7 @@ int run_interval_diff_avx512f(const int diff_window_size, const int i_end,
 		}
 		/* Write coda */
 		dc -= trailing_unchanged;
-		ctrl_blocks[1] = i - trailing_unchanged;
+		ctrl_blocks[1] = (uint32_t)(i - trailing_unchanged);
 
 		if (i >= i_end) {
 			break;

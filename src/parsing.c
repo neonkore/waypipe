@@ -51,7 +51,7 @@ void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 	}
 	if (isz != lst->size) {
 		lst->objs = realloc(lst->objs,
-				lst->size * sizeof(struct wp_object *));
+				(size_t)lst->size * sizeof(struct wp_object *));
 	}
 	for (int i = 0; i < lst->nobj; i++) {
 		if (lst->objs[i]->obj_id == obj->obj_id) {
@@ -73,7 +73,7 @@ void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 		}
 		if (lst->objs[i]->obj_id > obj->obj_id) {
 			memmove(lst->objs + i + 1, lst->objs + i,
-					(lst->nobj - i) *
+					(size_t)(lst->nobj - i) *
 							sizeof(struct wp_object *));
 			lst->objs[i] = obj;
 			lst->nobj++;
@@ -89,7 +89,7 @@ void listset_remove(struct obj_list *lst, struct wp_object *obj)
 			lst->nobj--;
 			if (i < lst->nobj) {
 				memmove(lst->objs + i, lst->objs + i + 1,
-						(lst->nobj - i) *
+						(size_t)(lst->nobj - i) *
 								sizeof(struct wp_object *));
 			}
 			return;
@@ -284,7 +284,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	const uint32_t *payload = header + 2;
-	if (!size_check(msg, payload, len / 4 - 2,
+	if (!size_check(msg, payload, (unsigned int)len / 4 - 2,
 			    fds->zone_end - fds->zone_start)) {
 		wp_error("Message %x %s@%u.%s parse length overflow", payload,
 				intf->name, objh->obj_id, msg->name);

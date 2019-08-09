@@ -57,7 +57,7 @@ static const struct compression_range comp_ranges[] = {
 static void *create_text_like_image(size_t size)
 {
 	uint8_t *data = malloc(size);
-	int step = 0;
+	size_t step = 0;
 	for (size_t i = 0; i < size; i++) {
 		step = i / 203 - i / 501;
 		bool s = step % 2 == 0;
@@ -73,10 +73,11 @@ static void *create_video_like_image(size_t size)
 	uint8_t *data = malloc(size);
 	for (size_t i = 0; i < size; i++) {
 		/* primary sequence, with runs, but avoiding obvious repetition
+		 * then add fine grain, a main source of complexity in real
+		 * images
 		 */
-		data[i] = (uint8_t)(i + i / 101 + i / 33);
-		/* fine grain, a main source of complexity in real images*/
-		data[i] += rand() % 2;
+		uint32_t noise = (uint32_t)rand() % 2;
+		data[i] = (uint8_t)(i + i / 101 + i / 33 + noise);
 	}
 	//	int f = open("0.rgb", O_RDONLY);
 	//	read(f, data, size);
@@ -89,8 +90,8 @@ static void perturb(void *data, size_t size)
 	uint8_t *bytes = (uint8_t *)data;
 	for (int i = 0; i < 50; i++) {
 		// TODO: avoid redundant motion, and make this very fast
-		size_t low = rand() % size;
-		size_t high = rand() % size;
+		size_t low = (size_t)rand() % size;
+		size_t high = (size_t)rand() % size;
 		if (low >= high) {
 			continue;
 		}
@@ -174,7 +175,7 @@ static struct bench_result run_sub_bench(bool first,
 
 	struct wmsg_open_file file_msg;
 	file_msg.remote_id = 0;
-	file_msg.file_size = test_size;
+	file_msg.file_size = (uint32_t)test_size;
 	file_msg.size_and_type = transfer_header(
 			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
 
@@ -240,8 +241,8 @@ static struct bench_result run_sub_bench(bool first,
 					struct iovec v =
 							transfer_data.data
 									[transfer_data.start++];
-					float delay_s = v.iov_len /
-							(bandwidth_mBps * 1e6);
+					float delay_s = (float)v.iov_len /
+							(bandwidth_mBps * 1e6f);
 					total_wire_size += v.iov_len;
 					/* Only one message type will be
 					 * produced for diffs */
@@ -311,17 +312,12 @@ static struct bench_result run_sub_bench(bool first,
 
 		struct diff_comp_results r;
 		r.packet_size = (float)total_wire_size;
-		r.diffcomp_time = 1.0f * (t1.tv_sec - t0.tv_sec) +
-				  1e-9f * (t1.tv_nsec - t0.tv_nsec);
-		r.comp_frac = r.packet_size / net_diff_size;
-		r.diff_frac = net_diff_size / (float)test_size;
+		r.diffcomp_time = 1.0f * (float)(t1.tv_sec - t0.tv_sec) +
+				  1e-9f * (float)(t1.tv_nsec - t0.tv_nsec);
+		r.comp_frac = r.packet_size / (float)net_diff_size;
+		r.diff_frac = (float)net_diff_size / (float)test_size;
 
-		float transfer_time = r.packet_size / (bandwidth_mBps * 1e6f);
-
-		int nthreads = pool.nthreads;
-		double net_time = transfer_time + r.diffcomp_time / nthreads;
-
-		samples[iter] = net_time;
+		samples[iter] = r.diffcomp_time;
 		diff_frac[iter] = r.diff_frac;
 		comp_frac[iter] = r.comp_frac;
 	}
@@ -368,7 +364,7 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 
 	/* Q: store an array of all the modes -> outputs */
 	// Then sort that array
-	size_t ntests = 0;
+	int ntests = 0;
 	for (size_t c = 0; c < sizeof(comp_ranges) / sizeof(comp_ranges[0]);
 			c++) {
 		ntests += comp_ranges[c].max_val - comp_ranges[c].min_val + 1;
@@ -377,9 +373,9 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 	/* For the content, the mode is generally consistent */
 
 	struct bench_result *tresults =
-			calloc(ntests, sizeof(struct bench_result));
+			calloc((size_t)ntests, sizeof(struct bench_result));
 	struct bench_result *iresults =
-			calloc(ntests, sizeof(struct bench_result));
+			calloc((size_t)ntests, sizeof(struct bench_result));
 	int ntres = 0;
 	int nires = 0;
 	for (int k = 0; k < 2; k++) {
@@ -418,7 +414,7 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 		}
 
 		/* Print best recommendation */
-		qsort(results, nr, sizeof(struct bench_result),
+		qsort(results, (size_t)nr, sizeof(struct bench_result),
 				compare_bench_result);
 
 		struct bench_result best = results[0];

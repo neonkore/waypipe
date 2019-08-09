@@ -124,9 +124,9 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
                         i
                     )
                 )
-                W("\tuint32_t arg{}_a = (uint32_t)payload[i];".format(i))
+                W("\tint arg{}_a = (int)payload[i];".format(i))
                 if n_reg_left > 0:
-                    W("\ti += 1 + ((arg{}_a + 0x3) >> 2);".format(i))
+                    W("\ti += 1 + (unsigned int)((arg{}_a + 0x3) >> 2);".format(i))
 
                 tmp_names.append("arg{}_a".format(i))
                 tmp_names.append("arg{}_b".format(i))
@@ -196,7 +196,7 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
             if arg_type in ("string", "array"):
                 gaps.append(0)
                 nta.append("true" if arg_type == "string" else "false")
-                newvec_idxs.append("-1")
+                newvec_idxs.append("(unsigned int)-1")
                 newvec_types.append("NULL")
 
         base_g = str(gaps[0])

@@ -107,7 +107,6 @@ static void log_handler(const char *file, int line, enum log_level level,
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_REALTIME, &ts);
-	double time = (ts.tv_sec % 100) * 1. + ts.tv_nsec * 1e-9;
 	int pid = getpid();
 
 	char mode;
@@ -136,8 +135,10 @@ static void log_handler(const char *file, int line, enum log_level level,
 		}
 	}
 
-	nwri += sprintf(msg + nwri, "%c%d:%9.6f [%s:%3d] ", mode, pid, time,
-			file, line);
+	int sec = (int)(ts.tv_sec % 100);
+	int usec = (int)(ts.tv_nsec / 1000);
+	nwri += sprintf(msg + nwri, "%c%d:%3d.%06d [%s:%3d] ", mode, pid, sec,
+			usec, file, line);
 
 	va_list args;
 	va_start(args, fmt);

@@ -69,13 +69,13 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 					diff[dc++] = mod[i + z];
 				}
 				trailing_unchanged = __builtin_clz(~mask) >> 3;
-				ctrl_blocks[0] = i + ncom;
+				ctrl_blocks[0] = (uint32_t)(i + ncom);
 
 				i += 4;
 				if (i >= i_end) {
 					/* Last block, hence will not enter copy
 					 * loop */
-					ctrl_blocks[1] = i;
+					ctrl_blocks[1] = (uint32_t)i;
 					dc++;
 				}
 
@@ -121,7 +121,7 @@ int run_interval_diff_sse41(const int diff_window_size, const int i_end,
 		}
 		/* Write coda */
 		dc -= trailing_unchanged;
-		ctrl_blocks[1] = i - trailing_unchanged;
+		ctrl_blocks[1] = (uint32_t)(i - trailing_unchanged);
 
 		if (i >= i_end) {
 			break;

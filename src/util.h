@@ -59,6 +59,10 @@ static inline int clamp(int v, int lower, int upper)
 	return max(min(v, upper), lower);
 }
 static inline int align(int v, int m) { return m * ((v + m - 1) / m); }
+static inline size_t alignz(size_t v, size_t m)
+{
+	return m * ((v + m - 1) / m);
+}
 static inline uint64_t alignu(uint64_t v, uint64_t m)
 {
 	return m * ((v + m - 1) / m);
@@ -77,7 +81,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
 /** A type to help keep track of the connection handling processes */
-#define CONN_UPDATE 0x1
+#define CONN_UPDATE 0x1uLL
 struct conn_addr {
 	uint64_t token;
 	pid_t pid;
@@ -257,7 +261,7 @@ struct transfer_data {
 	 * size: number of iovec blocks */
 	int start, end, size;
 	/* How much of the block at 'start' has been written */
-	int partial_write_amt;
+	size_t partial_write_amt;
 	/* The most recent message number */
 	uint32_t last_msgno;
 	/* Guard for all operations */
