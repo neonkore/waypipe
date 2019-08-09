@@ -98,6 +98,7 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -149,6 +150,9 @@ int init_render_data(struct render_data *data)
 	data->dev = dev;
 	/* Set the path to the card used for protocol handlers to see */
 	data->drm_node_path = card;
+	/* Assume true initially, fall back to old buffer creation path
+	 * if the newer path errors out */
+	data->supports_modifiers = true;
 	return 0;
 }
 void cleanup_render_data(struct render_data *data)
@@ -246,6 +250,11 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	}
 	if (read_modifier) {
 		info->modifier = gbm_bo_get_modifier(bo);
+		const uint64_t drm_format_mod_invalid = 0x00ffffffffffffffULL;
+		if (info->modifier == drm_format_mod_invalid) {
+			/* gbm_bo_get_modifier can fail */
+			info->modifier = 0;
+		}
 	}
 
 	return bo;
@@ -295,6 +304,7 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		const struct dmabuf_slice_data *info)
 {
 	struct gbm_bo *bo;
+retry:
 	if (!info || info->num_planes == 0) {
 		uint32_t width = 512;
 		uint32_t height =
@@ -305,6 +315,40 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 				GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
 		if (!bo) {
 			wp_error("Failed to make dmabuf: %s", strerror(errno));
+			return NULL;
+		}
+	} else if (!rd->supports_modifiers) {
+		uint32_t simple_format = dmabuf_get_simple_format_for_plane(
+				info->format, 0);
+		/* If the modifier is nonzero, assume that the backend
+		 * preferred modifier matches it. With this old API, there
+		 * really isn't any way to do this better */
+		bo = gbm_bo_create(rd->dev, info->width, info->height,
+				simple_format,
+				GBM_BO_USE_RENDERING |
+						(info->modifier ? 0
+								: GBM_BO_USE_LINEAR));
+		if (!bo) {
+			wp_error("Failed to make dmabuf (old path): %s",
+					strerror(errno));
+			return NULL;
+		}
+		uint64_t mod = gbm_bo_get_modifier(bo);
+		const uint64_t drm_format_mod_invalid = 0x00ffffffffffffffULL;
+		if (mod != drm_format_mod_invalid && mod != info->modifier) {
+			wp_error("DMABUF with autoselected modifier %" PRIx64
+				 " does not match desired %" PRIx64
+				 ", expect a crash",
+					mod, info->modifier);
+			gbm_bo_destroy(bo);
+			return NULL;
+		}
+		int tfd = gbm_bo_get_fd(bo);
+		ssize_t csize = get_dmabuf_fd_size(tfd);
+		close(tfd);
+		if (csize != (ssize_t)size) {
+			wp_error("Created DMABUF size (%zd disagrees with original size (%zu), giving up");
+			gbm_bo_destroy(bo);
 			return NULL;
 		}
 	} else {
@@ -328,6 +372,11 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		 */
 		bo = gbm_bo_create_with_modifiers(rd->dev, info->width,
 				info->height, simple_format, modifiers, 2);
+		if (!bo && errno == ENOSYS) {
+			wp_debug("Creating a DMABUF with modifiers explicitly set is not supported; retrying");
+			rd->supports_modifiers = false;
+			goto retry;
+		}
 		if (!bo) {
 			wp_error("Failed to make dmabuf (with modifier %lx): %s",
 					info->modifier, strerror(errno));

@@ -37,6 +37,7 @@ struct render_data {
 	int drm_fd;
 	const char *drm_node_path;
 	struct gbm_device *dev;
+	bool supports_modifiers;
 	/* video hardware context */
 	bool av_disabled;
 	struct AVBufferRef *av_hwdevice_ref;
