@@ -9,7 +9,8 @@ waypipe - A transparent proxy for Wayland applications
 *waypipe* [options...] client++
 *waypipe* [options...] server -- _command..._++
 *waypipe* [options...] recon _control_pipe_ _new_socket_path_++
-*waypipe* [options...] ssh ...
+*waypipe* [options...] ssh ...++
+*waypipe* [options...] bench _bandwidth_
 
 # DESCRIPTION
 
@@ -32,10 +33,16 @@ which has had a control pipe (option *--control*) set. The new socket path
 should indicate a Unix socket whose connections are forwarded to the *waypipe
 client* that the *waypipe server* was initially connected to.
 
-Finally, prefixing an *ssh ...* command to become *waypipe ssh ...* will
+Next, prefixing an *ssh ...* command to become *waypipe ssh ...* will
 automatically set up local and remote copies of *waypipe*, as well as
 forwarding between their sockets, so that Wayland applications run remotely
 will be displayed locally.
+
+Finally, the *waypipe bench* mode can be used to estimate, given a specific
+connection _bandwidth_ in MB/sec, which compression options produce the
+lowest latency. It tests two synthetic images, one made to be roughly as
+compressible as images containing text, and one made to be roughly as
+compressible as images containing pictures.
 
 # OPTIONS
 
@@ -104,7 +111,7 @@ will be displayed locally.
 	Set the number of total threads (including the main thread) which a *waypipe*
 	instance will create. These threads will be used to parallelize compression
 	operations. This flag is passed on to *waypipe server* when given to *waypipe
-	ssh*.
+	ssh*. The flag also controls the thread count for *waypipe bench*.
 
 *--unlink-socket*
 	Only for server mode; on shutdown, unlink the Unix socket that waypipe connects to.
