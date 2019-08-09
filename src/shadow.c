@@ -693,7 +693,7 @@ static void worker_run_compress_diff(
 	} else {
 		struct bytebuf dst;
 		size_t comp_size = compress_bufsize(pool, net_diff_sz);
-		char *comp_buf = malloc(alignz(comp_size, 16) +
+		char *comp_buf = malloc(alignz(comp_size, 4) +
 					sizeof(struct wmsg_buffer_diff));
 		compress_buffer(pool, &local->comp_ctx, net_diff_sz,
 				diff_target, comp_size,
@@ -702,8 +702,8 @@ static void worker_run_compress_diff(
 		sz = dst.size + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)comp_buf;
 	}
-	msg = realloc(msg, alignz(sz, 16));
-	memset(msg + sz, 0, alignz(sz, 16) - sz);
+	msg = realloc(msg, alignz(sz, 4));
+	memset(msg + sz, 0, alignz(sz, 4) - sz);
 	struct wmsg_buffer_diff header;
 	header.size_and_type = transfer_header(sz, WMSG_BUFFER_DIFF);
 	header.remote_id = sfd->remote_id;
@@ -714,7 +714,7 @@ static void worker_run_compress_diff(
 	struct transfer_data *transfers = task->transfers;
 
 	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, alignz(sz, 16), msg, transfers->last_msgno++);
+	transfer_add(transfers, alignz(sz, 4), msg, transfers->last_msgno++);
 	pthread_mutex_unlock(&transfers->lock);
 
 end:
@@ -747,7 +747,7 @@ static void worker_run_compress_block(
 		sz = sizeof(struct wmsg_buffer_fill) +
 		     (source_end - source_start);
 
-		msg = malloc(alignz(sz, 16));
+		msg = malloc(alignz(sz, 4));
 		memcpy(msg + sizeof(struct wmsg_buffer_fill),
 				sfd->mem_mirror + source_start,
 				source_end - source_start);
@@ -755,7 +755,7 @@ static void worker_run_compress_block(
 		size_t comp_size = compress_bufsize(
 				pool, source_end - source_start);
 		struct bytebuf dst;
-		msg = malloc(alignz(comp_size, 16) +
+		msg = malloc(alignz(comp_size, 4) +
 				sizeof(struct wmsg_buffer_fill));
 		compress_buffer(pool, &local->comp_ctx,
 				source_end - source_start,
@@ -763,11 +763,11 @@ static void worker_run_compress_block(
 				(char *)msg + sizeof(struct wmsg_buffer_fill),
 				&dst);
 		msg = realloc(msg,
-				alignz(dst.size, 16) +
+				alignz(dst.size, 4) +
 						sizeof(struct wmsg_buffer_fill));
 		sz = dst.size + sizeof(struct wmsg_buffer_fill);
 	}
-	memset(msg + sz, 0, alignz(sz, 16) - sz);
+	memset(msg + sz, 0, alignz(sz, 4) - sz);
 	struct wmsg_buffer_fill header;
 	header.size_and_type = transfer_header(sz, WMSG_BUFFER_FILL);
 	header.remote_id = sfd->remote_id;
@@ -778,7 +778,7 @@ static void worker_run_compress_block(
 	struct transfer_data *transfers = task->transfers;
 
 	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, alignz(sz, 16), msg, transfers->last_msgno++);
+	transfer_add(transfers, alignz(sz, 4), msg, transfers->last_msgno++);
 	pthread_mutex_unlock(&transfers->lock);
 
 end:
@@ -940,7 +940,7 @@ static void add_dmabuf_create_request(struct transfer_data *transfers,
 {
 	size_t actual_len = sizeof(struct wmsg_open_dmabuf) +
 			    sizeof(struct dmabuf_slice_data);
-	size_t padded_len = alignz(actual_len, 16);
+	size_t padded_len = alignz(actual_len, 4);
 
 	uint8_t *data = calloc(1, padded_len);
 	struct wmsg_open_dmabuf *header = (struct wmsg_open_dmabuf *)data;
@@ -1138,7 +1138,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					msgsz, WMSG_PIPE_TRANSFER);
 			header->remote_id = sfd->remote_id;
 
-			size_t psz = alignz((size_t)sfd->pipe_recv.used, 16);
+			size_t psz = alignz((size_t)sfd->pipe_recv.used, 4);
 			char *buf = malloc(psz);
 			memcpy(buf, sfd->pipe_recv.data,
 					(size_t)sfd->pipe_recv.used);

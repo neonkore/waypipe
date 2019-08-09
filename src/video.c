@@ -1068,7 +1068,7 @@ void collect_video_from_mirror(
 				WMSG_SEND_DMAVID_PACKET);
 		header->remote_id = sfd->remote_id;
 
-		size_t padded_len = alignz(pktsz, 16);
+		size_t padded_len = alignz(pktsz, 4);
 		uint8_t *data = malloc(padded_len);
 		memset(data + pktsz, 0, padded_len - pktsz);
 		memcpy(data, pkt->buf->data, pktsz);

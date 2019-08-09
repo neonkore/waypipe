@@ -63,10 +63,6 @@ static inline size_t alignz(size_t v, size_t m)
 {
 	return m * ((v + m - 1) / m);
 }
-static inline uint64_t alignu(uint64_t v, uint64_t m)
-{
-	return m * ((v + m - 1) / m);
-}
 /* only valid for nonegative v and positive u */
 static inline int floordiv(int v, int u) { return v / u; }
 static inline int ceildiv(int v, int u) { return (v + u - 1) / u; }
@@ -190,13 +186,11 @@ struct wmsg_open_file {
 	uint32_t size_and_type;
 	int32_t remote_id;
 	uint32_t file_size;
-	uint32_t pad4;
 };
 struct wmsg_open_dmabuf {
 	uint32_t size_and_type;
 	int32_t remote_id;
 	uint32_t file_size;
-	uint32_t pad4;
 	/* following this, provide struct dmabuf_slice_data */
 };
 struct wmsg_buffer_fill {
@@ -216,20 +210,14 @@ struct wmsg_buffer_diff {
 struct wmsg_basic {
 	uint32_t size_and_type;
 	int32_t remote_id;
-	uint32_t pad3;
-	uint32_t pad4;
 };
 struct wmsg_ack {
 	uint32_t size_and_type;
 	uint32_t messages_received;
-	uint32_t pad3;
-	uint32_t pad4;
 };
 struct wmsg_restart {
 	uint32_t size_and_type;
 	uint32_t last_ack_received;
-	uint32_t pad3;
-	uint32_t pad4;
 };
 /* size: the number of bytes in the message, /excluding/ trailing padding. */
 static inline uint32_t transfer_header(size_t size, enum wmsg_type type)

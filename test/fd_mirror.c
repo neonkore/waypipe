@@ -253,7 +253,7 @@ static bool test_transfer(struct fd_translation_map *src_map,
 		tmp.data = &res.data[start];
 		uint32_t hb = ((uint32_t *)tmp.data)[0];
 		int32_t xid = ((int32_t *)tmp.data)[1];
-		tmp.size = alignz(transfer_size(hb), 16);
+		tmp.size = alignz(transfer_size(hb), 4);
 		apply_update(dst_map, dst_pool, render_data, transfer_type(hb),
 				xid, &tmp);
 		start += tmp.size;

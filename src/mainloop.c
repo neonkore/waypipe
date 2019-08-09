@@ -459,7 +459,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 			 * time */
 			uint32_t *header = (uint32_t *)&cmsg->recv_buffer
 							   [cmsg->recv_start];
-			size_t sz = alignz(transfer_size(*header), 16);
+			size_t sz = alignz(transfer_size(*header), 4);
 
 			size_t read_end = cmsg->recv_start + sz;
 			bool wraparound =
@@ -520,9 +520,9 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 	/* Recount unhandled messages */
 	cmsg->recv_unhandled_messages = 0;
 	size_t i = cmsg->recv_start;
-	while (i + sizeof(uint32_t) < cmsg->recv_end) {
+	while (i + sizeof(uint32_t) <= cmsg->recv_end) {
 		uint32_t *header = (uint32_t *)&cmsg->recv_buffer[i];
-		size_t sz = alignz(transfer_size(*header), 16);
+		size_t sz = alignz(transfer_size(*header), 4);
 		if (sz == 0) {
 			wp_error("Encountered malformed zero size packet");
 			return -1;
@@ -542,7 +542,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 				    packet_start) == -1) {
 			return -1;
 		}
-		cmsg->recv_start += alignz(sz, 16);
+		cmsg->recv_start += alignz(sz, 4);
 		cmsg->recv_unhandled_messages--;
 
 		if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
@@ -886,7 +886,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			size_t act_size = (size_t)wmsg->rbuffer_count *
 							  sizeof(int32_t) +
 					  sizeof(uint32_t);
-			size_t pad_size = alignz(act_size, 16);
+			size_t pad_size = alignz(act_size, 4);
 			uint32_t *msg = malloc(pad_size);
 			msg[0] = transfer_header(act_size, WMSG_INJECT_RIDS);
 			memcpy(&msg[1], wmsg->rbuffer,
@@ -910,15 +910,15 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			uint32_t protoh = transfer_header(
 					act_size, WMSG_PROTOCOL);
 
-			uint8_t *copy_proto = malloc(alignz(act_size, 16));
+			uint8_t *copy_proto = malloc(alignz(act_size, 4));
 			memcpy(copy_proto, &protoh, sizeof(uint32_t));
 			memcpy(copy_proto + sizeof(uint32_t), dst.data,
 					(size_t)dst.zone_end);
 			memset(copy_proto + sizeof(uint32_t) + dst.zone_end, 0,
-					alignz(act_size, 16) - act_size);
+					alignz(act_size, 4) - act_size);
 
 			wmsg->trailing[wmsg->ntrailing].iov_len =
-					alignz(act_size, 16);
+					alignz(act_size, 4);
 			wmsg->trailing[wmsg->ntrailing].iov_base = copy_proto;
 			wmsg->ntrailing++;
 		}
@@ -1059,8 +1059,6 @@ static void reset_connection(struct cross_state *cxs,
 		restart.size_and_type =
 				transfer_header(sizeof(restart), WMSG_RESTART);
 		restart.last_ack_received = cxs->last_confirmed_msgno;
-		restart.pad3 = 0;
-		restart.pad4 = 0;
 		wmsg->transfers.start = 0;
 		wmsg->transfers.partial_write_amt = 0;
 		wp_debug("Sending restart message: last ack=%d",
@@ -1332,8 +1330,8 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	wp_debug("Exiting main loop, attempting close message");
 
 	/* Attempt to notify remote end that the application has closed */
-	uint32_t close_msg[4] = {transfer_header(16, WMSG_CLOSE), 0, 0, 0};
-	if (write(chanfd, close_msg, sizeof(close_msg)) == -1) {
+	uint32_t close_msg = transfer_header(sizeof(close_msg), WMSG_CLOSE);
+	if (write(chanfd, &close_msg, sizeof(close_msg)) == -1) {
 		wp_error("Failed to send close notification");
 	}
 
