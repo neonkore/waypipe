@@ -45,7 +45,8 @@ def run_test(name, command, env, use_socketpair, expect_success):
     try_unlink(server_socket_path + ".disp.sock")
     if use_socketpair:
         sockets = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn_socket = os.dup2(sockets[1].fileno(), 999, inheritable=True)
+        conn_socket = 999
+        os.dup2(sockets[1].fileno(), conn_socket, inheritable=True)
         env = dict(env, WAYLAND_SOCKET=str(conn_socket))
         pfds = [conn_socket]
     else:
