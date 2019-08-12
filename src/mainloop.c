@@ -390,6 +390,11 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		 * the messages. This makes fd handling more complicated. */
 		struct char_window src;
 		int protosize = (int)(unpadded_size - sizeof(uint32_t));
+		if (protosize >= cmsg->dbuffer_edited_maxsize) {
+			wp_error("Very large protocol packet %d >> 4096 byte read group size",
+					protosize);
+			return -1;
+		}
 		src.data = packet + sizeof(uint32_t);
 		src.zone_start = 0;
 		src.zone_end = protosize;
