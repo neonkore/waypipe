@@ -1416,7 +1416,7 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 	}
 }
 
-void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
+int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		struct render_data *render, enum wmsg_type type, int remote_id,
 		const struct bytebuf *msg)
 {
@@ -1427,20 +1427,20 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			type == WMSG_OPEN_DMAVID_SRC ||
 			type == WMSG_OPEN_DMAVID_DST) {
 		create_from_update(map, threads, render, type, remote_id, msg);
-		return;
+		return 0;
 	}
 
 	struct shadow_fd *sfd = get_shadow_for_rid(map, remote_id);
 	if (!sfd) {
 		wp_error("shadow structure for RID=%d was not available",
 				remote_id);
-		return;
+		return -1;
 	}
 	if (type == WMSG_EXTEND_FILE) {
 		if (sfd->type != FDC_FILE) {
 			wp_error("Trying to extend RID=%d, type=%s, which is not a file",
 					remote_id, fdcat_to_str(sfd->type));
-			return;
+			return -1;
 		}
 
 		const struct wmsg_open_file *header =
@@ -1448,13 +1448,14 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (ftruncate(sfd->fd_local, (off_t)header->file_size) == -1) {
 			wp_error("Failed to resize file buffer: %s",
 					strerror(errno));
+			return 0;
 		}
 		increase_buffer_sizes(sfd, threads, (size_t)header->file_size);
 	} else if (type == WMSG_BUFFER_FILL) {
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
 					remote_id, fdcat_to_str(sfd->type));
-			return;
+			return -1;
 		}
 		const struct wmsg_buffer_fill *header =
 				(const struct wmsg_buffer_fill *)msg->data;
@@ -1478,10 +1479,12 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (header->end > sfd->buffer_size) {
 			wp_error("Transfer end overflow %" PRIu32 " > %zu",
 					header->end, sfd->buffer_size);
+			return -1;
 		}
 		if (act_size != header->end - header->start) {
 			wp_error("Transfer size mismatch %zu %" PRIu32,
 					act_size, header->end - header->start);
+			return -1;
 		}
 		memcpy(sfd->mem_mirror + header->start, act_buffer,
 				header->end - header->start);
@@ -1491,7 +1494,7 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
 			if (!sfd->mem_local) {
-				return;
+				return 0;
 			}
 		}
 		memcpy(sfd->mem_local + header->start,
@@ -1501,14 +1504,14 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type == FDC_DMABUF) {
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
-				return;
+				return 0;
 			}
 		}
 	} else if (type == WMSG_BUFFER_DIFF) {
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to apply diff to RID=%d, type=%s, which is not a buffer-type",
 					remote_id, fdcat_to_str(sfd->type));
-			return;
+			return -1;
 		}
 		const struct wmsg_buffer_diff *header =
 				(const struct wmsg_buffer_diff *)msg->data;
@@ -1531,6 +1534,7 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (act_size != header->diff_size + header->ntrailing) {
 			wp_error("Transfer size mismatch %zu %u", act_size,
 					header->diff_size + header->ntrailing);
+			return -1;
 		}
 
 		void *handle = NULL;
@@ -1538,7 +1542,7 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
 			if (!sfd->mem_local) {
-				return;
+				return 0;
 			}
 		}
 
@@ -1552,14 +1556,14 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type == FDC_DMABUF) {
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
-				return;
+				return 0;
 			}
 		}
 	} else if (type == WMSG_PIPE_TRANSFER) {
 		if (sfd->type != FDC_PIPE_IW && sfd->type != FDC_PIPE_RW) {
 			wp_error("Trying to write data to RID=%d, type=%s, which is not a writable pipe",
 					remote_id, fdcat_to_str(sfd->type));
-			return;
+			return -1;
 		}
 
 		const struct wmsg_basic *header =
@@ -1593,19 +1597,19 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_PIPE_IW && sfd->type != FDC_PIPE_RW) {
 			wp_error("Trying to hang up the pipe RID=%d, type=%s, which is not a writable pipe",
 					remote_id, fdcat_to_str(sfd->type));
-			return;
+			return -1;
 		}
 		sfd->pipe_rclosed = true;
 	} else if (type == WMSG_SEND_DMAVID_PACKET) {
 		if (sfd->type != FDC_DMAVID_IW) {
 			wp_error("Trying to send video packet to RID=%d, type=%s, which is not a video output buffer",
 					remote_id, fdcat_to_str(sfd->type));
-			return;
+			return -1;
 		}
 		if (!sfd->dmabuf_bo) {
 			wp_error("Applying update to nonexistent dma buffer object rid=%d",
 					sfd->remote_id);
-			return;
+			return 0;
 		}
 		const struct wmsg_basic *header =
 				(const struct wmsg_basic *)msg->data;
@@ -1616,7 +1620,9 @@ void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		apply_video_packet(sfd, render, &data);
 	} else {
 		wp_error("Unexpected update type: %s", wmsg_type_to_str(type));
+		return -1;
 	}
+	return 0;
 }
 
 bool shadow_decref_protocol(

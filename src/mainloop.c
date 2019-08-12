@@ -150,7 +150,7 @@ static void translate_fds(struct fd_translation_map *map,
 /** Given a list of global ids, and an up-to-date translation map, produce local
  * file descriptors */
 static void untranslate_ids(struct fd_translation_map *map, int nids,
-		const int ids[], int fds[])
+		const int *ids, int *fds)
 {
 	for (int i = 0; i < nids; i++) {
 		struct shadow_fd *shadow = get_shadow_for_rid(map, ids[i]);
@@ -255,9 +255,9 @@ struct pipe_elem_header {
 	int32_t special;
 };
 
-/* This state corresponds to the in-progress transfer from the program
- * (compositor or application) and its pipes/buffers to the channel. */
 enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL };
+/** This state corresponds to the in-progress transfer from the program
+ * (compositor or application) and its pipes/buffers to the channel. */
 struct way_msg_state {
 	// These aren't quite a ring-buffer
 	int dbuffer_maxsize;
@@ -283,9 +283,9 @@ struct way_msg_state {
 	struct iovec trailing[3];
 };
 
-/* This state corresponds to the in-progress transfer from the channel
- * to the program and the buffers/pipes on which will be written. */
 enum cm_state { CM_WAITING_FOR_PROGRAM, CM_WAITING_FOR_CHANNEL };
+/** This state corresponds to the in-progress transfer from the channel
+ * to the program and the buffers/pipes on which will be written. */
 struct chan_msg_state {
 	enum cm_state state;
 
@@ -293,14 +293,10 @@ struct chan_msg_state {
 	int dbuffer_start;
 	int dbuffer_end;
 	int dbuffer_edited_maxsize;
-	int fbuffer_maxsize;
-	int fbuffer_count;
-	int tfbuffer_count;
-	int rbuffer_count;
-	int *rbuffer;         // rids
-	int *tfbuffer;        // fds to be immediately transferred
-	int *fbuffer;         // fds for use
 	char *dbuffer_edited; // messages are copied to here
+
+	struct int_window transf_fds; /**< FDs to be immediately transferred */
+	struct int_window proto_fds;  /**< FDs for use by protocol */
 
 #define RECV_GOAL_READ_SIZE 131072
 	char *recv_buffer; // ring-like buffer for message data
@@ -310,6 +306,7 @@ struct chan_msg_state {
 	int recv_unhandled_messages; // number of messages to parse
 };
 
+/** State used by both forward and reverse messages */
 struct cross_state {
 	/* Which was the last received message received from the other
 	 * application, for which acknowledgement was sent? */
@@ -364,16 +361,24 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		int nfds = (int)((unpadded_size - sizeof(uint32_t)) /
 				 sizeof(int32_t));
 
-		cmsg->tfbuffer_count = nfds;
-		untranslate_ids(&g->map, nfds, fds, cmsg->tfbuffer);
-		if (cmsg->tfbuffer_count > 0) {
-			// Append the new file descriptors to
-			// the parsing queue
-			memcpy(cmsg->fbuffer + cmsg->fbuffer_count,
-					cmsg->tfbuffer,
-					sizeof(int) * (size_t)cmsg->tfbuffer_count);
-			cmsg->fbuffer_count += cmsg->tfbuffer_count;
+		buf_ensure_size(nfds, sizeof(int), &cmsg->transf_fds.size,
+				(void **)&cmsg->transf_fds.data);
+		/* Reset transfer buffer; all fds in here were already sent */
+		cmsg->transf_fds.zone_start = 0;
+		cmsg->transf_fds.zone_end = nfds;
+		untranslate_ids(&g->map, nfds, fds, cmsg->transf_fds.data);
+		if (nfds > 0) {
+			buf_ensure_size(cmsg->proto_fds.zone_end + nfds,
+					sizeof(int), &cmsg->proto_fds.size,
+					(void **)&cmsg->proto_fds.data);
+
+			// Append the new file descriptors to the parsing queue
+			memcpy(cmsg->proto_fds.data + cmsg->proto_fds.zone_end,
+					cmsg->transf_fds.data,
+					sizeof(int) * (size_t)nfds);
+			cmsg->proto_fds.zone_end += nfds;
 		}
+		return 0;
 	} else if (type == WMSG_PROTOCOL) {
 		/* While by construction, the provided message buffer should be
 		 * aligned with individual message boundaries, it is not
@@ -390,28 +395,26 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		dst.zone_start = 0;
 		dst.zone_end = 0;
 		dst.size = cmsg->dbuffer_edited_maxsize;
-		struct int_window fds;
-		fds.data = cmsg->fbuffer;
-		fds.zone_start = 0;
-		fds.zone_end = cmsg->fbuffer_count;
-		fds.size = cmsg->fbuffer_maxsize;
 		parse_and_prune_messages(g, display_side, display_side, &src,
-				&dst, &fds);
+				&dst, &cmsg->proto_fds);
 		if (src.zone_start != src.zone_end) {
 			wp_error("did not expect partial messages over channel, only parsed %d/%d bytes",
 					src.zone_start, src.zone_end);
 			return -1;
 		}
 		/* Update file descriptor queue */
-		if (cmsg->fbuffer_count > fds.zone_start) {
-			memmove(cmsg->fbuffer, cmsg->fbuffer + fds.zone_start,
-					sizeof(int) * (size_t)(cmsg->fbuffer_count -
-								      fds.zone_start));
+		if (cmsg->proto_fds.zone_end > cmsg->proto_fds.zone_start) {
+			memmove(cmsg->proto_fds.data,
+					cmsg->proto_fds.data +
+							cmsg->proto_fds.zone_start,
+					sizeof(int) * (size_t)(cmsg->proto_fds.zone_end >
+								      cmsg->proto_fds.zone_start));
+			cmsg->proto_fds.zone_end -= cmsg->proto_fds.zone_start;
 		}
-		cmsg->fbuffer_count -= fds.zone_start;
 
 		cmsg->dbuffer_start = 0;
 		cmsg->dbuffer_end = dst.zone_end;
+		return 0;
 	} else {
 		int32_t rid = ((int32_t *)packet)[1];
 		struct bytebuf msg = {
@@ -420,10 +423,11 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		};
 		wp_debug("Received %s for RID=%d (len %d)",
 				wmsg_type_to_str(type), rid, unpadded_size);
-		apply_update(&g->map, &g->threads, &g->render, type, rid, &msg);
+		return apply_update(&g->map, &g->threads, &g->render, type, rid,
+				&msg);
 	}
-	return 0;
 }
+
 static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		struct cross_state *cxs, int chanfd, bool display_side,
 		struct globals *g)
@@ -563,13 +567,13 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	const char *progdesc = display_side ? "compositor" : "application";
 	// Write as much as possible
 	while (cmsg->dbuffer_start < cmsg->dbuffer_end) {
-		int nfds_written = 0;
 		ssize_t wc = iovec_write(progfd,
 				cmsg->dbuffer_edited + cmsg->dbuffer_start,
 				(size_t)(cmsg->dbuffer_end -
 						cmsg->dbuffer_start),
-				cmsg->tfbuffer, cmsg->tfbuffer_count,
-				&nfds_written);
+				cmsg->transf_fds.data,
+				cmsg->transf_fds.zone_end,
+				&cmsg->transf_fds.zone_start);
 		if (wc == -1 && errno == EWOULDBLOCK) {
 			wp_debug("Write to the %s would block", progdesc);
 			return 0;
@@ -584,15 +588,23 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			cmsg->dbuffer_start += (int)wc;
 			wp_debug("Wrote to %s, %d/%d bytes in chunk %zd, %d/%d fds",
 					progdesc, cmsg->dbuffer_start,
-					cmsg->dbuffer_end, wc, nfds_written,
-					cmsg->tfbuffer_count);
-			// We send as many fds as we can with the first
-			// batch
-			decref_transferred_fds(
-					&g->map, nfds_written, cmsg->tfbuffer);
-			memmove(cmsg->tfbuffer, cmsg->tfbuffer + nfds_written,
-					(size_t)nfds_written * sizeof(int));
-			cmsg->tfbuffer_count -= nfds_written;
+					cmsg->dbuffer_end, wc,
+					cmsg->transf_fds.zone_start,
+					cmsg->transf_fds.zone_end);
+
+			if (cmsg->transf_fds.zone_start > 0) {
+				decref_transferred_fds(&g->map,
+						cmsg->transf_fds.zone_start,
+						cmsg->transf_fds.data);
+				memmove(cmsg->transf_fds.data,
+						cmsg->transf_fds.data +
+								cmsg->transf_fds.zone_start,
+						(size_t)(cmsg->transf_fds.zone_end -
+								cmsg->transf_fds.zone_start) *
+								sizeof(int));
+				cmsg->transf_fds.zone_end -=
+						cmsg->transf_fds.zone_start;
+			}
 		}
 	}
 	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
@@ -1108,49 +1120,27 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	}
 
 	struct way_msg_state way_msg;
+	memset(&way_msg, 0, sizeof(way_msg));
 	way_msg.state = WM_WAITING_FOR_PROGRAM;
 	/* AFAIK, there is no documented upper bound for the size of a
 	 * Wayland protocol message, but libwayland (in wl_buffer_put)
 	 * effectively limits message sizes to 4096 bytes. We must
 	 * therefore adopt a limit as least as large. */
 	way_msg.dbuffer_maxsize = 4096;
-	way_msg.dbuffer_carryover_end = 0;
-	way_msg.dbuffer_carryover_start = 0;
-	way_msg.dbuffer_end = 0;
 	way_msg.dbuffer = malloc((size_t)way_msg.dbuffer_maxsize);
 	way_msg.fds.size = 128;
-	way_msg.fds.zone_start = 0;
-	way_msg.fds.zone_end = 0;
 	way_msg.fds.data = malloc((size_t)way_msg.fds.size * sizeof(int));
 	way_msg.rbuffer = malloc((size_t)way_msg.fds.size * sizeof(int));
-	way_msg.rbuffer_count = 0;
 	way_msg.dbuffer_edited_maxsize = 2 * way_msg.dbuffer_maxsize;
 	way_msg.dbuffer_edited = malloc((size_t)way_msg.dbuffer_edited_maxsize);
-	memset(&way_msg.transfers, 0, sizeof(struct transfer_data));
 
 	pthread_mutex_init(&way_msg.transfers.lock, NULL);
-	way_msg.total_written = 0;
-	way_msg.ntrailing = 0;
-	memset(way_msg.trailing, 0, sizeof(way_msg.trailing));
 
 	struct chan_msg_state chan_msg;
+	memset(&chan_msg, 0, sizeof(chan_msg));
 	chan_msg.state = CM_WAITING_FOR_CHANNEL;
-	chan_msg.fbuffer_maxsize = 128;
-	chan_msg.fbuffer_count = 0;
-	chan_msg.fbuffer =
-			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
-	chan_msg.rbuffer_count = 0;
-	chan_msg.rbuffer =
-			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
-	chan_msg.tfbuffer =
-			malloc((size_t)chan_msg.fbuffer_maxsize * sizeof(int));
-	chan_msg.tfbuffer_count = 0;
 	chan_msg.recv_size = 2 * RECV_GOAL_READ_SIZE;
 	chan_msg.recv_buffer = malloc((size_t)chan_msg.recv_size);
-	chan_msg.recv_start = 0;
-	chan_msg.recv_end = 0;
-	chan_msg.dbuffer_start = 0;
-	chan_msg.dbuffer_end = 0;
 	chan_msg.dbuffer_edited_maxsize = way_msg.dbuffer_maxsize * 2;
 	chan_msg.dbuffer_edited =
 			malloc((size_t)chan_msg.dbuffer_edited_maxsize);
@@ -1353,9 +1343,8 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	}
 	// We do not free chan_msg.dbuffer, as it is a subset of
 	// cmsg_buffer
-	free(chan_msg.tfbuffer);
-	free(chan_msg.fbuffer);
-	free(chan_msg.rbuffer);
+	free(chan_msg.transf_fds.data);
+	free(chan_msg.proto_fds.data);
 	free(chan_msg.recv_buffer);
 	free(chan_msg.dbuffer_edited);
 	close(chanfd);

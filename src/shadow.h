@@ -243,8 +243,12 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *cur,
  */
 void finish_update(struct shadow_fd *sfd);
 /** Apply a data update message to an element in the translation map, creating
- * an entry when there is none */
-void apply_update(struct fd_translation_map *map, struct thread_pool *threads,
+ * an entry when there is none.
+ *
+ * Returns -1 if the error is the fault of the other waypipe instance,
+ * 0 otherwise. (For example, syscall failure => 0, bad message length => -1.)
+ */
+int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		struct render_data *render, enum wmsg_type type, int remote_id,
 		const struct bytebuf *msg);
 /** Get the shadow structure associated to a remote id, or NULL if it dne */

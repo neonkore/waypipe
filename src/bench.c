@@ -187,7 +187,7 @@ static struct bench_result run_sub_bench(bool first,
 
 	struct bytebuf msg = {.size = sizeof(sizeof(struct wmsg_open_file)),
 			.data = (char *)&file_msg};
-	apply_update(&map, &pool, &render, WMSG_OPEN_FILE, 0, &msg);
+	(void)apply_update(&map, &pool, &render, WMSG_OPEN_FILE, 0, &msg);
 	struct shadow_fd *sfd = get_shadow_for_rid(&map, 0);
 
 	int iter = 0;
