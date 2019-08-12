@@ -1,5 +1,5 @@
 
-waypipe_source_files = ['bench.c', 'client.c', 'dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'server.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
+waypipe_source_files = ['dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
 waypipe_dependencies = [
 	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
 	liblz4,          # Fast compression option
@@ -58,7 +58,7 @@ lib_waypipe_src = static_library(
 
 waypipe_prog = executable(
 	'waypipe',
-	['waypipe.c'],
+	['waypipe.c', 'bench.c', 'client.c', 'server.c'],
 	link_with: lib_waypipe_src,
 	install: true
 )
