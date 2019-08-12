@@ -32,6 +32,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -177,6 +178,27 @@ void test_log_handler(const char *file, int line, enum log_level level,
 	vprintf(fmt, args);
 	va_end(args);
 	printf("\n");
+}
+
+void test_atomic_log_handler(const char *file, int line, enum log_level level,
+		const char *fmt, ...)
+{
+	pthread_t tid = pthread_self();
+	char msg[1024];
+	int nwri = 0;
+	nwri += sprintf(msg + nwri, "%" PRIx64 " [%s:%3d] ", (uint64_t)tid,
+			file, line);
+
+	va_list args;
+	va_start(args, fmt);
+	nwri += vsnprintf(msg + nwri, (size_t)(1022 - nwri), fmt, args);
+	va_end(args);
+
+	msg[nwri++] = '\n';
+	msg[nwri] = 0;
+
+	(void)write(STDOUT_FILENO, msg, (size_t)nwri);
+	(void)level;
 }
 
 bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options,

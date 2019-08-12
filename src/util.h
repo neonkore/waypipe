@@ -102,6 +102,8 @@ typedef void (*log_handler_func_t)(const char *file, int line,
 /** a simple log handler to STDOUT for use by test programs */
 void test_log_handler(const char *file, int line, enum log_level level,
 		const char *fmt, ...);
+void test_atomic_log_handler(const char *file, int line, enum log_level level,
+		const char *fmt, ...);
 /** These log functions should be set by whichever translation units have a
  * 'main'. The first one is the debug handler, second error handler. Set them to
  * NULL to disable log messages. */

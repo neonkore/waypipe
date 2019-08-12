@@ -86,9 +86,16 @@ if weston_prog.found() and have_test_progs
 endif
 test_startup = join_paths(meson.current_source_dir(), 'startup_failure.py')
 test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist, timeout: 10)
-fuzz_hook = executable(
-	'fuzz_hook',
-	['fuzz_hook.c'],
+fuzz_hook_ext = executable(
+	'fuzz_hook_ext',
+	['fuzz_hook_ext.c'],
+	include_directories: waypipe_includes,
+	link_with: lib_waypipe_src,
+	dependencies: [pthreads]
+)
+fuzz_hook_int = executable(
+	'fuzz_hook_int',
+	['fuzz_hook_int.c'],
 	include_directories: waypipe_includes,
 	link_with: lib_waypipe_src,
 	dependencies: [pthreads]

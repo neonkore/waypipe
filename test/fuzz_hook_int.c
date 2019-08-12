@@ -57,7 +57,7 @@ struct copy_setup {
 	struct main_config *mc;
 };
 
-void *start_looper(void *data)
+static void *start_looper(void *data)
 {
 	struct copy_setup *setup = (struct copy_setup *)data;
 	main_interface_loop(setup->conn, setup->wayl, setup->link, setup->mc,
@@ -65,66 +65,85 @@ void *start_looper(void *data)
 	return NULL;
 }
 
-static void atomic_logger(const char *file, int line, enum log_level level,
-		const char *fmt, ...)
+static void *read_file_into_mem(const char *path, size_t *len)
 {
-	pthread_t tid = pthread_self();
-	char msg[1024];
-	int nwri = 0;
-	nwri += sprintf(msg + nwri, "%" PRIx64 " [%s:%3d] ", (uint64_t)tid,
-			file, line);
-
-	va_list args;
-	va_start(args, fmt);
-	nwri += vsnprintf(msg + nwri, (size_t)(1022 - nwri), fmt, args);
-	va_end(args);
-
-	msg[nwri++] = '\n';
-	msg[nwri] = 0;
-
-	(void)write(STDOUT_FILENO, msg, (size_t)nwri);
-	(void)level;
+	int fd = open(path, O_RDONLY);
+	if (fd == -1) {
+		printf("Failed to open '%s'", path);
+		return NULL;
+	}
+	*len = (size_t)lseek(fd, 0, SEEK_END);
+	if (*len == 0) {
+		close(fd);
+		return EXIT_SUCCESS;
+	}
+	lseek(fd, 0, SEEK_SET);
+	void *buf = malloc(*len);
+	if (read(fd, buf, *len) == -1) {
+		return NULL;
+	}
+	close(fd);
+	return buf;
+}
+static int create_anon_file(size_t sz)
+{
+#ifdef HAS_MEMFD
+	char template[256];
+	sprintf(template, "%zx", sz);
+	int new_fileno = memfd_create(template, 0);
+#elif defined(SHM_ANON)
+	new_fileno = shm_open(SHM_ANON, O_RDWR, 0600);
+#else
+	/* WARNING: this can be rather file-system
+	 * intensive */
+	char template[256];
+	strcpy(template, "/tmp/fuzz_hook_XXXXXX");
+	new_fileno = mkstemp(template);
+	unlink(template);
+#endif
+	if (new_fileno == -1) {
+		wp_error("Failed to mkstemp");
+		return -1;
+	} else if (ftruncate(new_fileno, (off_t)sz) == -1) {
+		wp_error("Failed to resize tempfile");
+		close(new_fileno);
+		return -1;
+	}
+	return new_fileno;
 }
 
 log_handler_func_t log_funcs[2] = {NULL, NULL};
 int main(int argc, char **argv)
 {
 	if (argc == 1 || !strcmp(argv[1], "--help")) {
-		printf("Usage: ./fuzz_hook [--log] {input_file}\n");
-		printf("A program to run and control inputs for a linked client/server pair, from a file.\n");
+		printf("Usage: ./fuzz_hook_int [--server] [--log] {input_file}\n");
+		printf("A program to run and control Wayland and channel inputs for a waypipe main loop\n");
 		return EXIT_FAILURE;
 	}
+	bool display_side = true;
+	if (argc > 1 && !strcmp(argv[1], "--server")) {
+		display_side = false;
+		argc--;
+		argv++;
+	}
 	if (argc > 1 && !strcmp(argv[1], "--log")) {
-		log_funcs[0] = atomic_logger;
-		log_funcs[1] = atomic_logger;
+		log_funcs[0] = test_atomic_log_handler;
+		log_funcs[1] = test_atomic_log_handler;
 		argc--;
 		argv++;
 	}
 
-	int fd = open(argv[1], O_RDONLY);
-	if (fd == -1) {
-		printf("Failed to open '%s'", argv[1]);
+	size_t len;
+	char *buf = read_file_into_mem(argv[1], &len);
+	if (!buf) {
 		return EXIT_FAILURE;
 	}
-	int64_t len = (int64_t)lseek(fd, 0, SEEK_END);
-	if (len == 0) {
-		close(fd);
-		return EXIT_SUCCESS;
-	}
-	lseek(fd, 0, SEEK_SET);
-	char *buf = malloc((size_t)len);
-	if (read(fd, buf, (size_t)len) == -1) {
-		return EXIT_FAILURE;
-	}
-	close(fd);
-	printf("Loaded %" PRId64 " bytes\n", len);
+	printf("Loaded %zu bytes\n", len);
 
-	int srv_fds[2], cli_fds[2], conn_fds[2], srv_links[2], cli_links[2];
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, srv_fds) == -1 ||
-			socketpair(AF_UNIX, SOCK_STREAM, 0, cli_fds) == -1 ||
+	int way_fds[2], conn_fds[2], link_fds[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, way_fds) == -1 ||
 			socketpair(AF_UNIX, SOCK_STREAM, 0, conn_fds) == -1 ||
-			socketpair(AF_UNIX, SOCK_STREAM, 0, srv_links) == -1 ||
-			socketpair(AF_UNIX, SOCK_STREAM, 0, cli_links) == -1) {
+			socketpair(AF_UNIX, SOCK_STREAM, 0, link_fds) == -1) {
 		printf("Socketpair failed\n");
 		return EXIT_FAILURE;
 	}
@@ -141,40 +160,30 @@ int main(int argc, char **argv)
 			.prefer_hwvideo = false,
 	};
 
-	pthread_t thread_a, thread_b;
-	struct copy_setup server_conf = {.conn = conn_fds[0],
-			.wayl = srv_fds[1],
-			.link = srv_links[1],
-			.is_display_side = true,
+	pthread_t thread;
+	struct copy_setup conf = {.conn = conn_fds[1],
+			.wayl = way_fds[1],
+			.link = link_fds[1],
+			.is_display_side = display_side,
 			.mc = &config};
-	struct copy_setup client_conf = {.conn = conn_fds[1],
-			.wayl = cli_fds[1],
-			.link = cli_links[1],
-			.is_display_side = false,
-			.mc = &config};
-	if (pthread_create(&thread_a, NULL, start_looper, &server_conf) == -1) {
+	if (pthread_create(&thread, NULL, start_looper, &conf) == -1) {
 		printf("Thread failed\n");
-	}
-	if (pthread_create(&thread_b, NULL, start_looper, &client_conf) == -1) {
-		printf("Thread failed\n");
+		return EXIT_FAILURE;
 	}
 
 	char *ignore_buf = malloc(65536);
 
 	/* Main loop: RW from socketpairs with sendmsg, with short wait */
-	int64_t file_nwords = len / 4;
+	int64_t file_nwords = (int64_t)len / 4;
 	int64_t cursor = 0;
 	uint32_t *data = (uint32_t *)buf;
-#if !defined(SHM_ANON)
-	char template[256];
-#endif
 	while (cursor < file_nwords) {
 		uint32_t header = data[cursor++];
-		bool to_server = header & 0x1;
+		bool wayland_side = header & 0x1;
 		bool add_file = header & 0x2;
 		int new_fileno = -1;
 
-		if (add_file && cursor < file_nwords) {
+		if (add_file && wayland_side && cursor < file_nwords) {
 			uint32_t fsize = data[cursor++];
 			if (fsize == 0) {
 				/* 'copy' sink */
@@ -185,27 +194,7 @@ int main(int argc, char **argv)
 			} else {
 				/* avoid buffer overflow */
 				fsize = fsize > 1000000 ? 1000000 : fsize;
-				/* This should be a tmpfs */
-#ifdef HAS_MEMFD
-				sprintf(template, "%x:%x", (uint32_t)cursor,
-						fsize);
-				new_fileno = memfd_create(template, 0);
-#elif defined(SHM_ANON)
-				new_fileno = shm_open(SHM_ANON, O_RDWR, 0600);
-#else
-				/* WARNING: this can be rather file-system
-				 * intensive */
-				strcpy(template, "/tmp/fuzz_hook_XXXXXX");
-				new_fileno = mkstemp(template);
-				unlink(template);
-#endif
-				if (new_fileno == -1) {
-					wp_error("Failed to mkstemp");
-				} else if (ftruncate(new_fileno, fsize) == -1) {
-					wp_error("Failed to resize tempfile");
-					close(new_fileno);
-					new_fileno = -1;
-				}
+				new_fileno = create_anon_file(fsize);
 			}
 		}
 
@@ -222,7 +211,7 @@ int main(int argc, char **argv)
 		int max_write_delay_ms = 1;
 		int max_read_delay_ms = 2;
 
-		int send_fd = to_server ? srv_fds[0] : cli_fds[0];
+		int send_fd = wayland_side ? way_fds[0] : conn_fds[0];
 		/* Write packet to stream */
 		struct pollfd write_pfd;
 		write_pfd.fd = send_fd;
@@ -240,7 +229,7 @@ int main(int argc, char **argv)
 			}
 			printf("Poll error\n");
 			break;
-		} else if (nw == 1) {
+		} else if (nw == 1 && wayland_side) {
 			/* Send message */
 			struct iovec the_iovec;
 			the_iovec.iov_len = packet_size * 4;
@@ -272,10 +261,16 @@ int main(int argc, char **argv)
 				msg.msg_controllen = CMSG_SPACE(sizeof(int));
 			}
 
-			int target_fd = to_server ? srv_fds[0] : cli_fds[0];
-			ssize_t ret = sendmsg(target_fd, &msg, 0);
+			ssize_t ret = sendmsg(way_fds[0], &msg, 0);
 			if (ret == -1) {
 				wp_error("Error in sendmsg");
+				break;
+			}
+		} else if (nw == 1 && !wayland_side) {
+			ssize_t ret = write(conn_fds[0], (char *)&data[cursor],
+					packet_size * 4);
+			if (ret == -1) {
+				wp_error("Error in write");
 				break;
 			}
 		} else {
@@ -289,8 +284,8 @@ int main(int argc, char **argv)
 		 * should be passed on unmodified; a very small fraction
 		 * are dropped */
 		struct pollfd read_pfds[2];
-		read_pfds[0].fd = srv_fds[0];
-		read_pfds[1].fd = cli_fds[0];
+		read_pfds[0].fd = way_fds[0];
+		read_pfds[1].fd = conn_fds[0];
 		read_pfds[0].events = POLLIN;
 		read_pfds[1].events = POLLIN;
 		int nr = poll(read_pfds, 2,
@@ -327,14 +322,11 @@ int main(int argc, char **argv)
 
 		cursor += packet_size;
 	}
-	close(srv_fds[0]);
-	close(cli_fds[0]);
+	close(conn_fds[0]);
+	close(way_fds[0]);
+	close(link_fds[0]);
 
-	pthread_join(thread_a, NULL);
-	pthread_join(thread_b, NULL);
-
-	close(srv_links[0]);
-	close(cli_links[0]);
+	pthread_join(thread, NULL);
 
 	free(buf);
 	free(ignore_buf);
