@@ -420,15 +420,22 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		cmsg->dbuffer_end = dst.zone_end;
 		return 0;
 	} else {
-		int32_t rid = ((int32_t *)packet)[1];
+		if (unpadded_size < sizeof(struct wmsg_basic)) {
+			wp_error("Message is too small to contain header+RID, %d bytes",
+					unpadded_size);
+			return -1;
+		}
+		const struct wmsg_basic *op_header =
+				(const struct wmsg_basic *)packet;
 		struct bytebuf msg = {
 				.data = packet,
 				.size = unpadded_size,
 		};
 		wp_debug("Received %s for RID=%d (len %d)",
-				wmsg_type_to_str(type), rid, unpadded_size);
-		return apply_update(&g->map, &g->threads, &g->render, type, rid,
-				&msg);
+				wmsg_type_to_str(type), op_header->remote_id,
+				unpadded_size);
+		return apply_update(&g->map, &g->threads, &g->render, type,
+				op_header->remote_id, &msg);
 	}
 }
 

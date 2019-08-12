@@ -1183,10 +1183,25 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 	}
 }
 
-static void create_from_update(struct fd_translation_map *map,
+static int create_from_update(struct fd_translation_map *map,
 		struct thread_pool *threads, struct render_data *render,
 		enum wmsg_type type, int remote_id, const struct bytebuf *msg)
 {
+	if (type == WMSG_OPEN_FILE) {
+		if (msg->size < sizeof(struct wmsg_open_file)) {
+			wp_error("Message size to create file is too small (%zu bytes)",
+					msg->size);
+			return -1;
+		}
+	} else if (type == WMSG_OPEN_DMABUF || type == WMSG_OPEN_DMAVID_DST ||
+			type == WMSG_OPEN_DMAVID_SRC) {
+		if (msg->size < sizeof(struct wmsg_open_dmabuf) +
+						sizeof(struct dmabuf_slice_data)) {
+			wp_error("Message size to create dmabuf is too small (%zu bytes)",
+					msg->size);
+			return -1;
+		}
+	}
 
 	wp_debug("Introducing new fd, remoteid=%d", remote_id);
 	struct shadow_fd *sfd = calloc(1, sizeof(struct shadow_fd));
@@ -1202,6 +1217,7 @@ static void create_from_update(struct fd_translation_map *map,
 	sfd->refcount_transfer = 1;
 	sfd->refcount_protocol = 0;
 	if (type == WMSG_OPEN_FILE) {
+
 		const struct wmsg_open_file header =
 				*(const struct wmsg_open_file *)msg->data;
 
@@ -1224,7 +1240,7 @@ static void create_from_update(struct fd_translation_map *map,
 		if (sfd->fd_local == -1) {
 			wp_error("Failed to create shm file for object %d: %s",
 					sfd->remote_id, strerror(errno));
-			return;
+			return 0;
 		}
 		if (shm_unlink(file_shm_buf_name) == -1) {
 			wp_error("Failed to unlink new shm file for object %d: %s",
@@ -1234,7 +1250,7 @@ static void create_from_update(struct fd_translation_map *map,
 			wp_error("Failed to resize shm file %s to size %zu for reason: %s",
 					file_shm_buf_name, sfd->buffer_size,
 					strerror(errno));
-			return;
+			return 0;
 		}
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -1248,13 +1264,13 @@ static void create_from_update(struct fd_translation_map *map,
 					-1) {
 				wp_error("Failed to create a socketpair: %s",
 						strerror(errno));
-				return;
+				return 0;
 			}
 		} else {
 			if (pipe(pipedes) == -1) {
 				wp_error("Failed to create a pipe: %s",
 						strerror(errno));
-				return;
+				return 0;
 			}
 		}
 
@@ -1280,7 +1296,7 @@ static void create_from_update(struct fd_translation_map *map,
 		if (set_nonblocking(sfd->pipe_fd) == -1) {
 			wp_error("Failed to make private pipe end nonblocking: %s",
 					strerror(errno));
-			return;
+			return 0;
 		}
 
 		// Allocate a reasonably small read buffer
@@ -1289,15 +1305,15 @@ static void create_from_update(struct fd_translation_map *map,
 		sfd->pipe_onlyhere = false;
 	} else if (type == WMSG_OPEN_DMAVID_DST) {
 		/* remote read data, this side writes data */
+		sfd->type = FDC_DMAVID_IW;
 		const struct wmsg_open_dmabuf header =
 				*(const struct wmsg_open_dmabuf *)msg->data;
 
-		sfd->type = FDC_DMAVID_IW;
 		sfd->buffer_size = header.file_size;
 
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
-			return;
+			return 0;
 		}
 		memcpy(&sfd->dmabuf_info,
 				msg->data + sizeof(struct wmsg_open_dmabuf),
@@ -1308,7 +1324,7 @@ static void create_from_update(struct fd_translation_map *map,
 			wp_error("FDC_DMAVID_IW: RID=%d make_dmabuf failure, sz=%d (%d)",
 					sfd->remote_id, (int)sfd->buffer_size,
 					sizeof(struct dmabuf_slice_data));
-			return;
+			return 0;
 		}
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 
@@ -1330,7 +1346,7 @@ static void create_from_update(struct fd_translation_map *map,
 
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
-			return;
+			return 0;
 		}
 
 		memcpy(&sfd->dmabuf_info,
@@ -1341,7 +1357,7 @@ static void create_from_update(struct fd_translation_map *map,
 		if (!sfd->dmabuf_bo) {
 			wp_error("FDC_DMAVID_IR: RID=%d make_dmabuf failure",
 					sfd->remote_id);
-			return;
+			return 0;
 		}
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 
@@ -1374,19 +1390,21 @@ static void create_from_update(struct fd_translation_map *map,
 		// what type it is?
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
-			return;
+			return 0;
 		}
 
 		sfd->dmabuf_bo = make_dmabuf(
 				render, sfd->buffer_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			sfd->fd_local = -1;
-			return;
+			return 0;
 		}
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 	} else {
 		wp_error("Creating unknown file type updates");
+		return -1;
 	}
+	return 0;
 }
 
 static void increase_buffer_sizes(struct shadow_fd *sfd,
@@ -1426,8 +1444,8 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			type == WMSG_OPEN_RW_PIPE ||
 			type == WMSG_OPEN_DMAVID_SRC ||
 			type == WMSG_OPEN_DMAVID_DST) {
-		create_from_update(map, threads, render, type, remote_id, msg);
-		return 0;
+		return create_from_update(
+				map, threads, render, type, remote_id, msg);
 	}
 
 	struct shadow_fd *sfd = get_shadow_for_rid(map, remote_id);
@@ -1440,6 +1458,11 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_FILE) {
 			wp_error("Trying to extend RID=%d, type=%s, which is not a file",
 					remote_id, fdcat_to_str(sfd->type));
+			return -1;
+		}
+		if (msg->size < sizeof(struct wmsg_open_file)) {
+			wp_error("File open message size to RID=%d is too small (%zu) to contain header",
+					remote_id, msg->size);
 			return -1;
 		}
 
@@ -1457,9 +1480,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					remote_id, fdcat_to_str(sfd->type));
 			return -1;
 		}
+		if (msg->size < sizeof(struct wmsg_buffer_fill)) {
+			wp_error("Buffer fill message size to RID=%d is too small (%zu) to contain header",
+					remote_id, msg->size);
+			return -1;
+		}
 		const struct wmsg_buffer_fill *header =
 				(const struct wmsg_buffer_fill *)msg->data;
-		size_t sz = transfer_size(header->size_and_type);
 
 		size_t uncomp_size = header->end - header->start;
 		struct thread_data *local = &threads->threads[0];
@@ -1469,7 +1496,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
 		uncompress_buffer(threads, &threads->threads[0].comp_ctx,
-				sz - sizeof(struct wmsg_buffer_fill),
+				msg->size - sizeof(struct wmsg_buffer_fill),
 				msg->data + sizeof(struct wmsg_buffer_fill),
 				uncomp_size, local->tmp_buf, &act_size,
 				&act_buffer);
@@ -1513,9 +1540,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					remote_id, fdcat_to_str(sfd->type));
 			return -1;
 		}
+		if (msg->size < sizeof(struct wmsg_buffer_diff)) {
+			wp_error("Buffer diff message size to RID=%d is too small (%zu) to contain header",
+					remote_id, msg->size);
+			return -1;
+		}
 		const struct wmsg_buffer_diff *header =
 				(const struct wmsg_buffer_diff *)msg->data;
-		size_t sz = transfer_size(header->size_and_type);
 
 		struct thread_data *local = &threads->threads[0];
 		buf_ensure_size((int)(header->diff_size + header->ntrailing), 1,
@@ -1524,7 +1555,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
 		uncompress_buffer(threads, &threads->threads[0].comp_ctx,
-				sz - sizeof(struct wmsg_buffer_diff),
+				msg->size - sizeof(struct wmsg_buffer_diff),
 				msg->data + sizeof(struct wmsg_buffer_diff),
 				header->diff_size + header->ntrailing,
 				local->tmp_buf, &act_size, &act_buffer);
@@ -1566,10 +1597,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return -1;
 		}
 
-		const struct wmsg_basic *header =
-				(const struct wmsg_basic *)msg->data;
-		size_t sz = transfer_size(header->size_and_type);
-		size_t transfer_size = sz - sizeof(struct wmsg_basic);
+		size_t transfer_size = msg->size - sizeof(struct wmsg_basic);
 
 		ssize_t netsize = sfd->pipe_send.used + (ssize_t)transfer_size;
 		if (sfd->pipe_send.size <= 1024) {
@@ -1611,12 +1639,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					sfd->remote_id);
 			return 0;
 		}
-		const struct wmsg_basic *header =
-				(const struct wmsg_basic *)msg->data;
-		size_t sz = transfer_size(header->size_and_type);
 		struct bytebuf data = {
 				.data = msg->data + sizeof(struct wmsg_basic),
-				.size = sz - sizeof(struct wmsg_basic)};
+				.size = msg->size - sizeof(struct wmsg_basic)};
 		apply_video_packet(sfd, render, &data);
 	} else {
 		wp_error("Unexpected update type: %s", wmsg_type_to_str(type));
