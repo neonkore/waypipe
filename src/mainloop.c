@@ -201,6 +201,10 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		}
 		int msgsz = peek_message_size(
 				&source_bytes->data[source_bytes->zone_start]);
+		if (msgsz % 4 != 0) {
+			wp_debug("Wayland messages lengths must be divisible by 4");
+			break;
+		}
 		if (source_bytes->zone_start + msgsz > source_bytes->zone_end) {
 			wp_debug("Insufficient bytes");
 			// Not enough remaining bytes to contain the
