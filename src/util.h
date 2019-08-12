@@ -99,10 +99,10 @@ int send_one_fd(int socket, int fd);
 enum log_level { WP_DEBUG = 0, WP_ERROR = 1 };
 typedef void (*log_handler_func_t)(const char *file, int line,
 		enum log_level level, const char *fmt, ...);
-/* a simple log handler to STDOUT for use by test programs */
+/** a simple log handler to STDOUT for use by test programs */
 void test_log_handler(const char *file, int line, enum log_level level,
 		const char *fmt, ...);
-/* These log functions should be set by whichever translation units have a
+/** These log functions should be set by whichever translation units have a
  * 'main'. The first one is the debug handler, second error handler. Set them to
  * NULL to disable log messages. */
 extern log_handler_func_t log_funcs[2];
@@ -113,7 +113,8 @@ extern log_handler_func_t log_funcs[2];
 #else
 #define WAYPIPE__FILE__ __FILE__
 #endif
-// No trailing ;, user must supply. The first vararg must be the format string.
+/** No trailing ;, user must supply. The first vararg must be the format string.
+ */
 #define wp_error(...)                                                          \
 	if (log_funcs[WP_ERROR])                                               \
 	(*log_funcs[WP_ERROR])(WAYPIPE__FILE__, __LINE__, WP_ERROR, __VA_ARGS__)
@@ -134,52 +135,73 @@ struct bytebuf {
 	size_t size;
 	char *data;
 };
+struct char_window {
+	char *data;
+	int size;
+	int zone_start;
+	int zone_end;
+};
+struct int_window {
+	int *data;
+	int size;
+	int zone_start;
+	int zone_end;
+};
 
+/**
+ * @brief Wire format message types
+ *
+ * Each message indicates what the receiving side should do.
+ */
 enum wmsg_type {
-	/* Send over a set of Wayland protocol messages. Preceding messages
+	/** Send over a set of Wayland protocol messages. Preceding messages
 	 * must create or update file descriptors and inject file descriptors
-	 * to the queue.
-	 *
-	 * TODO: use extra bits to make parsing more consistent between systems;
-	 * i.e, to ensure that # of file descriptors consumed is the same */
-	WMSG_PROTOCOL, // just header uint32, then protocol messages
-	/* Inject file descriptors into the receiver's buffer, for use by the
-	 * protocol parser */
-	WMSG_INJECT_RIDS, // just header uint32, then fds
-	/* Create a new shared memory file of the given size */
-	WMSG_OPEN_FILE, // wmsg_open_file
-	/* Provide a new (larger) size for the file buffer */
-	WMSG_EXTEND_FILE, // wmsg_open_file
-	/* Create a new DMABUF with the given size and dmabuf_slice_data */
-	WMSG_OPEN_DMABUF, // wmsg_open_dmabuf
-	/* Fill the region of the file with the folllowing data. The data should
-	 * be compressed according to the selected compression option */
-	WMSG_BUFFER_FILL, // wmsg_buffer_fill
-	/* Apply a diff to the file. The diff contents may be compressed. */
-	WMSG_BUFFER_DIFF, // wmsg_buffer_diff
-	/* Create a new pipe, with the given remote R/W status */
+	 * to the queue. */
+	// TODO: use extra bits to make parsing more consistent between systems;
+	// i.e, to ensure that # of file descriptors consumed is the same
+	WMSG_PROTOCOL, // header uint32_t, then protocol messages
+	/** Inject file descriptors into the receiver's buffer, for use by the
+	 * protocol parser. */
+	WMSG_INJECT_RIDS, // header uint32_t, then fds
+	/** Create a new shared memory file of the given size.
+	 * Format: \ref wmsg_open_file */
+	WMSG_OPEN_FILE,
+	/** Provide a new (larger) size for the file buffer.
+	 * Format: \ref wmsg_open_file */
+	WMSG_EXTEND_FILE,
+	/** Create a new DMABUF with the given size and \ref dmabuf_slice_data.
+	 * Format: \ref wmsg_open_dmabuf */
+	WMSG_OPEN_DMABUF,
+	/** Fill the region of the file with the folllowing data. The data
+	 * should be compressed according to the global compression option.
+	 * Format: \ref wmsg_buffer_fill */
+	WMSG_BUFFER_FILL,
+	/** Apply a diff to the file. The diff contents may be compressed.
+	 * Format: \ref wmsg_buffer_diff */
+	WMSG_BUFFER_DIFF,
+	/** Create a new pipe, with the given remote R/W status */
 	WMSG_OPEN_IR_PIPE, // wmsg_basic
 	WMSG_OPEN_IW_PIPE, // wmsg_basic
 	WMSG_OPEN_RW_PIPE, // wmsg_basic
-	/* Transfer data to the pipe */
+	/** Transfer data to the pipe */
 	WMSG_PIPE_TRANSFER, // wmsg_basic
-	/* No more data will be transferred to this pipe. */
+	/** No more data will be transferred to this pipe. */
 	WMSG_PIPE_HANGUP, // wmsg_basic
-	/* Create a DMABUF (with following data parameters) that will be used
-	 * to produce/consume video frames. */
-	WMSG_OPEN_DMAVID_SRC, // wmsg_open_dmabuf
-	WMSG_OPEN_DMAVID_DST, // wmsg_open_dmabuf
-	/* Send a packet of video data to the destination */
+	/** Create a DMABUF (with following data parameters) that will be used
+	 * to produce/consume video frames. Format: \ref wmsg_open_dmabuf */
+	WMSG_OPEN_DMAVID_SRC,
+	WMSG_OPEN_DMAVID_DST,
+	/** Send a packet of video data to the destination */
 	WMSG_SEND_DMAVID_PACKET, // wmsg_basic
-	/* Acknowledge that a given number of messages has been received, so
+	/** Acknowledge that a given number of messages has been received, so
 	 * that the sender of those messages no longer needs to store them
-	 * for replaying in case of reconnection */
-	WMSG_ACK_NBLOCKS, // wmsg_ack
-	/* When restarting a connection, indicate the number of the message
-	 * which will be sent next */
+	 * for replaying in case of reconnection. Format: \ref wmsg_ack */
+	WMSG_ACK_NBLOCKS,
+	/** When restarting a connection, indicate the number of the message
+	 * which will be sent next. Format: \ref wmsg_restart */
 	WMSG_RESTART, // wmsg_restart
-	/* When the remote program is closing */
-	WMSG_CLOSE, // uint32_t + padding
+	/** When the remote program is closing. Format: only the header */
+	WMSG_CLOSE,
 };
 const char *wmsg_type_to_str(enum wmsg_type tp);
 struct wmsg_open_file {
@@ -196,15 +218,15 @@ struct wmsg_open_dmabuf {
 struct wmsg_buffer_fill {
 	uint32_t size_and_type;
 	int32_t remote_id;
-	uint32_t start; // [start, end), in bytes of zone to be written
+	uint32_t start; /**< [start, end), in bytes of zone to be written */
 	uint32_t end;
 	/* following this, the possibly-compressed data */
 };
 struct wmsg_buffer_diff {
 	uint32_t size_and_type;
 	int32_t remote_id;
-	uint32_t diff_size; // in bytes, when uncompressed
-	uint32_t ntrailing; // number of 'trailing' bytes, copied to tail
+	uint32_t diff_size; /**< in bytes, when uncompressed */
+	uint32_t ntrailing; /**< number of 'trailing' bytes, copied to tail */
 	/* following this, the possibly-compressed diff  data */
 };
 struct wmsg_basic {
@@ -219,7 +241,7 @@ struct wmsg_restart {
 	uint32_t size_and_type;
 	uint32_t last_ack_received;
 };
-/* size: the number of bytes in the message, /excluding/ trailing padding. */
+/** size: the number of bytes in the message, /excluding/ trailing padding. */
 static inline uint32_t transfer_header(size_t size, enum wmsg_type type)
 {
 	return ((uint32_t)size << 5) | (uint32_t)type;
@@ -233,46 +255,35 @@ static inline enum wmsg_type transfer_type(uint32_t header)
 	return (enum wmsg_type)(header & ((1u << 5) - 1));
 }
 
-/* A structure tracking data blocks to transfer. Users should ensure that each
- * group of consecutive messages is 16-aligned, so that the headers make sense.
- */
+/** A structure tracking data blocks to transfer. Users should ensure that each
+ * protocol header is 4-aligned in the data stream. */
 struct transfer_data {
-	/* A short buffer filled with zeros, to provide padding when the source
+	/** A short buffer filled with zeros, to provide padding when the source
 	 * buffer is insufficiently large/shouldn't be modified. */
 	char zeros[16];
-	/* Data to be writtenveed */
+	/** Data to be writtenveed */
 	struct iovec *data;
-	/* Matching vector indicating to which message the corresponding data
+	/** Matching vector indicating to which message the corresponding data
 	 * block belongs. */
 	uint32_t *msgno;
-	/* start: next block to write. end: just after last block to write;
+	/** start: next block to write. end: just after last block to write;
 	 * size: number of iovec blocks */
 	int start, end, size;
-	/* How much of the block at 'start' has been written */
+	/** How much of the block at 'start' has been written */
 	size_t partial_write_amt;
-	/* The most recent message number */
+	/** The most recent message number, to be incremented after almost all
+	 * message types */
 	uint32_t last_msgno;
-	/* Guard for all operations */
+	/** Guard for all operations */
 	pthread_mutex_t lock;
 };
-
-struct char_window {
-	char *data;
-	int size;
-	int zone_start;
-	int zone_end;
-};
-struct int_window {
-	int *data;
-	int size;
-	int zone_start;
-	int zone_end;
-};
-
+/** Add transfer message to the queue, expanding the queue as necessary. */
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 		uint32_t msgno);
+/** Calls transfer_add with a message of <16 zero bytes */
 bool transfer_zeropad(
 		struct transfer_data *transfers, size_t size, uint32_t msgno);
+/** Destroy the transfer queue, deallocating all attached buffers */
 void cleanup_transfers(struct transfer_data *transfers);
 
 #endif // WAYPIPE_UTIL_H

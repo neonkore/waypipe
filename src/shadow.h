@@ -35,8 +35,13 @@
 #include "kernel.h"
 #include "util.h"
 
+struct pollfd;
+typedef VAGenericID VAContextID;
+typedef VAGenericID VASurfaceID;
+typedef VAGenericID VABufferID;
 typedef struct ZSTD_CCtx_s ZSTD_CCtx;
 typedef struct ZSTD_DCtx_s ZSTD_DCtx;
+
 struct comp_ctx {
 	void *lz4_extstate;
 	ZSTD_CCtx *zstd_ccontext;
@@ -103,11 +108,11 @@ enum task_type {
 	TASK_COMPRESS_DIFF,
 };
 
+/** Specification for a task to be run on another thread */
 struct task_data {
 	enum task_type type;
 
 	struct shadow_fd *sfd;
-	//	struct fd_translation_map *map;
 	/* For block compression option */
 	int zone_start, zone_end;
 	/* For diff compression option */
@@ -118,7 +123,8 @@ struct task_data {
 	struct transfer_data *transfers;
 };
 
-typedef enum {
+/** Shadow object types, signifying file descriptor type and usage */
+enum fdcat {
 	FDC_UNKNOWN,
 	FDC_FILE,      /* Shared memory buffer */
 	FDC_PIPE_IR,   /* pipe-like object, reading from program */
@@ -127,8 +133,7 @@ typedef enum {
 	FDC_DMABUF,    /* DMABUF buffer (will be exactly replicated) */
 	FDC_DMAVID_IR, /* DMABUF-based video, reading from program */
 	FDC_DMAVID_IW, /* DMABUF-based video, writing to program */
-} fdcat_t;
-bool fdcat_ispipe(fdcat_t t);
+};
 
 struct pipe_buffer {
 	char *data;
@@ -136,13 +141,15 @@ struct pipe_buffer {
 	ssize_t used;
 };
 
-typedef VAGenericID VAContextID;
-typedef VAGenericID VASurfaceID;
-typedef VAGenericID VABufferID;
-
+/**
+ * @brief The shadow_fd struct
+ *
+ * This structure is created to track each file descriptor used by the
+ * Wayland protocol.
+ */
 struct shadow_fd {
 	struct shadow_fd *next; // singly-linked list
-	fdcat_t type;
+	enum fdcat type;
 	int remote_id; // + if created serverside; - if created clientside
 	int fd_local;
 	// Dirty state.
@@ -217,17 +224,15 @@ void cleanup_thread_pool(struct thread_pool *pool);
 /** Given a file descriptor, return which type code would be applied to its
  * shadow entry. (For example, FDC_PIPE_IR for a pipe-like object that can only
  * be read.) Sets *size if non-NULL and if the object is an FDC_FILE. */
-fdcat_t get_fd_type(int fd, size_t *size);
-const char *fdcat_to_str(fdcat_t cat);
+enum fdcat get_fd_type(int fd, size_t *size);
+const char *fdcat_to_str(enum fdcat cat);
 /** Given a local file descriptor, type hint, and already computed size,
  * produce matching global id, and register it into the translation map if
  * not already done. The function can also be provided with optional extra
  * information (*info). If `read_modifier` is true, then the modifier for
- * a DMABUF should be automatically detected.
- */
-struct dmabuf_slice_data;
+ * a DMABUF should be automatically detected. */
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
-		struct render_data *render, int fd, fdcat_t type, size_t sz,
+		struct render_data *render, int fd, enum fdcat type, size_t sz,
 		const struct dmabuf_slice_data *info, bool read_modifier);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
@@ -250,7 +255,6 @@ int count_npipes(const struct fd_translation_map *map);
 /** Fill in pollfd entries, with POLLIN | POLLOUT, for applicable pipe objects.
  * Specifically, if check_read is true, indicate all readable pipes.
  * Also, indicate all writeable pipes for which we also something to write. */
-struct pollfd;
 int fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds,
 		bool check_read);
 
@@ -293,19 +297,14 @@ void extend_shm_shadow(struct fd_translation_map *map,
 		struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size);
 
-/* Return true if there is a work task (not a stop task) remaining for the
+/** Return true if there is a work task (not a stop task) remaining for the
  * main thread to work on; also set *is_done if all tasks have completed. */
 bool request_work_task(struct thread_pool *pool, struct task_data *task,
 		bool *is_done);
+/** Run a work task */
 void run_task(struct task_data *task, struct thread_data *local);
 
-size_t compress_bufsize(struct thread_pool *pool, size_t max_input);
-void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
-		size_t isize, const char *ibuf, size_t msize, char *mbuf,
-		struct bytebuf *dst);
-
 // video.c
-struct shadow_fd;
 void cleanup_hwcontext(struct render_data *rd);
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
 bool video_supports_shm_format(uint32_t format);
@@ -319,6 +318,7 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
  * `sfd->mem_mirror`. */
 void collect_video_from_mirror(
 		struct shadow_fd *sfd, struct transfer_data *transfers);
+/** Decompress a video packet and apply the new frame onto the shadow_fd  */
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 		const struct bytebuf *data);
 /** All return pointers can be NULL. Determines how much extra space or

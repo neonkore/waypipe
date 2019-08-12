@@ -1,2 +1,6 @@
 waypipe
 build/
+Doxyfile
+html
+latex
+doc

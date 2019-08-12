@@ -45,13 +45,18 @@ enum diff_type {
 /** Returns a function pointer to a diff construction kernel, and indicates
  * the alignment of the data which is to be passed in */
 interval_diff_fn_t get_diff_function(enum diff_type type, int *alignment_bits);
+/** Given intervals aligned to 1<<alignment_bits, create a diff of changed
+ * over base, and update base to match changed. */
 size_t construct_diff_core(interval_diff_fn_t idiff_fn, int alignment_bits,
 		const struct interval *__restrict__ damaged_intervals,
 		int n_intervals, void *__restrict__ base,
 		const void *__restrict__ changed, void *__restrict__ diff);
+/** If the bytes after the last multiple of 1<<alignment_bits differ, copy
+ * them over base and append the to the diff */
 size_t construct_diff_trailing(size_t size, int alignment_bits,
 		char *__restrict__ base, const char *__restrict__ changed,
 		char *__restrict__ diff);
+/** Apply a diff to both target buffers */
 void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize, size_t ntrailing,
 		const char *__restrict__ diff);

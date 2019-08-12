@@ -36,20 +36,20 @@ struct main_config;
 struct wp_interface;
 struct msg_handler {
 	const struct wp_interface *interface;
-	// these are structs packed densely with function pointers
+	/** These are structs packed densely with function pointers */
 	const void *event_handlers;
 	const void *request_handlers;
-	// can the type be produced via wl_registry::bind ?
+	/** Can the type be produced via wl_registry::bind ? */
 	bool is_global;
 };
+/** An object used by the wayland protocol. Specific types may extend
+ * this struct, using the following data as a header */
 struct wp_object {
-	/* An object used by the wayland protocol. Specific types may extend
-	 * this struct, using the following data as a header */
 	const struct wp_interface *type; // Use to lookup the message handler
 	uint32_t obj_id;
 	bool is_zombie; // object deleted but not yet acknowledged remotely
 };
-
+/** List of all Wayland protocol objects */
 struct obj_list {
 	struct wp_object **objs;
 	int nobj;
@@ -61,6 +61,7 @@ struct message_tracker {
 	// registry. each type produces 'callbacks'
 	struct obj_list objects;
 };
+/** Context object, to be passed to the protocol handler functions */
 struct context {
 	struct globals *const g;
 	struct obj_list *const obj_list;
@@ -80,6 +81,8 @@ struct context {
 	struct int_window *const fds;
 };
 
+/** Add a protocol object to the list, replacing any preceding object with
+ * the same id */
 void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 		struct wp_object *obj);
 void listset_remove(struct obj_list *lst, struct wp_object *obj);
@@ -91,6 +94,7 @@ void cleanup_message_tracker(
 
 /** Read message size from header; the 8 bytes beyond data must exist */
 int peek_message_size(const void *data);
+enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
 /**
  * The return value is false iff the given message should be dropped.
  * The flag `unidentified_changes` is set to true if the message does
@@ -107,16 +111,19 @@ int peek_message_size(const void *data);
  * The end of `fds` may be moved if any fds are inserted or discarded.
  * The start of fds will be moved, depending on how many fds were consumed.
  */
-enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
 enum parse_state handle_message(struct globals *g, bool on_display_side,
 		bool from_client, struct char_window *chars,
 		struct int_window *fds);
 
 // handlers.c
+/** Create a new Wayland protocol object of the given type; some types
+ * produce structs extending from wp_object */
 struct wp_object *create_wp_object(
 		uint32_t it, const struct wp_interface *type);
+/** Type-specific destruction routines, also dereferencing linked shadow_fds */
 void destroy_wp_object(
 		struct fd_translation_map *map, struct wp_object *object);
+
 extern const struct msg_handler handlers[];
 extern const struct wp_interface *the_display_interface;
 

@@ -40,7 +40,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* Generate a token with a very low accidental collision probability */
+/** Generate a token with a very low accidental collision probability */
 static uint64_t get_random_token(uint64_t last_token)
 {
 	struct timespec tp;

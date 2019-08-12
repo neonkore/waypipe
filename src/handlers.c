@@ -736,7 +736,7 @@ void do_wl_keyboard_evt_keymap(
 		struct context *ctx, uint32_t format, int fd, uint32_t size)
 {
 	size_t fdsz = 0;
-	fdcat_t fdtype = get_fd_type(fd, &fdsz);
+	enum fdcat fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_FILE || fdsz != size) {
 		wp_error("keymap candidate fd %d was not file-like (type=%s), and with size=%zu did not match %u",
 				fd, fdcat_to_str(fdtype), fdsz, size);
@@ -761,7 +761,7 @@ void do_wl_shm_req_create_pool(
 	}
 
 	size_t fdsz = 0;
-	fdcat_t fdtype = get_fd_type(fd, &fdsz);
+	enum fdcat fdtype = get_fd_type(fd, &fdsz);
 	/* It may be valid for the file descriptor size to be larger
 	 * than the immediately advertised size, since the call to
 	 * wl_shm.create_pool may be followed by wl_shm_pool.resize,
@@ -1017,7 +1017,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 
 #if !defined(__DragonFly__) && !defined(__FreeBSD__)
 	size_t fdsz = 0;
-	fdcat_t fdtype = get_fd_type(name, &fdsz);
+	enum fdcat fdtype = get_fd_type(name, &fdsz);
 	if (fdtype != FDC_DMABUF) {
 		wp_error("create_prime_buffer candidate fd %d was not a dmabuf (type=%s)",
 				name, fdcat_to_str(fdtype));
@@ -1239,7 +1239,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 
 #if !defined(__DragonFly__) && !defined(__FreeBSD__)
 		size_t fdsz = 0;
-		fdcat_t fdtype = get_fd_type(params->add[i].fd, &fdsz);
+		enum fdcat fdtype = get_fd_type(params->add[i].fd, &fdsz);
 		if (fdtype != FDC_DMABUF) {
 			wp_error("fd #%d for linux-dmabuf request wasn't a dmabuf, instead %s",
 					i, fdcat_to_str(fdtype));
@@ -1247,7 +1247,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		}
 #endif
 
-		fdcat_t res_type = FDC_DMABUF;
+		enum fdcat res_type = FDC_DMABUF;
 		if (ctx->g->config->video_if_possible) {
 			// TODO: multibuffer support
 			if (all_same_fds && video_supports_dmabuf_format(format,
@@ -1348,7 +1348,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 
 #if !defined(__DragonFly__) && !defined(__FreeBSD__)
 	size_t fdsz = 0;
-	fdcat_t fdtype = get_fd_type(fd, &fdsz);
+	enum fdcat fdtype = get_fd_type(fd, &fdsz);
 	if (fdtype != FDC_DMABUF) {
 		wp_error("fd %d, #%d for wlr-export-dmabuf frame wasn't a dmabuf, instead %s",
 				fd, index, fdcat_to_str(fdtype));

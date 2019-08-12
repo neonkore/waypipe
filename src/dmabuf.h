@@ -46,6 +46,7 @@ struct render_data {
 	VAConfigID av_copy_config;
 };
 
+/** Additional information to help serialize a dmabuf */
 struct dmabuf_slice_data {
 	/* This information partially duplicates that of a gbm_bo. However, for
 	 * instance with weston, it is possible for the compositor to handle
@@ -62,16 +63,18 @@ struct dmabuf_slice_data {
 	uint8_t using_planes[4];
 };
 
-/* Additional information to help serialize a dmabuf */
 int init_render_data(struct render_data *);
 void cleanup_render_data(struct render_data *);
 bool is_dmabuf(int fd);
 struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		const struct dmabuf_slice_data *info);
 int export_dmabuf(struct gbm_bo *bo);
+/** Import DMABUF to a GBM buffer object; if `read_modifier` is true, then
+ * the `info->modifier` will be overwritten with whatever the modifier is */
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		struct dmabuf_slice_data *info, bool read_modifier);
 void destroy_dmabuf(struct gbm_bo *bo);
+/** Map a DMABUF for reading or for writing */
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle);
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
 /** The handle values are unique among the set of currently active buffer

@@ -1,5 +1,7 @@
+Contributing guidelines
+===============================================================================
 
-# Formatting
+## Formatting
 
 To avoid needless time spent formatting things, this project has autoformatting
 set up. Yes, it's often ugly, but after using it long enough you'll forget that
@@ -10,7 +12,7 @@ format all source code files in the project.
 [0] https://github.com/python/black
 [1] https://clang.llvm.org/docs/ClangFormat.html
 
-# Types
+## Types
 
 * Typedefs should be used only for function signatures, and never applied to
   structs.
@@ -22,3 +24,11 @@ format all source code files in the project.
 * `printf` should be called with the correct format codes. For example, `%zd`
   for `ssize_t`, and the `PRIu32` macro for `uint32_t`.
 * Avoid unnecessary casts.
+
+## Comments
+
+Explain precisely that which is not obvious. `/* ... */` is preferred to
+`// ...` for longer comments; the leading `/*` and trailing `*/ do not
+need lines of their own. Use Doxygen style (`/**`) for functions and structs
+that need commenting, but not to the point where it hinders source code
+readability. waypipe is not a library.

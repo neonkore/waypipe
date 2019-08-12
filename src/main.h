@@ -47,17 +47,22 @@ struct globals {
 	struct thread_pool threads;
 };
 
-/* chanfd: connected socket to channel
+/** Main processing loop
+ *
+ * chanfd: connected socket to channel
  * progfd: connected socket to Wayland program
  * linkfd: optional connected socket providing new chanfds */
 int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side);
+/** Act as a Wayland server */
 int run_server(const char *socket_path, const char *display_path,
 		const char *control_path, const struct main_config *config,
 		bool oneshot, bool unlink_at_end, const char *application,
 		char *const app_argv[]);
+/** Act as a Wayland client */
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool via_socket, pid_t eol_pid);
+/** Run benchmarking tool; n_worker_threads defined as with \ref main_config */
 int run_bench(float bandwidth_mBps, int n_worker_threads);
 
 #endif // WAYPIPE_MAIN_H

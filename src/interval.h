@@ -27,39 +27,39 @@
 
 #include <stdint.h>
 
+/** A slight modification of the standard 'damage' rectangle
+ * formulation, written to be agnostic of whatever buffers
+ * underlie the system.
+ *
+ * [start,start+width),[start+stride,start+stride+width),
+ * ... [start+(rep-1)*stride,start+(rep-1)*stride+width) */
 struct ext_interval {
-	/* A slight modification of the standard 'damage' rectangle
-	 * formulation, written to be agnostic of whatever buffers
-	 * underlie the system.
-	 *
-	 * [start,start+width),[start+stride,start+stride+width),
-	 * ... [start+(rep-1)*stride,start+(rep-1)*stride+width) */
 	int32_t start;
-	/* Subinterval width */
+	/** Subinterval width */
 	int32_t width;
-	/* Number of distinct subinterval start positions. For a single
+	/** Number of distinct subinterval start positions. For a single
 	 * interval, this is one. */
 	int32_t rep;
-	/* Spacing between start positions, should be > width, unless
+	/** Spacing between start positions, should be > width, unless
 	 * the is only one subinterval, in which case the value shouldn't
 	 * matter and is conventionally set to 0. */
 	int32_t stride;
 };
+/** [start, end). (This is better than {start,width}, since width computations
+ * are rare and trivial, while merging code branches frequently off of
+ * endpoints) */
 struct interval {
-	/* start+end is better than start+width, since the limits are used
-	 * repeatedly by merge operations, while width is only needed for
-	 * e.g. streaming area estimates which are very fast anyway */
 	int32_t start;
 	int32_t end;
 };
 
 #define DAMAGE_EVERYTHING ((struct interval *)-1)
 
+/** Interval-based damage tracking. If damage is NULL, there is
+ * no recorded damage. If damage is DAMAGE_EVERYTHING, the entire
+ * region should be updated. If ndamage_intvs > 0, then
+ * damage points to an array of struct interval objects. */
 struct damage {
-	/* Interval-based damage tracking. If damage is NULL, there is
-	 * no recorded damage. If damage is DAMAGE_EVERYTHING, the entire
-	 * region should be updated. If ndamage_rects > 0, then
-	 * damage points to an array of struct damage_interval objects. */
 	struct interval *damage;
 	int ndamage_intvs;
 

@@ -141,7 +141,7 @@ static void translate_fds(struct fd_translation_map *map,
 	for (int i = 0; i < nfds; i++) {
 		/* Autodetect type */
 		size_t fdsz = 0;
-		fdcat_t fdtype = get_fd_type(fds[i], &fdsz);
+		enum fdcat fdtype = get_fd_type(fds[i], &fdsz);
 		ids[i] = translate_fd(
 				map, render, fds[i], fdtype, fdsz, NULL, false)
 					 ->remote_id;

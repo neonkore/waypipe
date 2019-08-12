@@ -136,8 +136,8 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 		struct gbm_bo *copy_bo)
 {
 	size_t csz = 0, osz = 0;
-	fdcat_t ctype = get_fd_type(copy_fd, &csz);
-	fdcat_t otype = get_fd_type(orig_fd, &osz);
+	enum fdcat ctype = get_fd_type(copy_fd, &csz);
+	enum fdcat otype = get_fd_type(orig_fd, &osz);
 	if (ctype != otype || csz != osz) {
 		wp_error("Mirrored file descriptor has different type or size: ot=%d ct=%d | os=%d cs=%d",
 				otype, ctype, (int)osz, (int)csz);
@@ -289,7 +289,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 			n_dst_threads);
 
 	size_t fdsz = 0;
-	fdcat_t fdtype = get_fd_type(new_file_fd, &fdsz);
+	enum fdcat fdtype = get_fd_type(new_file_fd, &fdsz);
 	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
 			fdtype, fdsz, slice_data, false);
 	struct shadow_fd *dst_shadow = NULL;

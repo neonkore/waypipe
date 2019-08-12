@@ -50,7 +50,7 @@
 #include <zstd.h>
 #endif
 
-bool fdcat_ispipe(fdcat_t t)
+static bool fdcat_ispipe(enum fdcat t)
 {
 	return t == FDC_PIPE_IR || t == FDC_PIPE_RW || t == FDC_PIPE_IW;
 }
@@ -298,7 +298,7 @@ void cleanup_thread_pool(struct thread_pool *pool)
 	close(pool->selfpipe_w);
 }
 
-const char *fdcat_to_str(fdcat_t cat)
+const char *fdcat_to_str(enum fdcat cat)
 {
 	switch (cat) {
 	case FDC_UNKNOWN:
@@ -321,7 +321,7 @@ const char *fdcat_to_str(fdcat_t cat)
 	return "<invalid>";
 }
 
-fdcat_t get_fd_type(int fd, size_t *size)
+enum fdcat get_fd_type(int fd, size_t *size)
 {
 	struct stat fsdata;
 	memset(&fsdata, 0, sizeof(fsdata));
@@ -375,7 +375,7 @@ fdcat_t get_fd_type(int fd, size_t *size)
 	}
 }
 
-size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
+static size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 {
 	switch (pool->compression) {
 	case COMP_NONE:
@@ -397,7 +397,7 @@ size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 /* With the selected compression method, compress the buffer
  * {isize,ibuf}, possibly modifying {msize,mbuf}, and setting
  * {wsize,wbuf} to indicate the result */
-void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
+static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 		size_t isize, const char *ibuf, size_t msize, char *mbuf,
 		struct bytebuf *dst)
 {
@@ -511,7 +511,7 @@ static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 }
 
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
-		struct render_data *render, int fd, fdcat_t type,
+		struct render_data *render, int fd, enum fdcat type,
 		size_t file_sz, const struct dmabuf_slice_data *info,
 		bool read_modifier)
 {
