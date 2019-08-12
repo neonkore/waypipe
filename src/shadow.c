@@ -1025,7 +1025,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			return;
 		}
 
-		if (sfd->remote_bufsize != sfd->buffer_size) {
+		if (sfd->remote_bufsize < sfd->buffer_size) {
 			struct wmsg_open_file *header = calloc(
 					1, sizeof(struct wmsg_open_file));
 			header->file_size = (uint32_t)sfd->buffer_size;
@@ -1461,13 +1461,20 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return -1;
 		}
 		if (msg->size < sizeof(struct wmsg_open_file)) {
-			wp_error("File open message size to RID=%d is too small (%zu) to contain header",
+			wp_error("File extend message size to RID=%d is too small (%zu) to contain header",
 					remote_id, msg->size);
 			return -1;
 		}
 
 		const struct wmsg_open_file *header =
 				(const struct wmsg_open_file *)msg->data;
+		if (header->file_size <= sfd->buffer_size) {
+			wp_error("File extend message for RID=%d does not increase size %u %z",
+					remote_id, header->file_size,
+					sfd->buffer_size);
+			return -1;
+		}
+
 		if (ftruncate(sfd->fd_local, (off_t)header->file_size) == -1) {
 			wp_error("Failed to resize file buffer: %s",
 					strerror(errno));
