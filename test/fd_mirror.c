@@ -158,14 +158,16 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 		}
 	} else if (otype == FDC_DMABUF) {
 		cdata = map_dmabuf(copy_bo, false, &chandle);
-		if (cdata == MAP_FAILED) {
+		if (cdata == NULL) {
 			return false;
 		}
 		odata = map_dmabuf(orig_bo, false, &ohandle);
-		if (odata == MAP_FAILED) {
+		if (odata == NULL) {
 			unmap_dmabuf(copy_bo, chandle);
 			return false;
 		}
+	} else {
+		return false;
 	}
 
 	bool pass = memcmp(cdata, odata, csz) == 0;

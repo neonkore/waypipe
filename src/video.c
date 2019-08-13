@@ -58,18 +58,20 @@ int init_hwcontext(struct render_data *rd)
 }
 void cleanup_hwcontext(struct render_data *rd) { (void)rd; }
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
-void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
+int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	(void)sfd;
 	(void)rd;
+	return -1;
 }
-void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
+int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	(void)sfd;
 	(void)rd;
+	return -1;
 }
 void collect_video_from_mirror(
-		struct shadow_fd *sfd, struct transfer_data *transfers)
+		struct shadow_fd *sfd, struct transfer_queue *transfers)
 {
 	(void)sfd;
 	(void)transfers;
@@ -828,37 +830,37 @@ static void setup_avframe_entries(struct AVFrame *frame,
 	}
 }
 
-void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
+int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	bool has_hw = init_hwcontext(rd) == 0;
 	/* Attempt hardware encoding, and if it doesn't succeed, fall back
 	 * to software encoding */
 	if (has_hw && setup_hwvideo_encode(sfd, rd) == 0) {
-		return;
+		return 0;
 	}
 
 	enum AVPixelFormat avpixfmt = drm_to_av(sfd->dmabuf_info.format);
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat	for %x",
 				sfd->dmabuf_info.format);
-		return;
+		return -1;
 	}
 	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
 	if (sws_isSupportedInput(avpixfmt) == 0) {
 		wp_error("frame format %s not supported",
 				av_get_pix_fmt_name(avpixfmt));
-		return;
+		return -1;
 	}
 	if (sws_isSupportedInput(videofmt) == 0) {
 		wp_error("videofmt %s not supported",
 				av_get_pix_fmt_name(videofmt));
-		return;
+		return -1;
 	}
 
 	struct AVCodec *codec = avcodec_find_encoder_by_name(VIDEO_SW_ENCODER);
 	if (!codec) {
 		wp_error("Failed to find encoder for h264");
-		return;
+		return -1;
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
@@ -874,13 +876,13 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
-		return;
+		return -1;
 	}
 
 	struct AVFrame *frame = av_frame_alloc();
 	if (!frame) {
 		wp_error("Could not allocate video frame");
-		return;
+		return -1;
 	}
 	setup_avframe_entries(
 			frame, &sfd->dmabuf_info, (uint8_t *)sfd->mem_mirror);
@@ -897,14 +899,14 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 			    yuv_frame->width, yuv_frame->height, videofmt,
 			    64) < 0) {
 		wp_error("Failed to allocate temp image");
-		return;
+		return -1;
 	}
 	struct SwsContext *sws = sws_getContext(frame->width, frame->height,
 			avpixfmt, yuv_frame->width, yuv_frame->height, videofmt,
 			SWS_BILINEAR, NULL, NULL, NULL);
 	if (!sws) {
 		wp_error("Could not create software color conversion context");
-		return;
+		return -1;
 	}
 
 	sfd->video_yuv_frame = yuv_frame;
@@ -914,6 +916,7 @@ void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
 	sfd->video_color_context = sws;
+	return 0;
 }
 
 static enum AVPixelFormat get_decode_format(
@@ -932,7 +935,7 @@ static enum AVPixelFormat get_decode_format(
 	return AV_PIX_FMT_NONE;
 }
 
-void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
+int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	bool has_hw = init_hwcontext(rd) == 0;
 
@@ -940,27 +943,29 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	if (avpixfmt == AV_PIX_FMT_NONE) {
 		wp_error("Failed to find matching AvPixelFormat for %x",
 				sfd->dmabuf_info.format);
-		return;
+		return -1;
 	}
 	enum AVPixelFormat videofmt = AV_PIX_FMT_YUV420P;
 
 	if (sws_isSupportedInput(avpixfmt) == 0) {
 		wp_error("source pixel format %x not supported", avpixfmt);
-		return;
+		return -1;
 	}
 	if (sws_isSupportedInput(videofmt) == 0) {
 		wp_error("AV_PIX_FMT_YUV420P not supported");
-		return;
+		return -1;
 	}
 
 	struct AVCodec *codec = avcodec_find_decoder_by_name(VIDEO_DECODER);
 	if (!codec) {
 		wp_error("Failed to find decoder \"" VIDEO_DECODER "\"");
+		return -1;
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	if (!ctx) {
 		wp_error("Failed to allocate context");
+		return -1;
 	}
 
 	ctx->delay = 0;
@@ -993,10 +998,12 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	struct AVFrame *yuv_frame = av_frame_alloc();
 	if (!yuv_frame) {
 		wp_error("Could not allocate yuv frame");
+		return -1;
 	}
 	struct AVPacket *pkt = av_packet_alloc();
 	if (!pkt) {
 		wp_error("Could not allocate video packet");
+		return -1;
 	}
 
 	if (ctx->hw_device_ctx) {
@@ -1016,6 +1023,7 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	/* will be allocated on frame receipt */
 	sfd->video_local_frame = NULL;
 	sfd->video_color_context = NULL;
+	return 0;
 }
 
 void collect_video_from_mirror(
@@ -1079,9 +1087,8 @@ void collect_video_from_mirror(
 	}
 }
 
-static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
+static int setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 {
-	(void)sfd;
 	struct AVCodecContext *ctx = sfd->video_context;
 
 	enum AVPixelFormat avpixfmt = drm_to_av(sfd->dmabuf_info.format);
@@ -1089,6 +1096,7 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 	struct AVFrame *frame = av_frame_alloc();
 	if (!frame) {
 		wp_error("Could not allocate video frame");
+		return -1;
 	}
 	frame->format = avpixfmt;
 	/* adopt padded sizes */
@@ -1103,10 +1111,13 @@ static void setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 			NULL);
 	if (!sws) {
 		wp_error("Could not create software color conversion context");
+		av_frame_free(&frame);
+		return -1;
 	}
 
 	sfd->video_local_frame = frame;
 	sfd->video_color_context = sws;
+	return 0;
 }
 
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
@@ -1157,9 +1168,14 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 				}
 				cpu_frame = sfd->video_tmp_frame;
 			}
+			if (!cpu_frame) {
+				return;
+			}
 
 			if (!sfd->video_color_context) {
-				setup_color_conv(sfd, cpu_frame);
+				if (setup_color_conv(sfd, cpu_frame) == -1) {
+					return;
+				}
 			}
 
 			/* Handle frame immediately, since the next receive run

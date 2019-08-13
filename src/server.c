@@ -293,7 +293,7 @@ static int update_connections(char current_sockpath[static 110],
 
 static int run_multi_server(int control_pipe, const char *socket_path,
 		bool unlink_at_end, int wdisplay_socket,
-		const struct main_config *config, pid_t child_pid)
+		const struct main_config *config, pid_t *child_pid)
 {
 	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
 	char current_sockpath[110];
@@ -313,7 +313,6 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 		int status = -1;
 		if (wait_for_pid_and_clean(
 				    child_pid, &status, WNOHANG, &connmap)) {
-			child_pid = 0;
 			wp_debug("Child program has died, exiting");
 			retcode = WEXITSTATUS(status);
 			break;
@@ -496,7 +495,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 				unlink_at_end, server_link, config);
 	} else {
 		retcode = run_multi_server(control_pipe, socket_path,
-				unlink_at_end, wdisplay_socket, config, pid);
+				unlink_at_end, wdisplay_socket, config, &pid);
 	}
 	if (control_pipe != -1) {
 		unlink(control_path);
@@ -507,7 +506,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 
 	int status = -1;
 	if (wait_for_pid_and_clean(
-			    pid, &status, shutdown_flag ? WNOHANG : 0, NULL)) {
+			    &pid, &status, shutdown_flag ? WNOHANG : 0, NULL)) {
 		wp_debug("Child program has died, exiting");
 		retcode = WEXITSTATUS(status);
 	}

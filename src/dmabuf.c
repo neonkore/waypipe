@@ -248,7 +248,7 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 				strerror(errno));
 		return NULL;
 	}
-	if (read_modifier) {
+	if (read_modifier && info) {
 		info->modifier = gbm_bo_get_modifier(bo);
 		const uint64_t drm_format_mod_invalid = 0x00ffffffffffffffULL;
 		if (info->modifier == drm_format_mod_invalid) {

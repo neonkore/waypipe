@@ -201,7 +201,7 @@ void test_atomic_log_handler(const char *file, int line, enum log_level level,
 	(void)level;
 }
 
-bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options,
+bool wait_for_pid_and_clean(pid_t *target_pid, int *status, int options,
 		struct conn_map *map)
 {
 	bool found = false;
@@ -233,8 +233,8 @@ bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options,
 			map->count = iw;
 		}
 
-		if (r == target_pid) {
-			target_pid = 0;
+		if (r == *target_pid) {
+			*target_pid = 0;
 			*status = stat;
 			found = true;
 		}

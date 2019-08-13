@@ -316,8 +316,8 @@ bool video_supports_shm_format(uint32_t format);
 void setup_video_logging(void);
 void destroy_video_data(struct shadow_fd *sfd);
 /** These need to have the dmabuf/dmabuf_info set beforehand */
-void setup_video_encode(struct shadow_fd *sfd, struct render_data *rd);
-void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
+int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd);
+int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
 /** the video frame to be transferred should already have been transferred into
  * `sfd->mem_mirror`. */
 void collect_video_from_mirror(

@@ -127,8 +127,13 @@ extern log_handler_func_t log_funcs[2];
 /** Run waitpid in a loop until there are no more zombies to clean up. If the
  * target_pid was one of the completed processes, set status, return true. The
  * `options` flag will be passed to waitpid. If `map` is not NULL, remove
- * entries in the connection map which were closed */
-bool wait_for_pid_and_clean(pid_t target_pid, int *status, int options,
+ * entries in the connection map which were closed.
+ *
+ * The value *target_pid is set to 0 once the corresponding process has died,
+ * as a convenience to check only the first child process with pid ==
+ * *target_pid.
+ */
+bool wait_for_pid_and_clean(pid_t *target_pid, int *status, int options,
 		struct conn_map *map);
 
 /** A helper type, since very often buffers and their sizes are passed together

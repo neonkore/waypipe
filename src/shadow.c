@@ -519,6 +519,12 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	if (sfd) {
 		return sfd;
 	}
+	if (type == FDC_DMAVID_IR || type == FDC_DMAVID_IW) {
+		if (!info) {
+			wp_error("No dmabuf info provided");
+			return NULL;
+		}
+	}
 
 	// Create a new translation map.
 	sfd = calloc(1, sizeof(struct shadow_fd));
@@ -573,9 +579,6 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 
 		sfd->pipe_onlyhere = true;
 	} else if (sfd->type == FDC_DMAVID_IR) {
-		if (!info) {
-			wp_error("No info available");
-		}
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
 		init_render_data(render);
@@ -593,11 +596,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
-		setup_video_encode(sfd, render);
+		(void)setup_video_encode(sfd, render);
 	} else if (sfd->type == FDC_DMAVID_IW) {
-		if (!info) {
-			wp_error("No info available");
-		}
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
 		// TODO: multifd-dmabuf video surface
@@ -608,7 +608,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
-		setup_video_decode(sfd, render);
+		(void)setup_video_decode(sfd, render);
 		/* notify remote side with sentinel frame */
 		sfd->video_frameno = -1;
 	} else if (sfd->type == FDC_DMABUF) {
@@ -1312,7 +1312,7 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
-		setup_video_decode(sfd, render);
+		(void)setup_video_decode(sfd, render);
 	} else if (type == WMSG_OPEN_DMAVID_SRC) {
 		/* remote writes data, this side reads data */
 		sfd->type = FDC_DMAVID_IR;
@@ -1345,7 +1345,7 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
 				1);
-		setup_video_encode(sfd, render);
+		(void)setup_video_encode(sfd, render);
 	} else if (type == WMSG_OPEN_DMABUF) {
 		sfd->type = FDC_DMABUF;
 		const struct wmsg_open_dmabuf header =

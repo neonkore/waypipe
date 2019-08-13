@@ -162,7 +162,7 @@ static int run_single_client_reconnector(
 	return retcode;
 }
 
-static int run_single_client(int channelsock, pid_t eol_pid,
+static int run_single_client(int channelsock, pid_t *eol_pid,
 		const struct main_config *config, int disp_fd)
 {
 	/* To support reconnection attempts, this mode creates a child
@@ -327,7 +327,7 @@ fail_cc:
 	return -1;
 }
 
-static int run_multi_client(int channelsock, pid_t eol_pid,
+static int run_multi_client(int channelsock, pid_t *eol_pid,
 		const struct main_config *config,
 		const char disp_path[static MAX_SOCKETPATH_LEN])
 {
@@ -342,8 +342,6 @@ static int run_multi_client(int channelsock, pid_t eol_pid,
 		int status = -1;
 		if (wait_for_pid_and_clean(
 				    eol_pid, &status, WNOHANG, &connmap)) {
-			eol_pid = 0; // < in case eol_pid is recycled
-
 			wp_debug("Child (ssh) died, exiting");
 			// Copy the exit code
 			retcode = WEXITSTATUS(status);
@@ -449,17 +447,17 @@ int run_client(const char *socket_path, const struct main_config *config,
 	int retcode;
 	if (oneshot) {
 		retcode = run_single_client(
-				channelsock, eol_pid, config, dispfd);
+				channelsock, &eol_pid, config, dispfd);
 	} else {
 		retcode = run_multi_client(
-				channelsock, eol_pid, config, disp_path);
+				channelsock, &eol_pid, config, disp_path);
 	}
 	unlink(socket_path);
 	int cleanup_type = shutdown_flag ? WNOHANG : 0;
 
 	int status = -1;
 	// Don't return until all child processes complete
-	if (wait_for_pid_and_clean(eol_pid, &status, cleanup_type, NULL)) {
+	if (wait_for_pid_and_clean(&eol_pid, &status, cleanup_type, NULL)) {
 		retcode = WEXITSTATUS(status);
 	}
 	return retcode;

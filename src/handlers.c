@@ -239,38 +239,47 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 {
 	/* Note: if custom types are ever implemented for globals, they would
 	 * need special replacement logic when the type is set */
-	struct wp_object *new_obj;
+	size_t sz;
 	if (type == &intf_wl_shm_pool) {
-		new_obj = calloc(1, sizeof(struct wp_shm_pool));
+		sz = sizeof(struct wp_shm_pool);
 	} else if (type == &intf_wl_buffer) {
-		new_obj = calloc(1, sizeof(struct wp_buffer));
+		sz = sizeof(struct wp_buffer);
 	} else if (type == &intf_wl_surface) {
-		new_obj = calloc(1, sizeof(struct wp_surface));
-		((struct wp_surface *)new_obj)->scale = 1;
+		sz = sizeof(struct wp_surface);
 	} else if (type == &intf_wl_keyboard) {
-		new_obj = calloc(1, sizeof(struct wp_keyboard));
+		sz = sizeof(struct wp_keyboard);
 	} else if (type == &intf_zwlr_screencopy_frame_v1) {
-		new_obj = calloc(1, sizeof(struct wp_wlr_screencopy_frame));
+		sz = sizeof(struct wp_wlr_screencopy_frame);
 	} else if (type == &intf_wp_presentation) {
-		new_obj = calloc(1, sizeof(struct waypipe_presentation));
+		sz = sizeof(struct waypipe_presentation);
 	} else if (type == &intf_wp_presentation_feedback) {
-		new_obj = calloc(1,
-				sizeof(struct waypipe_presentation_feedback));
+		sz = sizeof(struct waypipe_presentation_feedback);
 	} else if (type == &intf_zwp_linux_buffer_params_v1) {
-		new_obj = calloc(1, sizeof(struct wp_linux_dmabuf_params));
+		sz = sizeof(struct wp_linux_dmabuf_params);
+	} else if (type == &intf_zwlr_export_dmabuf_frame_v1) {
+		sz = sizeof(struct wp_export_dmabuf_frame);
+	} else {
+		sz = sizeof(struct wp_object);
+	}
+
+	struct wp_object *new_obj = calloc(1, sz);
+	if (!new_obj) {
+		wp_error("Failed to allocate new wp_object");
+		return NULL;
+	}
+	new_obj->obj_id = id;
+	new_obj->type = type;
+	new_obj->is_zombie = false;
+
+	if (type == &intf_zwp_linux_buffer_params_v1) {
 		struct wp_linux_dmabuf_params *params =
 				(struct wp_linux_dmabuf_params *)new_obj;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			params->add[i].fd = -1;
 		}
-	} else if (type == &intf_zwlr_export_dmabuf_frame_v1) {
-		new_obj = calloc(1, sizeof(struct wp_export_dmabuf_frame));
-	} else {
-		new_obj = calloc(1, sizeof(struct wp_object));
+	} else if (type == &intf_wl_surface) {
+		((struct wp_surface *)new_obj)->scale = 1;
 	}
-	new_obj->obj_id = id;
-	new_obj->type = type;
-	new_obj->is_zombie = false;
 	return new_obj;
 }
 
