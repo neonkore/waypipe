@@ -290,32 +290,37 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 }
 
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
-		uint32_t msgno)
+		bool is_ack_msg)
 {
-	if (pthread_mutex_trylock(&transfers->lock) == 0) {
-		wp_error("Transfer operation happening without lock");
-		pthread_mutex_unlock(&transfers->lock);
-	}
-
 	if (size == 0) {
 		return true;
 	}
+
+	pthread_mutex_lock(&transfers->lock);
 	int sz2 = transfers->size;
 	if (buf_ensure_size(transfers->end + 1, sizeof(*transfers->data),
 			    &transfers->size,
 			    (void **)&transfers->data) == -1) {
 		wp_error("Resize of transfer data failed");
+
+		pthread_mutex_unlock(&transfers->lock);
 		return false;
 	}
 	if (buf_ensure_size(transfers->end + 1, sizeof(*transfers->msgno), &sz2,
 			    (void **)&transfers->msgno) == -1) {
 		wp_error("Resize of transfer data failed");
+		pthread_mutex_unlock(&transfers->lock);
 		return false;
 	}
 	transfers->data[transfers->end].iov_len = size;
 	transfers->data[transfers->end].iov_base = data;
-	transfers->msgno[transfers->end] = msgno;
+	transfers->msgno[transfers->end] = transfers->last_msgno;
 	transfers->end++;
+	if (!is_ack_msg) {
+		transfers->last_msgno++;
+	}
+
+	pthread_mutex_unlock(&transfers->lock);
 	return true;
 }
 bool transfer_zeropad(

@@ -764,13 +764,10 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 	}
 
 	if (is_done && wmsg->ntrailing > 0) {
-		pthread_mutex_lock(&td->lock);
 		for (int i = 0; i < wmsg->ntrailing; i++) {
 			transfer_add(td, wmsg->trailing[i].iov_len,
-					wmsg->trailing[i].iov_base,
-					td->last_msgno++);
+					wmsg->trailing[i].iov_base, false);
 		}
-		pthread_mutex_unlock(&td->lock);
 
 		wmsg->ntrailing = 0;
 		memset(wmsg->trailing, 0, sizeof(wmsg->trailing));
@@ -883,10 +880,8 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		/* To avoid infinite regress, receive acknowledgement
 		 * messages do not themselves increase the message counters. */
 
-		pthread_mutex_lock(&wmsg->transfers.lock);
 		transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack), ackm,
-				wmsg->transfers.last_msgno);
-		pthread_mutex_unlock(&wmsg->transfers.lock);
+				true);
 	}
 
 	for (struct shadow_fd *cur = g->map.list; cur; cur = cur->next) {

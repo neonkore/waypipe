@@ -1060,26 +1060,20 @@ void collect_video_from_mirror(
 	}
 	if (recvstat == 0) {
 		struct AVPacket *pkt = sfd->video_packet;
-		struct wmsg_basic *header =
-				calloc(1, sizeof(struct wmsg_basic));
 		size_t pktsz = (size_t)pkt->buf->size;
-		header->size_and_type = transfer_header(
-				sizeof(struct wmsg_basic) + pktsz,
-				WMSG_SEND_DMAVID_PACKET);
+		size_t msgsz = sizeof(struct wmsg_basic) + pktsz;
+
+		char *buf = malloc(alignz(msgsz, 4));
+
+		struct wmsg_basic *header = (struct wmsg_basic *)buf;
+		header->size_and_type =
+				transfer_header(msgsz, WMSG_SEND_DMAVID_PACKET);
 		header->remote_id = sfd->remote_id;
 
-		size_t padded_len = alignz(pktsz, 4);
-		uint8_t *data = malloc(padded_len);
-		memset(data + pktsz, 0, padded_len - pktsz);
-		memcpy(data, pkt->buf->data, pktsz);
+		memcpy(buf + sizeof(struct wmsg_basic), pkt->buf->data, pktsz);
+		memset(buf + msgsz, 0, alignz(msgsz, 4) - msgsz);
 
-		pthread_mutex_lock(&transfers->lock);
-		transfer_add(transfers, sizeof(struct wmsg_basic), header,
-				transfers->last_msgno);
-		transfer_add(transfers, padded_len, data,
-				transfers->last_msgno);
-		transfers->last_msgno++;
-		pthread_mutex_unlock(&transfers->lock);
+		transfer_add(transfers, alignz(msgsz, 4), buf, false);
 
 		av_packet_unref(pkt);
 	}

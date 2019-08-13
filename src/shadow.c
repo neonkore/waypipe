@@ -715,9 +715,7 @@ static void worker_run_compress_diff(
 
 	struct transfer_data *transfers = task->transfers;
 
-	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, alignz(sz, 4), msg, transfers->last_msgno++);
-	pthread_mutex_unlock(&transfers->lock);
+	transfer_add(transfers, alignz(sz, 4), msg, false);
 
 end:
 	DTRACE_PROBE1(waypipe, worker_compdiff_exit, diffsize);
@@ -779,9 +777,7 @@ static void worker_run_compress_block(
 
 	struct transfer_data *transfers = task->transfers;
 
-	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, alignz(sz, 4), msg, transfers->last_msgno++);
-	pthread_mutex_unlock(&transfers->lock);
+	transfer_add(transfers, alignz(sz, 4), msg, false);
 
 end:
 	DTRACE_PROBE1(waypipe, worker_comp_exit,
@@ -957,9 +953,7 @@ static void add_dmabuf_create_request(struct transfer_data *transfers,
 	memcpy(data + sizeof(struct wmsg_open_dmabuf), &sfd->dmabuf_info,
 			sizeof(struct dmabuf_slice_data));
 
-	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, padded_len, data, transfers->last_msgno++);
-	pthread_mutex_unlock(&transfers->lock);
+	transfer_add(transfers, padded_len, data, false);
 }
 static void add_file_create_request(
 		struct transfer_data *transfers, struct shadow_fd *sfd)
@@ -971,10 +965,7 @@ static void add_file_create_request(
 	header->size_and_type = transfer_header(
 			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
 
-	pthread_mutex_lock(&transfers->lock);
-	transfer_add(transfers, sizeof(struct wmsg_open_file), header,
-			transfers->last_msgno++);
-	pthread_mutex_unlock(&transfers->lock);
+	transfer_add(transfers, sizeof(struct wmsg_open_file), header, false);
 }
 
 void finish_update(struct shadow_fd *sfd)
@@ -1034,10 +1025,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					sizeof(struct wmsg_open_file),
 					WMSG_EXTEND_FILE);
 
-			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_open_file),
-					header, transfers->last_msgno++);
-			pthread_mutex_unlock(&transfers->lock);
+					header, false);
 
 			memcpy(sfd->mem_mirror + sfd->remote_bufsize,
 					sfd->mem_local + sfd->remote_bufsize,
@@ -1128,38 +1117,27 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					sizeof(struct wmsg_basic), type);
 			createh->remote_id = sfd->remote_id;
 
-			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_basic),
-					createh, transfers->last_msgno++);
-			pthread_mutex_unlock(&transfers->lock);
+					createh, false);
 
 			sfd->pipe_onlyhere = false;
 		}
 
 		if (sfd->pipe_recv.used > 0) {
-			struct wmsg_basic *header =
-					calloc(1, sizeof(struct wmsg_basic));
 			size_t msgsz = sizeof(struct wmsg_basic) +
 				       (size_t)sfd->pipe_recv.used;
+			char *buf = malloc(alignz(msgsz, 4));
+			struct wmsg_basic *header = (struct wmsg_basic *)buf;
 			header->size_and_type = transfer_header(
 					msgsz, WMSG_PIPE_TRANSFER);
 			header->remote_id = sfd->remote_id;
-
-			size_t psz = alignz((size_t)sfd->pipe_recv.used, 4);
-			char *buf = malloc(psz);
-			memcpy(buf, sfd->pipe_recv.data,
+			memcpy(buf + sizeof(struct wmsg_basic),
+					sfd->pipe_recv.data,
 					(size_t)sfd->pipe_recv.used);
-			memset(buf + sfd->pipe_recv.used, 0,
-					psz - (size_t)sfd->pipe_recv.used);
+			memset(buf + msgsz, 0, alignz(msgsz, 4) - msgsz);
 
-			pthread_mutex_lock(&transfers->lock);
-			transfer_add(transfers, sizeof(struct wmsg_basic),
-					header, transfers->last_msgno);
-			transfer_add(transfers, psz, buf,
-					transfers->last_msgno);
-			pthread_mutex_unlock(&transfers->lock);
+			transfer_add(transfers, alignz(msgsz, 4), buf, false);
 
-			transfers->last_msgno++;
 			sfd->pipe_recv.used = 0;
 		}
 
@@ -1171,10 +1149,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					WMSG_PIPE_HANGUP);
 			hanguph->remote_id = sfd->remote_id;
 
-			pthread_mutex_lock(&transfers->lock);
 			transfer_add(transfers, sizeof(struct wmsg_basic),
-					hanguph, transfers->last_msgno++);
-			pthread_mutex_unlock(&transfers->lock);
+					hanguph, false);
 
 			sfd->pipe_rclosed = true;
 			close(sfd->pipe_fd);

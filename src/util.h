@@ -281,7 +281,7 @@ struct transfer_data {
 };
 /** Add transfer message to the queue, expanding the queue as necessary. */
 bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
-		uint32_t msgno);
+		bool is_ack_msg);
 /** Calls transfer_add with a message of <16 zero bytes */
 bool transfer_zeropad(
 		struct transfer_data *transfers, size_t size, uint32_t msgno);
