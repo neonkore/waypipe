@@ -713,7 +713,7 @@ static void worker_run_compress_diff(
 	header.ntrailing = (uint32_t)ntrailing;
 	memcpy(msg, &header, sizeof(struct wmsg_buffer_diff));
 
-	struct transfer_data *transfers = task->transfers;
+	struct transfer_queue *transfers = task->transfers;
 
 	transfer_add(transfers, alignz(sz, 4), msg, false);
 
@@ -775,7 +775,7 @@ static void worker_run_compress_block(
 	header.end = (uint32_t)source_end;
 	memcpy(msg, &header, sizeof(struct wmsg_buffer_fill));
 
-	struct transfer_data *transfers = task->transfers;
+	struct transfer_queue *transfers = task->transfers;
 
 	transfer_add(transfers, alignz(sz, 4), msg, false);
 
@@ -787,7 +787,7 @@ end:
 /* Optionally compress the data in mem_mirror, and set up the initial
  * transfer blocks */
 static void queue_fill_transfers(struct thread_pool *threads,
-		struct shadow_fd *sfd, struct transfer_data *transfers)
+		struct shadow_fd *sfd, struct transfer_queue *transfers)
 {
 	// new transfer, we send file contents verbatim
 	const int chunksize = 262144;
@@ -826,7 +826,7 @@ static void queue_fill_transfers(struct thread_pool *threads,
 }
 
 static void queue_diff_transfers(struct thread_pool *threads,
-		struct shadow_fd *sfd, struct transfer_data *transfers)
+		struct shadow_fd *sfd, struct transfer_queue *transfers)
 {
 	const int chunksize = 262144;
 	if (!sfd->damage.damage) {
@@ -938,7 +938,7 @@ static void queue_diff_transfers(struct thread_pool *threads,
 	pthread_cond_broadcast(&threads->work_cond);
 }
 
-static void add_dmabuf_create_request(struct transfer_data *transfers,
+static void add_dmabuf_create_request(struct transfer_queue *transfers,
 		struct shadow_fd *sfd, enum wmsg_type variant)
 {
 	size_t actual_len = sizeof(struct wmsg_open_dmabuf) +
@@ -956,7 +956,7 @@ static void add_dmabuf_create_request(struct transfer_data *transfers,
 	transfer_add(transfers, padded_len, data, false);
 }
 static void add_file_create_request(
-		struct transfer_data *transfers, struct shadow_fd *sfd)
+		struct transfer_queue *transfers, struct shadow_fd *sfd)
 {
 	struct wmsg_open_file *header =
 			calloc(1, sizeof(struct wmsg_open_file));
@@ -987,7 +987,7 @@ void finish_update(struct shadow_fd *sfd)
 }
 
 void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
-		struct transfer_data *transfers)
+		struct transfer_queue *transfers)
 {
 	if (sfd->type == FDC_FILE) {
 		if (!sfd->is_dirty) {

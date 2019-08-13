@@ -260,6 +260,20 @@ struct pipe_elem_header {
 	int32_t special;
 };
 
+/** A queue of data blocks to be written to the channel */
+struct chan_write_queue {
+	/** Data to be writtenveed */
+	struct iovec *vecs;
+	/** Matching vector indicating to which message the corresponding data
+	 * block belongs. */
+	uint32_t *msgnos;
+	/** start: next block to write. end: just after last block to write;
+	 * size: number of iovec blocks */
+	int start, end, size;
+	/** How much of the block at 'start' has been written */
+	size_t partial_write_amt;
+};
+
 enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL };
 /** This state corresponds to the in-progress transfer from the program
  * (compositor or application) and its pipes/buffers to the channel. */
@@ -275,8 +289,11 @@ struct way_msg_state {
 	/** Queue of fds to be used by protocol parser */
 	struct int_window fds;
 
-	/** Individual transfer chunks and headers, sent out via writev */
-	struct transfer_data transfers;
+	/** Queue used to receive transfer blocks from e.g. worker threads */
+	struct transfer_queue transfers;
+	/** Individual messages, to be sent out via writev and deleted on
+	 * acknowledgement */
+	struct chan_write_queue wqueue;
 	/** bytes written in this cycle, for debug */
 	int total_written;
 
@@ -640,25 +657,29 @@ static int advance_chanmsg_transfer(struct globals *g,
 }
 
 static void clear_old_transfers(
-		struct transfer_data *td, uint32_t inclusive_cutoff)
+		struct chan_write_queue *td, uint32_t inclusive_cutoff)
 {
+	for (int i = 0; i < td->end; i++) {
+		if (td->vecs[i].iov_len == 0) {
+			wp_error("Unexpected zero sized item %d [%d,%d)", i,
+					td->start, td->end);
+		}
+	}
 	int k = 0;
 	for (int i = 0; i < td->start; i++) {
-		if (td->msgno[i] > inclusive_cutoff) {
+		if (td->msgnos[i] > inclusive_cutoff) {
 			break;
 		}
-		if (td->data[i].iov_base != &td->zeros) {
-			free(td->data[i].iov_base);
-		}
-		td->data[i].iov_base = NULL;
-		td->data[i].iov_len = 0;
+		free(td->vecs[i].iov_base);
+		td->vecs[i].iov_base = NULL;
+		td->vecs[i].iov_len = 0;
 		k = i + 1;
 	}
 	if (k > 0) {
 		size_t nshift = (size_t)(td->end - k);
-		memmove(td->msgno, td->msgno + k,
-				nshift * sizeof(td->msgno[0]));
-		memmove(td->data, td->data + k, nshift * sizeof(td->data[0]));
+		memmove(td->msgnos, td->msgnos + k,
+				nshift * sizeof(td->msgnos[0]));
+		memmove(td->vecs, td->vecs + k, nshift * sizeof(td->vecs[0]));
 		td->start -= k;
 		td->end -= k;
 	}
@@ -666,20 +687,20 @@ static void clear_old_transfers(
 
 /* Returns 0 if done, 1 if partial, -1 if fatal error, -2 if closed */
 static int partial_write_transfer(
-		int chanfd, struct transfer_data *td, int *total_written)
+		int chanfd, struct chan_write_queue *td, int *total_written)
 {
 	// Waiting for channel write to complete
 	while (td->start < td->end) {
 		/* Advance the current element by amount actually written */
-		char *orig_base = td->data[td->start].iov_base;
-		size_t orig_len = td->data[td->start].iov_len;
-		td->data[td->start].iov_base =
+		char *orig_base = td->vecs[td->start].iov_base;
+		size_t orig_len = td->vecs[td->start].iov_len;
+		td->vecs[td->start].iov_base =
 				orig_base + td->partial_write_amt;
-		td->data[td->start].iov_len = orig_len - td->partial_write_amt;
+		td->vecs[td->start].iov_len = orig_len - td->partial_write_amt;
 		int count = min(IOV_MAX, td->end - td->start);
-		ssize_t wr = writev(chanfd, &td->data[td->start], count);
-		td->data[td->start].iov_base = orig_base;
-		td->data[td->start].iov_len = orig_len;
+		ssize_t wr = writev(chanfd, &td->vecs[td->start], count);
+		td->vecs[td->start].iov_base = orig_base;
+		td->vecs[td->start].iov_len = orig_len;
 
 		if (wr == -1 && errno == EWOULDBLOCK) {
 			break;
@@ -697,11 +718,11 @@ static int partial_write_transfer(
 		*total_written += (int)wr;
 		while (uwr > 0 && td->start < td->end) {
 			/* Skip past zero-length blocks */
-			if (td->data[td->start].iov_len == 0) {
+			if (td->vecs[td->start].iov_len == 0) {
 				td->start++;
 				continue;
 			}
-			size_t left = td->data[td->start].iov_len -
+			size_t left = td->vecs[td->start].iov_len -
 				      td->partial_write_amt;
 			if (left > uwr) {
 				/* Block partially completed */
@@ -723,24 +744,51 @@ static int partial_write_transfer(
 	}
 }
 
+static int copy_out_transfers(
+		struct transfer_queue *q, struct chan_write_queue *w)
+{
+	pthread_mutex_lock(&q->lock);
+	int sz = w->size;
+	if (buf_ensure_size(w->end + q->count, sizeof(struct iovec), &sz,
+			    (void **)&w->vecs) == -1) {
+		pthread_mutex_unlock(&q->lock);
+		return -1;
+	}
+	sz = w->size;
+	if (buf_ensure_size(w->end + q->count, sizeof(struct iovec), &sz,
+			    (void **)&w->msgnos) == -1) {
+		pthread_mutex_unlock(&q->lock);
+		return -1;
+	}
+	w->size = sz;
+
+	for (int i = 0; i < q->count; i++) {
+		w->vecs[w->end] = q->data[i].vec;
+		w->msgnos[w->end] = q->data[i].msgno;
+		w->end++;
+	}
+	q->count = 0;
+	pthread_mutex_unlock(&q->lock);
+	return 0;
+}
+
 static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		struct cross_state *cxs, struct globals *g, int chanfd,
 		bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
-	struct transfer_data *td = &wmsg->transfers;
+
+	/* Copy the data in the transfer queue to the write queue */
+	if (copy_out_transfers(&wmsg->transfers, &wmsg->wqueue) == -1) {
+		wp_error("Allocation failure");
+		return -1;
+	}
 
 	// First, clear out any transfers that are no longer needed
-	pthread_mutex_lock(&td->lock);
-	for (int i = 0; i < td->end; i++) {
-		if (td->data[i].iov_len == 0) {
-			wp_error("ZERO SIZE ITEM FAIL: %d [%d,%d)", i,
-					td->start, td->end);
-		}
-	}
-	clear_old_transfers(td, cxs->last_confirmed_msgno);
-	int ret = partial_write_transfer(chanfd, td, &wmsg->total_written);
-	pthread_mutex_unlock(&td->lock);
+
+	clear_old_transfers(&wmsg->wqueue, cxs->last_confirmed_msgno);
+	int ret = partial_write_transfer(
+			chanfd, &wmsg->wqueue, &wmsg->total_written);
 	if (ret < 0) {
 		return ret;
 	}
@@ -765,7 +813,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 	if (is_done && wmsg->ntrailing > 0) {
 		for (int i = 0; i < wmsg->ntrailing; i++) {
-			transfer_add(td, wmsg->trailing[i].iov_len,
+			transfer_add(&wmsg->transfers,
+					wmsg->trailing[i].iov_len,
 					wmsg->trailing[i].iov_base, false);
 		}
 
@@ -791,8 +840,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 		DTRACE_PROBE(waypipe, channel_write_end);
 		size_t unacked_bytes = 0;
-		for (int i = 0; i < td->end; i++) {
-			unacked_bytes += td->data[i].iov_len;
+		for (int i = 0; i < wmsg->wqueue.end; i++) {
+			unacked_bytes += wmsg->wqueue.vecs[i].iov_len;
 		}
 
 		wp_debug("Sent %d-byte message from %s to channel; %zu-bytes in flight",
@@ -948,20 +997,18 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	pthread_mutex_unlock(&g->threads.work_mutex);
 
 	int n_transfers = 0;
+	size_t net_bytes = 0;
 	pthread_mutex_lock(&wmsg->transfers.lock);
-	n_transfers = wmsg->transfers.end - wmsg->transfers.start;
+	n_transfers = wmsg->transfers.count;
+	for (int i = 0; i < wmsg->transfers.count; i++) {
+		net_bytes += wmsg->transfers.data[i].vec.iov_len;
+	}
 	pthread_mutex_unlock(&wmsg->transfers.lock);
 
 	if (n_transfers > 0 || n_tasks > 0 || wmsg->ntrailing > 0) {
-		size_t net_bytes = 0;
-		for (int i = wmsg->transfers.start; i < wmsg->transfers.end;
-				i++) {
-			net_bytes += wmsg->transfers.data[i].iov_len;
-		}
-
 		wp_debug("Channel message start (%d blobs, %d bytes, %d trailing, %d tasks)",
-				wmsg->transfers.end - wmsg->transfers.start,
-				net_bytes, wmsg->ntrailing, n_tasks);
+				n_transfers, net_bytes, wmsg->ntrailing,
+				n_tasks);
 		wmsg->state = WM_WAITING_FOR_CHANNEL;
 		DTRACE_PROBE(waypipe, channel_write_start);
 	}
@@ -1047,11 +1094,10 @@ static void reset_connection(struct cross_state *cxs,
 	cmsg->recv_start = 0;
 	cmsg->recv_unhandled_messages = 0;
 
-	pthread_mutex_lock(&wmsg->transfers.lock);
-	clear_old_transfers(&wmsg->transfers, cxs->last_confirmed_msgno);
+	clear_old_transfers(&wmsg->wqueue, cxs->last_confirmed_msgno);
 	wp_debug("Resetting connection: %d blocks unacknowledged",
-			wmsg->transfers.end);
-	if (wmsg->transfers.end > 0) {
+			wmsg->wqueue.end);
+	if (wmsg->wqueue.end > 0) {
 		/* If there was any data in flight, restart. If there wasn't
 		 * anything in flight, then the remote side shouldn't notice the
 		 * difference */
@@ -1059,8 +1105,8 @@ static void reset_connection(struct cross_state *cxs,
 		restart.size_and_type =
 				transfer_header(sizeof(restart), WMSG_RESTART);
 		restart.last_ack_received = cxs->last_confirmed_msgno;
-		wmsg->transfers.start = 0;
-		wmsg->transfers.partial_write_amt = 0;
+		wmsg->wqueue.start = 0;
+		wmsg->wqueue.partial_write_amt = 0;
 		wp_debug("Sending restart message: last ack=%d",
 				restart.last_ack_received);
 		if (write(chanfd, &restart, sizeof(restart)) !=
@@ -1068,7 +1114,6 @@ static void reset_connection(struct cross_state *cxs,
 			wp_error("Failed to write restart message");
 		}
 	}
-	pthread_mutex_unlock(&wmsg->transfers.lock);
 
 	if (set_nonblocking(chanfd) == -1) {
 		wp_error("Error making new channel connection nonblocking: %s",
@@ -1323,7 +1368,12 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	free(way_msg.proto_read.data);
 	free(way_msg.proto_write.data);
 	free(way_msg.fds.data);
-	cleanup_transfers(&way_msg.transfers);
+	cleanup_transfer_queue(&way_msg.transfers);
+	for (int i = 0; i < way_msg.wqueue.end; i++) {
+		free(way_msg.wqueue.vecs[i].iov_base);
+	}
+	free(way_msg.wqueue.vecs);
+	free(way_msg.wqueue.msgnos);
 	for (int i = 0; i < way_msg.ntrailing; i++) {
 		free(way_msg.trailing[i].iov_base);
 	}

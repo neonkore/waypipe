@@ -120,7 +120,7 @@ struct task_data {
 	int damage_len;
 	bool damaged_end;
 
-	struct transfer_data *transfers;
+	struct transfer_queue *transfers;
 };
 
 /** Shadow object types, signifying file descriptor type and usage */
@@ -237,7 +237,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct thread_pool *threads, struct shadow_fd *cur,
-		struct transfer_data *transfers);
+		struct transfer_queue *transfers);
 /** After all thread pool tasks have completed, reduce refcounts and clean up
  * related data. The caller should then invoke destroy_shadow_if_unreferenced.
  */
@@ -321,7 +321,7 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd);
 /** the video frame to be transferred should already have been transferred into
  * `sfd->mem_mirror`. */
 void collect_video_from_mirror(
-		struct shadow_fd *sfd, struct transfer_data *transfers);
+		struct shadow_fd *sfd, struct transfer_queue *transfers);
 /** Decompress a video packet and apply the new frame onto the shadow_fd  */
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 		const struct bytebuf *data);

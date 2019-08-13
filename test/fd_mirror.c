@@ -113,21 +113,21 @@ static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 	return (int)(end - start);
 }
 
-static struct bytebuf combine_transfer_blocks(struct transfer_data *td)
+static struct bytebuf combine_transfer_blocks(struct transfer_queue *td)
 {
 	size_t net_size = 0;
-	for (int i = td->start; i < td->end; i++) {
-		net_size += td->data[i].iov_len;
+	for (int i = 0; i < td->count; i++) {
+		net_size += td->data[i].vec.iov_len;
 	}
 
 	struct bytebuf ret_block;
 	ret_block.size = net_size;
 	ret_block.data = malloc(net_size);
 	size_t pos = 0;
-	for (int i = td->start; i < td->end; i++) {
-		memcpy(ret_block.data + pos, td->data[i].iov_base,
-				td->data[i].iov_len);
-		pos += td->data[i].iov_len;
+	for (int i = 0; i < td->count; i++) {
+		memcpy(ret_block.data + pos, td->data[i].vec.iov_base,
+				td->data[i].vec.iov_len);
+		pos += td->data[i].vec.iov_len;
 	}
 	return ret_block;
 }
@@ -216,8 +216,8 @@ static bool test_transfer(struct fd_translation_map *src_map,
 		struct thread_pool *src_pool, struct thread_pool *dst_pool,
 		int rid, int ndiff, struct render_data *render_data)
 {
-	struct transfer_data transfer_data;
-	memset(&transfer_data, 0, sizeof(struct transfer_data));
+	struct transfer_queue transfer_data;
+	memset(&transfer_data, 0, sizeof(struct transfer_queue));
 	pthread_mutex_init(&transfer_data.lock, NULL);
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
@@ -227,25 +227,25 @@ static bool test_transfer(struct fd_translation_map *src_map,
 
 	if (ndiff == 0) {
 		size_t ns = 0;
-		for (int i = transfer_data.start; i < transfer_data.end; i++) {
-			ns += transfer_data.data[i].iov_len;
+		for (int i = 0; i < transfer_data.count; i++) {
+			ns += transfer_data.data[i].vec.iov_len;
 		}
-		cleanup_transfers(&transfer_data);
-		if (transfer_data.end > 0) {
+		cleanup_transfer_queue(&transfer_data);
+		if (transfer_data.count > 0) {
 			wp_error("Collecting updates gave a transfer (%zd bytes, %d blocks) when none was expected",
-					ns, transfer_data.end);
+					ns, transfer_data.count);
 			return false;
 		}
 		return true;
 	}
-	if (transfer_data.end == 0) {
+	if (transfer_data.count == 0) {
 		wp_error("Collecting updates gave a unexpected number (%d) of transfers",
-				transfer_data.end);
-		cleanup_transfers(&transfer_data);
+				transfer_data.count);
+		cleanup_transfer_queue(&transfer_data);
 		return false;
 	}
 	struct bytebuf res = combine_transfer_blocks(&transfer_data);
-	cleanup_transfers(&transfer_data);
+	cleanup_transfer_queue(&transfer_data);
 
 	size_t start = 0;
 	while (start < res.size) {

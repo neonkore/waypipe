@@ -1019,7 +1019,7 @@ void setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 }
 
 void collect_video_from_mirror(
-		struct shadow_fd *sfd, struct transfer_data *transfers)
+		struct shadow_fd *sfd, struct transfer_queue *transfers)
 {
 	if (sfd->video_color_context) {
 		/* If using software encoding, need to convert to YUV */

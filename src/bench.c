@@ -185,7 +185,7 @@ static struct bench_result run_sub_bench(bool first,
 	render.drm_fd = 1;
 	render.av_disabled = true;
 
-	struct bytebuf msg = {.size = sizeof(sizeof(struct wmsg_open_file)),
+	struct bytebuf msg = {.size = sizeof(struct wmsg_open_file),
 			.data = (char *)&file_msg};
 	(void)apply_update(&map, &pool, &render, WMSG_OPEN_FILE, 0, &msg);
 	struct shadow_fd *sfd = get_shadow_for_rid(&map, 0);
@@ -203,9 +203,10 @@ static struct bench_result run_sub_bench(bool first,
 		damage_everything(&sfd->damage);
 
 		/* Create transfer queue */
-		struct transfer_data transfer_data;
-		memset(&transfer_data, 0, sizeof(struct transfer_data));
+		struct transfer_queue transfer_data;
+		memset(&transfer_data, 0, sizeof(struct transfer_queue));
 		pthread_mutex_init(&transfer_data.lock, NULL);
+		int transfer_nwritten = 0;
 
 		struct timespec t0, t1;
 		clock_gettime(CLOCK_REALTIME, &t0);
@@ -237,10 +238,10 @@ static struct bench_result run_sub_bench(bool first,
 			clock_gettime(CLOCK_REALTIME, &cur_time);
 			if (compare_timespec(&next_write_time, &cur_time) < 0) {
 				pthread_mutex_lock(&transfer_data.lock);
-				if (transfer_data.end != transfer_data.start) {
+				if (transfer_nwritten < transfer_data.count) {
 					struct iovec v =
-							transfer_data.data
-									[transfer_data.start++];
+							transfer_data.data[transfer_nwritten++]
+									.vec;
 					float delay_s = (float)v.iov_len /
 							(bandwidth_mBps * 1e6f);
 					total_wire_size += v.iov_len;
@@ -298,7 +299,7 @@ static struct bench_result run_sub_bench(bool first,
 			}
 			bool all_sent = false;
 			pthread_mutex_lock(&transfer_data.lock);
-			all_sent = transfer_data.start == transfer_data.end;
+			all_sent = transfer_nwritten == transfer_data.count;
 			pthread_mutex_unlock(&transfer_data.lock);
 
 			if (done && all_sent) {
@@ -307,7 +308,7 @@ static struct bench_result run_sub_bench(bool first,
 		}
 
 		finish_update(sfd);
-		cleanup_transfers(&transfer_data);
+		cleanup_transfer_queue(&transfer_data);
 		clock_gettime(CLOCK_REALTIME, &t1);
 
 		struct diff_comp_results r;

@@ -289,7 +289,7 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 	return wmsg_types[tp];
 }
 
-bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
+bool transfer_add(struct transfer_queue *transfers, size_t size, void *data,
 		bool is_ack_msg)
 {
 	if (size == 0) {
@@ -297,25 +297,19 @@ bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 	}
 
 	pthread_mutex_lock(&transfers->lock);
-	int sz2 = transfers->size;
-	if (buf_ensure_size(transfers->end + 1, sizeof(*transfers->data),
+	if (buf_ensure_size(transfers->count + 1, sizeof(*transfers->data),
 			    &transfers->size,
 			    (void **)&transfers->data) == -1) {
-		wp_error("Resize of transfer data failed");
+		wp_error("Resize of transfer queue failed");
 
 		pthread_mutex_unlock(&transfers->lock);
 		return false;
 	}
-	if (buf_ensure_size(transfers->end + 1, sizeof(*transfers->msgno), &sz2,
-			    (void **)&transfers->msgno) == -1) {
-		wp_error("Resize of transfer data failed");
-		pthread_mutex_unlock(&transfers->lock);
-		return false;
-	}
-	transfers->data[transfers->end].iov_len = size;
-	transfers->data[transfers->end].iov_base = data;
-	transfers->msgno[transfers->end] = transfers->last_msgno;
-	transfers->end++;
+	struct transfer_elem t;
+	t.vec.iov_len = size;
+	t.vec.iov_base = data;
+	t.msgno = transfers->last_msgno;
+	transfers->data[transfers->count++] = t;
 	if (!is_ack_msg) {
 		transfers->last_msgno++;
 	}
@@ -323,20 +317,12 @@ bool transfer_add(struct transfer_data *transfers, size_t size, void *data,
 	pthread_mutex_unlock(&transfers->lock);
 	return true;
 }
-bool transfer_zeropad(
-		struct transfer_data *transfers, size_t size, uint32_t msgno)
-{
-	return transfer_add(transfers, size, transfers->zeros, msgno);
-}
 
-void cleanup_transfers(struct transfer_data *td)
+void cleanup_transfer_queue(struct transfer_queue *td)
 {
 	pthread_mutex_destroy(&td->lock);
-	for (int i = 0; i < td->end; i++) {
-		if (td->data[i].iov_base != &td->zeros) {
-			free(td->data[i].iov_base);
-		}
+	for (int i = 0; i < td->count; i++) {
+		free(td->data[i].vec.iov_base);
 	}
 	free(td->data);
-	free(td->msgno);
 }
