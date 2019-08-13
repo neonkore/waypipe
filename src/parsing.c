@@ -212,6 +212,7 @@ static bool build_new_objects(const struct msg_data *data,
 			pos += gap_no == 0 ? data->base_gap
 					   : data->trail_gap[gap_no - 1];
 			pos += (payload[pos - 1] + 3) / 4;
+			gap_no++;
 		} else {
 			uint32_t new_id = payload[pos + data->new_obj_idxs[k]];
 			if (new_id == caller_obj->obj_id) {

@@ -728,20 +728,17 @@ static void worker_run_compress_block(
 
 	struct shadow_fd *sfd = task->sfd;
 	struct thread_pool *pool = local->pool;
+	if (task->zone_end == task->zone_start) {
+		wp_error("Skipping task");
+		return;
+	}
 
 	/* Allocate a disjoint target interval to each worker */
 	size_t source_start = (size_t)task->zone_start;
 	size_t source_end = (size_t)task->zone_end;
 	DTRACE_PROBE1(waypipe, worker_comp_enter, source_end - source_start);
 
-	size_t sz = sizeof(struct wmsg_buffer_fill);
-	if (source_end == source_start) {
-		/* Nothing to do here */
-
-		wp_error("Skipping task");
-		goto end;
-	}
-
+	size_t sz;
 	uint8_t *msg;
 	if (pool->compression == COMP_NONE) {
 		sz = sizeof(struct wmsg_buffer_fill) +
@@ -762,9 +759,14 @@ static void worker_run_compress_block(
 				&sfd->mem_mirror[source_start], comp_size,
 				(char *)msg + sizeof(struct wmsg_buffer_fill),
 				&dst);
-		msg = realloc(msg,
+		void *nmsg = realloc(msg,
 				alignz(dst.size, 4) +
 						sizeof(struct wmsg_buffer_fill));
+		if (nmsg) {
+			msg = nmsg;
+		} else {
+			wp_debug("Failed to shrink buffer with realloc");
+		}
 		sz = dst.size + sizeof(struct wmsg_buffer_fill);
 	}
 	memset(msg + sz, 0, alignz(sz, 4) - sz);
@@ -779,7 +781,6 @@ static void worker_run_compress_block(
 
 	transfer_add(transfers, alignz(sz, 4), msg, false);
 
-end:
 	DTRACE_PROBE1(waypipe, worker_comp_exit,
 			sz - sizeof(struct wmsg_buffer_fill));
 }
@@ -809,6 +810,7 @@ static void queue_fill_transfers(struct thread_pool *threads,
 
 	for (int i = 0; i < nshards; i++) {
 		struct task_data task;
+		memset(&task, 0, sizeof(task));
 		task.type = TASK_COMPRESS_BLOCK;
 		task.sfd = sfd;
 		task.transfers = transfers;
@@ -817,8 +819,6 @@ static void queue_fill_transfers(struct thread_pool *threads,
 		task.zone_start = region_start + (range * i) / nshards;
 		task.zone_end = region_start + (range * (i + 1)) / nshards;
 
-		task.damage_len = 0;
-		task.damage_intervals = NULL;
 		threads->queue[threads->queue_end++] = task;
 	}
 	pthread_mutex_unlock(&threads->work_mutex);
@@ -919,6 +919,7 @@ static void queue_diff_transfers(struct thread_pool *threads,
 
 	for (int i = 0; i < nshards; i++) {
 		struct task_data task;
+		memset(&task, 0, sizeof(task));
 		task.type = TASK_COMPRESS_DIFF;
 		task.sfd = sfd;
 		task.transfers = transfers;
@@ -928,8 +929,6 @@ static void queue_diff_transfers(struct thread_pool *threads,
 				&sfd->damage_task_interval_store[offsets[i]];
 		task.damaged_end = (i == nshards - 1) && check_tail;
 
-		task.zone_start = 0;
-		task.zone_end = 0;
 		threads->queue[threads->queue_end++] = task;
 	}
 	pthread_mutex_unlock(&threads->work_mutex);
@@ -1580,9 +1579,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return -1;
 		}
 
-		size_t transfer_size = msg->size - sizeof(struct wmsg_basic);
+		size_t transf_data_sz = msg->size - sizeof(struct wmsg_basic);
 
-		ssize_t netsize = sfd->pipe_send.used + (ssize_t)transfer_size;
+		ssize_t netsize = sfd->pipe_send.used + (ssize_t)transf_data_sz;
 		if (sfd->pipe_send.size <= 1024) {
 			sfd->pipe_send.size = 1024;
 		}
@@ -1598,7 +1597,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 		memcpy(sfd->pipe_send.data + sfd->pipe_send.used,
 				msg->data + sizeof(struct wmsg_basic),
-				transfer_size);
+				transf_data_sz);
 		sfd->pipe_send.used = netsize;
 
 		// The pipe itself will be flushed/or closed later by

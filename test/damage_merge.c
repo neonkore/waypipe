@@ -211,8 +211,8 @@ static bool check_solution_properties(int nsub, const struct ext_interval *sub,
 		memset(&test[e.start - minv], 2, (size_t)(e.end - e.start));
 	}
 	bool yes = memchr(test, 1, (size_t)(maxv - minv)) == NULL;
-	int count = 0;
 	if (!yes) {
+		int count = 0;
 		for (int i = 0; i < maxv - minv; i++) {
 			count += test[i] == 1;
 		}

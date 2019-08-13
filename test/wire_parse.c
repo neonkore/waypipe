@@ -43,7 +43,7 @@ void do_xtype_req_blue(struct context *ctx, const char *interface,
 		uint32_t d, struct wp_object *e, const char *f, uint32_t g)
 {
 	char buf[256];
-	sprintf(buf, "%s %u %u %d %d %d %u %s %d", interface, version,
+	sprintf(buf, "%s %u %u %d %d %u %u %s %u", interface, version,
 			id ? id->obj_id : 0, b, c, d, e ? e->obj_id : 0, f, g);
 	printf("%s\n", buf);
 	ctx->drop_this_msg =

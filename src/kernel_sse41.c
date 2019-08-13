@@ -63,13 +63,17 @@ size_t run_interval_diff_sse41(const int diff_window_size,
 				_mm_storeu_si128(&base[2 * i], m0);
 				_mm_storeu_si128(&base[2 * i + 1], m1);
 
+				// TODO: is copying onto stack and out with
+				// difference alignments faster? (i.e,
+				// store-to-load forward vs branch mispredict)
+
 				/* Write the changed bytes, starting at the
-				 * first modified term, and set the
-				 * unchanged counter */
+				 * first modified term, and set the unchanged
+				 * counter.  */
 				size_t ncom = (size_t)__builtin_ctz(~mask) >> 2;
-				uint32_t *mod = (uint32_t *)&base[2 * i];
+				uint32_t *bmod = (uint32_t *)&base[2 * i];
 				for (size_t z = ncom; z < 8; z++) {
-					diff[dc++] = mod[z];
+					diff[dc++] = bmod[z];
 				}
 				trailing_unchanged = __builtin_clz(~mask) >> 2;
 				ctrl_blocks[0] = (uint32_t)(8 * i + ncom);

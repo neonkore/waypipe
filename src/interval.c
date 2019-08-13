@@ -116,6 +116,33 @@ static int fix_merge_stack_property(int size, struct merge_stack_elem *stack,
 	return size;
 }
 
+static int unpack_ext_interval(struct interval *vec,
+		const struct ext_interval e, int alignment_bits)
+{
+	int iw = 0;
+	int last_end = INT32_MIN;
+	for (int ir = 0; ir < e.rep; ir++) {
+		int start = e.start + ir * e.stride;
+		int end = start + e.width;
+		start = (start >> alignment_bits) << alignment_bits;
+		end = ((end + (1 << alignment_bits) - 1) >> alignment_bits)
+		      << alignment_bits;
+
+		if (start > last_end) {
+			vec[iw].start = start;
+			vec[iw].end = end;
+			last_end = end;
+			iw++;
+		} else {
+			vec[iw - 1].end = end;
+			last_end = end;
+		}
+	}
+	/* end sentinel */
+	vec[iw] = (struct interval){.start = INT32_MAX, .end = INT32_MAX};
+	return iw;
+}
+
 /* By writing a mergesort by hand, we can detect duplicates early.
  *
  * TODO: optimize output with run-length-encoded segments
@@ -164,9 +191,9 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 		bool force_combine = (absorbed > 30000) ||
 				     10 * remaining < src_count;
 
-		int64_t end = e.start + e.stride * (int64_t)(e.rep - 1) +
-			      e.width;
-		if (end >= INT32_MAX) {
+		int64_t intv_end = e.start + e.stride * (int64_t)(e.rep - 1) +
+				   e.width;
+		if (intv_end >= INT32_MAX) {
 			/* overflow protection */
 			e.width = INT32_MAX - 1 - e.start;
 			e.rep = 1;
@@ -183,30 +210,7 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 				&base.size, (void **)&base.data);
 
 		struct interval *vec = &base.data[base.count];
-		int iw = 0;
-		int last_end = INT32_MIN;
-		for (int ir = 0; ir < e.rep; ir++) {
-			int start = e.start + ir * e.stride;
-			int end = start + e.width;
-			start = (start >> alignment_bits) << alignment_bits;
-			end = ((end + (1 << alignment_bits) - 1) >>
-					      alignment_bits)
-			      << alignment_bits;
-
-			if (start > last_end) {
-				vec[iw].start = start;
-				vec[iw].end = end;
-				last_end = end;
-				iw++;
-			} else {
-				vec[iw - 1].end = end;
-				last_end = end;
-			}
-		}
-		/* end sentinel */
-		vec[iw] = (struct interval){
-				.start = INT32_MAX, .end = INT32_MAX};
-
+		int iw = unpack_ext_interval(vec, e, alignment_bits);
 		src_count += iw;
 
 		substack[substack_size] = (struct merge_stack_elem){
@@ -250,27 +254,6 @@ void merge_damage_records(struct damage *base, int nintervals,
 			alignment_bits);
 }
 
-int get_damage_area(const struct damage *base)
-{
-	if (base->damage == DAMAGE_EVERYTHING) {
-		return INT32_MAX;
-	} else if (base->damage == NULL || base->ndamage_intvs == 0) {
-		return 0;
-	} else {
-		int low = INT32_MAX;
-		int high = INT32_MIN;
-		int tca = 0;
-		for (int i = 0; i < base->ndamage_intvs; i++) {
-			tca += base->damage[i].end - base->damage[i].start;
-		}
-		float cover_fraction =
-				(float)base->acc_damage_stat / (float)tca;
-		wp_debug("Damage interval: {%d(%d)} -> [%d, %d) [%d], %f",
-				base->ndamage_intvs, base->acc_count, low, high,
-				tca, cover_fraction);
-		return tca;
-	}
-}
 void reset_damage(struct damage *base)
 {
 	if (base->damage != DAMAGE_EVERYTHING) {

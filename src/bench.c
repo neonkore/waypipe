@@ -57,9 +57,8 @@ static const struct compression_range comp_ranges[] = {
 static void *create_text_like_image(size_t size)
 {
 	uint8_t *data = malloc(size);
-	size_t step = 0;
 	for (size_t i = 0; i < size; i++) {
-		step = i / 203 - i / 501;
+		size_t step = i / 203 - i / 501;
 		bool s = step % 2 == 0;
 		data[i] = (uint8_t)(s ? ((step >> 1) & 0x2) + 0xfe : 0x00);
 	}
@@ -377,12 +376,9 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 			calloc((size_t)ntests, sizeof(struct bench_result));
 	struct bench_result *iresults =
 			calloc((size_t)ntests, sizeof(struct bench_result));
-	int ntres = 0;
-	int nires = 0;
+	int ntres = 0, nires = 0;
 	for (int k = 0; k < 2; k++) {
 		bool text_like = k == 0;
-		struct bench_result *results = text_like ? tresults : iresults;
-		int *nresults = text_like ? &ntres : &nires;
 		int j = 0;
 		for (size_t c = 0;
 				!shutdown_flag &&
@@ -401,8 +397,13 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 						text_like, test_size,
 						text_like ? text_image
 							  : vid_image);
-				results[j++] = res;
-				(*nresults)++;
+				if (text_like) {
+					tresults[j++] = res;
+					ntres++;
+				} else {
+					iresults[j++] = res;
+					nires++;
+				}
 			}
 		}
 	}

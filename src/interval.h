@@ -74,8 +74,6 @@ struct damage {
  * `1 << alignment_bits`. */
 void merge_damage_records(struct damage *base, int nintervals,
 		const struct ext_interval *const new_list, int alignment_bits);
-/** Return the total area covered by the damage region */
-int get_damage_area(const struct damage *base);
 /** Set damage to empty  */
 void reset_damage(struct damage *base);
 /** Expand damage to cover everything */

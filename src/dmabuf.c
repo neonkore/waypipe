@@ -263,9 +263,9 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 bool is_dmabuf(int fd)
 {
 	// Prepare an invalid request, with a dma-buf specific IOCTL
-	struct dma_buf_sync sync;
-	sync.flags = 0;
-	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != -1) {
+	struct dma_buf_sync arg;
+	arg.flags = 0;
+	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &arg) != -1) {
 		wp_error("DMAbuf test ioctl succeeded when it should have errored");
 		return false;
 	}

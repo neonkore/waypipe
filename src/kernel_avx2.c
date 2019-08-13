@@ -88,15 +88,15 @@ size_t run_interval_diff_avx2(const int diff_window_size,
 				size_t ncom = (size_t)tzcnt(~mask) >> 2;
 
 				size_t block_shift = (ncom & 7);
-				uint64_t mask = 0xffffffffuLL
-						<< (block_shift * 4);
+				uint64_t esmask = 0xffffffffuLL
+						  << (block_shift * 4);
 				__m128i halfsize = _mm_set_epi64x(
-						0uLL, (long long)mask);
-				__m256i storemask =
+						0uLL, (long long)esmask);
+				__m256i estoremask =
 						_mm256_cvtepi8_epi64(halfsize);
 				_mm256_maskstore_epi32(
 						(int *)&diff[dc - block_shift],
-						storemask, ncom < 8 ? m0 : m1);
+						estoremask, ncom < 8 ? m0 : m1);
 				if (ncom < 8) {
 					_mm256_storeu_si256(
 							(__m256i *)&diff[dc +

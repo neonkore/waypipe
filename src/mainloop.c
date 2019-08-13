@@ -253,13 +253,6 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 	return;
 }
 
-struct pipe_elem_header {
-	int32_t id;
-	int32_t type;
-	int32_t size;
-	int32_t special;
-};
-
 /** A queue of data blocks to be written to the channel */
 struct chan_write_queue {
 	/** Data to be writtenveed */

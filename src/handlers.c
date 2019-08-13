@@ -483,7 +483,7 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 				scale);
 		return -1;
 	}
-	if (transform < 0 || transform > 8) {
+	if (transform < 0 || transform >= 8) {
 		wp_error("Not applying damage due to invalid buffer transform (%d)",
 				transform);
 		return -1;
