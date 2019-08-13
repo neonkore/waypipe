@@ -167,14 +167,15 @@ static void untranslate_ids(struct fd_translation_map *map, int nids,
 /**
  * Given a set of messages and fds, parse the messages, and if indicated
  * by parsing logic, compact the message buffer by removing selected
- * messages.
+ * messages, or edit message contents.
  *
- * Messages with file descriptors should not be compacted.
+ * The `source_bytes` window indicates the range of unread data; it's
+ * zone start point will be advanced. The 'dest_bytes' window indicates
+ * the range of written data; it's zone end point will be advanced.
  *
- * The amount of the message buffer read is written to `data_used`
- * The new size of the message buffer, after compaction, is
- * `data_newsize` The number of file descriptors read by the protocol is
- * `fds_used`.
+ * The file descriptor queue `fds` will have its start advanced, leaving only
+ * file descriptors that have not yet been read. Further edits may be made
+ * to inject new file descriptors.
  */
 static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		bool from_client, struct char_window *source_bytes,
@@ -263,26 +264,23 @@ enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL };
 /** This state corresponds to the in-progress transfer from the program
  * (compositor or application) and its pipes/buffers to the channel. */
 struct way_msg_state {
-	// These aren't quite a ring-buffer
-	int dbuffer_maxsize;
-	int dbuffer_edited_maxsize;
-	int dbuffer_end;
-	int dbuffer_carryover_start;
-	int dbuffer_carryover_end;
-
-	int rbuffer_count;
 	enum wm_state state;
-	/* The large packed message to be written to the channel */
-	char *dbuffer;        // messages
-	char *dbuffer_edited; // messages are copied to here
-	int *rbuffer;         // rids
+
+	/** Window zone contains the message data which has been read
+	 * but not yet parsed/copied to proto_write */
+	struct char_window proto_read;
+	/** Buffer of complete protocol messages to be written to the channel */
+	struct char_window proto_write;
+
+	/** Queue of fds to be used by protocol parser */
 	struct int_window fds;
 
-	/* Individual transfer chunks and headers, sent out via writev */
+	/** Individual transfer chunks and headers, sent out via writev */
 	struct transfer_data transfers;
+	/** bytes written in this cycle, for debug */
 	int total_written;
 
-	/* transfers to send after the compute queue is empty */
+	/** Transfers to send after the compute queue is empty */
 	int ntrailing;
 	struct iovec trailing[3];
 };
@@ -293,14 +291,13 @@ enum cm_state { CM_WAITING_FOR_PROGRAM, CM_WAITING_FOR_CHANNEL };
 struct chan_msg_state {
 	enum cm_state state;
 
-	/* The large packed message read from the channel */
-	int dbuffer_start;
-	int dbuffer_end;
-	int dbuffer_edited_maxsize;
-	char *dbuffer_edited; // messages are copied to here
+	/** Edited protocol data which is being written to the program */
+	struct char_window proto_write;
 
-	struct int_window transf_fds; /**< FDs to be immediately transferred */
-	struct int_window proto_fds;  /**< FDs for use by protocol */
+	/**< FDs that should immediately be transferred to the program */
+	struct int_window transf_fds;
+	/**< FD queue for the protocol parser */
+	struct int_window proto_fds;
 
 #define RECV_GOAL_READ_SIZE 131072
 	char *recv_buffer; // ring-like buffer for message data
@@ -388,24 +385,21 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		 * aligned with individual message boundaries, it is not
 		 * guaranteed that all file descriptors provided will be used by
 		 * the messages. This makes fd handling more complicated. */
-		struct char_window src;
 		int protosize = (int)(unpadded_size - sizeof(uint32_t));
-		if (protosize >= cmsg->dbuffer_edited_maxsize) {
-			wp_error("Very large protocol packet %d >> 4096 byte read group size",
-					protosize);
-			return -1;
-		}
+		// TODO: have message editing routines ensure size, so
+		// that this limit can be tighter
+		buf_ensure_size(protosize + 1024, 1, &cmsg->proto_write.size,
+				(void **)&cmsg->proto_write.data);
+		cmsg->proto_write.zone_end = 0;
+		cmsg->proto_write.zone_start = 0;
+
+		struct char_window src;
 		src.data = packet + sizeof(uint32_t);
 		src.zone_start = 0;
 		src.zone_end = protosize;
 		src.size = protosize;
-		struct char_window dst;
-		dst.data = cmsg->dbuffer_edited;
-		dst.zone_start = 0;
-		dst.zone_end = 0;
-		dst.size = cmsg->dbuffer_edited_maxsize;
 		parse_and_prune_messages(g, display_side, display_side, &src,
-				&dst, &cmsg->proto_fds);
+				&cmsg->proto_write, &cmsg->proto_fds);
 		if (src.zone_start != src.zone_end) {
 			wp_error("did not expect partial messages over channel, only parsed %d/%d bytes",
 					src.zone_start, src.zone_end);
@@ -420,9 +414,6 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 								      cmsg->proto_fds.zone_start));
 			cmsg->proto_fds.zone_end -= cmsg->proto_fds.zone_start;
 		}
-
-		cmsg->dbuffer_start = 0;
-		cmsg->dbuffer_end = dst.zone_end;
 		return 0;
 	} else {
 		if (unpadded_size < sizeof(struct wmsg_basic)) {
@@ -528,7 +519,8 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 				cmsg->recv_start = 0;
 				cmsg->recv_end = (size_t)r - vec[0].iov_len;
 
-				if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
+				if (cmsg->proto_write.zone_start <
+						cmsg->proto_write.zone_end) {
 					goto next_stage;
 				}
 			} else {
@@ -565,7 +557,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		cmsg->recv_start += alignz(sz, 4);
 		cmsg->recv_unhandled_messages--;
 
-		if (cmsg->dbuffer_start < cmsg->dbuffer_end) {
+		if (cmsg->proto_write.zone_start < cmsg->proto_write.zone_end) {
 			goto next_stage;
 		}
 	}
@@ -582,11 +574,12 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// Write as much as possible
-	while (cmsg->dbuffer_start < cmsg->dbuffer_end) {
+	while (cmsg->proto_write.zone_start < cmsg->proto_write.zone_end) {
 		ssize_t wc = iovec_write(progfd,
-				cmsg->dbuffer_edited + cmsg->dbuffer_start,
-				(size_t)(cmsg->dbuffer_end -
-						cmsg->dbuffer_start),
+				cmsg->proto_write.data +
+						cmsg->proto_write.zone_start,
+				(size_t)(cmsg->proto_write.zone_end -
+						cmsg->proto_write.zone_start),
 				cmsg->transf_fds.data,
 				cmsg->transf_fds.zone_end,
 				&cmsg->transf_fds.zone_start);
@@ -601,10 +594,10 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			wp_error("%s has closed", progdesc);
 			return -1;
 		} else {
-			cmsg->dbuffer_start += (int)wc;
+			cmsg->proto_write.zone_start += (int)wc;
 			wp_debug("Wrote to %s, %d/%d bytes in chunk %zd, %d/%d fds",
-					progdesc, cmsg->dbuffer_start,
-					cmsg->dbuffer_end, wc,
+					progdesc, cmsg->proto_write.zone_start,
+					cmsg->proto_write.zone_end, wc,
 					cmsg->transf_fds.zone_start,
 					cmsg->transf_fds.zone_end);
 
@@ -623,7 +616,7 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			}
 		}
 	}
-	if (cmsg->dbuffer_start == cmsg->dbuffer_end) {
+	if (cmsg->proto_write.zone_start == cmsg->proto_write.zone_end) {
 		wp_debug("Write to the %s succeeded", progdesc);
 		close_local_pipe_ends(&g->map);
 		cmsg->state = CM_WAITING_FOR_CHANNEL;
@@ -821,13 +814,15 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// We have data to read from programs/pipes
-	ssize_t rc = -1;
+	bool new_proto_data = false;
 	int old_fbuffer_end = wmsg->fds.zone_end;
 	if (progsock_readable) {
 		// Read /once/
-		rc = iovec_read(progfd, wmsg->dbuffer + wmsg->dbuffer_end,
-				(size_t)(wmsg->dbuffer_maxsize -
-						wmsg->dbuffer_end),
+		ssize_t rc = iovec_read(progfd,
+				wmsg->proto_read.data +
+						wmsg->proto_read.zone_start,
+				(size_t)(wmsg->proto_read.size -
+						wmsg->proto_read.zone_start),
 				&wmsg->fds);
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
@@ -840,48 +835,39 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			return 0;
 		} else {
 			// We have successfully read some data.
-			rc += wmsg->dbuffer_end;
+			wmsg->proto_read.zone_end += (int)rc;
+			new_proto_data = true;
 		}
 	}
 
-	struct char_window dst;
-	dst.data = wmsg->dbuffer_edited;
-	dst.zone_start = 0;
-	dst.zone_end = 0;
-	dst.size = wmsg->dbuffer_edited_maxsize;
-	if (rc > 0) {
+	if (new_proto_data) {
 		wp_debug("Read %d new file descriptors, have %d total now",
 				wmsg->fds.zone_end - old_fbuffer_end,
 				wmsg->fds.zone_end);
 
-		struct char_window src;
-		src.data = wmsg->dbuffer;
-		src.zone_start = 0;
-		src.zone_end = (int)rc;
-		src.size = wmsg->dbuffer_maxsize;
+		buf_ensure_size(wmsg->proto_read.size + 1024, 1,
+				&wmsg->proto_write.size,
+				(void **)&wmsg->proto_write.data);
 
-		parse_and_prune_messages(g, display_side, !display_side, &src,
-				&dst, &wmsg->fds);
+		wmsg->proto_write.zone_start = 0;
+		wmsg->proto_write.zone_end = 0;
+		parse_and_prune_messages(g, display_side, !display_side,
+				&wmsg->proto_read, &wmsg->proto_write,
+				&wmsg->fds);
 
-		/* Translate all fds in the zone read by the protocol,
-		 * creating shadow structures if needed. The
-		 * window-queue is then reset */
-		wmsg->rbuffer_count = wmsg->fds.zone_start;
-		translate_fds(&g->map, &g->render, wmsg->fds.zone_start,
-				wmsg->fds.data, wmsg->rbuffer);
-		memmove(wmsg->fds.data, wmsg->fds.data + wmsg->fds.zone_start,
-				sizeof(int) * (size_t)(wmsg->fds.zone_end -
-							      wmsg->fds.zone_start));
-		wmsg->fds.zone_end -= wmsg->fds.zone_start;
-		wmsg->fds.zone_start = 0;
-
-		/* Specify the range of recycled bytes */
-		if (rc > src.zone_start) {
-			wmsg->dbuffer_carryover_start = src.zone_start;
-			wmsg->dbuffer_carryover_end = (int)rc;
-		} else {
-			wmsg->dbuffer_carryover_start = 0;
-			wmsg->dbuffer_carryover_end = 0;
+		/* Recycle partial message bytes */
+		if (wmsg->proto_read.zone_start > 0) {
+			if (wmsg->proto_read.zone_end >
+					wmsg->proto_read.zone_start) {
+				memmove(wmsg->proto_read.data,
+						wmsg->proto_read.data +
+								wmsg->proto_read.zone_start,
+						(size_t)(wmsg->proto_read.zone_end -
+								wmsg->proto_read.zone_start));
+			}
+			wmsg->proto_read.zone_end -=
+					wmsg->proto_read.zone_start;
+			wmsg->proto_read.zone_start = 0;
 		}
 	}
 
@@ -907,66 +893,58 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		collect_update(&g->threads, cur, &wmsg->transfers);
 	}
 
-	if (rc > 0) {
-		/* Inject file descriptors and parse the protocol after
-		 * collecting the updates produced from them */
-		if (wmsg->rbuffer_count > 0) {
-			size_t act_size = (size_t)wmsg->rbuffer_count *
+	if (new_proto_data) {
+		/* Send all file descriptors which have been used by the
+		 * protocol parser, translating them if this has not already
+		 * been done */
+		if (wmsg->fds.zone_start > 0) {
+			size_t act_size = (size_t)wmsg->fds.zone_start *
 							  sizeof(int32_t) +
 					  sizeof(uint32_t);
-			size_t pad_size = alignz(act_size, 4);
-			uint32_t *msg = malloc(pad_size);
+			uint32_t *msg = malloc(act_size);
 			msg[0] = transfer_header(act_size, WMSG_INJECT_RIDS);
-			memcpy(&msg[1], wmsg->rbuffer,
-					(size_t)wmsg->rbuffer_count *
-							sizeof(int32_t));
-			memset(&msg[1 + wmsg->rbuffer_count], 0,
-					pad_size - act_size);
-			decref_transferred_rids(&g->map, wmsg->rbuffer_count,
-					wmsg->rbuffer);
-			wmsg->rbuffer_count = 0;
+			int32_t *rbuffer = (int32_t *)(msg + 1);
 
-			wmsg->trailing[wmsg->ntrailing].iov_len = pad_size;
+			/* Translate and adjust refcounts */
+			translate_fds(&g->map, &g->render, wmsg->fds.zone_start,
+					wmsg->fds.data, rbuffer);
+			decref_transferred_rids(
+					&g->map, wmsg->fds.zone_start, rbuffer);
+			memmove(wmsg->fds.data,
+					wmsg->fds.data + wmsg->fds.zone_start,
+					sizeof(int) * (size_t)(wmsg->fds.zone_end -
+								      wmsg->fds.zone_start));
+			wmsg->fds.zone_end -= wmsg->fds.zone_start;
+			wmsg->fds.zone_start = 0;
+
+			/* Add message to trailing queue */
+			wmsg->trailing[wmsg->ntrailing].iov_len = act_size;
 			wmsg->trailing[wmsg->ntrailing].iov_base = msg;
 			wmsg->ntrailing++;
 		}
-		if (dst.zone_end > 0) {
+		if (wmsg->proto_write.zone_end > 0) {
 			wp_debug("We are transferring a data buffer with %d bytes",
-					dst.zone_end);
-			size_t act_size =
-					(size_t)dst.zone_end + sizeof(uint32_t);
+					wmsg->proto_write.zone_end);
+			size_t act_size = (size_t)wmsg->proto_write.zone_end +
+					  sizeof(uint32_t);
 			uint32_t protoh = transfer_header(
 					act_size, WMSG_PROTOCOL);
 
 			uint8_t *copy_proto = malloc(alignz(act_size, 4));
 			memcpy(copy_proto, &protoh, sizeof(uint32_t));
-			memcpy(copy_proto + sizeof(uint32_t), dst.data,
-					(size_t)dst.zone_end);
-			memset(copy_proto + sizeof(uint32_t) + dst.zone_end, 0,
-					alignz(act_size, 4) - act_size);
+			memcpy(copy_proto + sizeof(uint32_t),
+					wmsg->proto_write.data,
+					(size_t)wmsg->proto_write.zone_end);
+			memset(copy_proto + sizeof(uint32_t) +
+							wmsg->proto_write
+									.zone_end,
+					0, alignz(act_size, 4) - act_size);
 
 			wmsg->trailing[wmsg->ntrailing].iov_len =
 					alignz(act_size, 4);
 			wmsg->trailing[wmsg->ntrailing].iov_base = copy_proto;
 			wmsg->ntrailing++;
 		}
-
-		// Introduce carryover data
-		if (wmsg->dbuffer_carryover_end > 0) {
-			wp_debug("Carryover: %d bytes",
-					wmsg->dbuffer_carryover_end -
-							wmsg->dbuffer_carryover_start);
-			memmove(wmsg->dbuffer,
-					wmsg->dbuffer + wmsg->dbuffer_carryover_start,
-					(size_t)(wmsg->dbuffer_carryover_end -
-							wmsg->dbuffer_carryover_start));
-			wmsg->dbuffer_end = wmsg->dbuffer_carryover_end -
-					    wmsg->dbuffer_carryover_start;
-		} else {
-			wmsg->dbuffer_end = 0;
-		}
-		wmsg->dbuffer_carryover_end = 0;
-		wmsg->dbuffer_carryover_start = 0;
 	}
 
 	int n_tasks = 0;
@@ -986,8 +964,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			net_bytes += wmsg->transfers.data[i].iov_len;
 		}
 
-		wp_debug("Channel message start (%d fds, %d blobs, %d bytes, %d trailing, %d tasks)",
-				wmsg->rbuffer_count,
+		wp_debug("Channel message start (%d blobs, %d bytes, %d trailing, %d tasks)",
 				wmsg->transfers.end - wmsg->transfers.start,
 				net_bytes, wmsg->ntrailing, n_tasks);
 		wmsg->state = WM_WAITING_FOR_CHANNEL;
@@ -1127,7 +1104,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		return EXIT_FAILURE;
 	}
 	if (set_nonblocking(linkfd) == -1) {
-		wp_error("Error making %s connection nonblocking: %s", progdesc,
+		wp_error("Error making link connection nonblocking: %s",
 				strerror(errno));
 		close(linkfd);
 		close(chanfd);
@@ -1142,13 +1119,13 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	 * Wayland protocol message, but libwayland (in wl_buffer_put)
 	 * effectively limits message sizes to 4096 bytes. We must
 	 * therefore adopt a limit as least as large. */
-	way_msg.dbuffer_maxsize = 4096;
-	way_msg.dbuffer = malloc((size_t)way_msg.dbuffer_maxsize);
+	const int max_read_size = 4096;
+	way_msg.proto_read.size = max_read_size;
+	way_msg.proto_read.data = malloc((size_t)way_msg.proto_read.size);
 	way_msg.fds.size = 128;
 	way_msg.fds.data = malloc((size_t)way_msg.fds.size * sizeof(int));
-	way_msg.rbuffer = malloc((size_t)way_msg.fds.size * sizeof(int));
-	way_msg.dbuffer_edited_maxsize = 2 * way_msg.dbuffer_maxsize;
-	way_msg.dbuffer_edited = malloc((size_t)way_msg.dbuffer_edited_maxsize);
+	way_msg.proto_write.size = 2 * max_read_size;
+	way_msg.proto_write.data = malloc((size_t)way_msg.proto_write.size);
 
 	pthread_mutex_init(&way_msg.transfers.lock, NULL);
 
@@ -1157,9 +1134,8 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	chan_msg.state = CM_WAITING_FOR_CHANNEL;
 	chan_msg.recv_size = 2 * RECV_GOAL_READ_SIZE;
 	chan_msg.recv_buffer = malloc((size_t)chan_msg.recv_size);
-	chan_msg.dbuffer_edited_maxsize = way_msg.dbuffer_maxsize * 2;
-	chan_msg.dbuffer_edited =
-			malloc((size_t)chan_msg.dbuffer_edited_maxsize);
+	chan_msg.proto_write.size = max_read_size * 2;
+	chan_msg.proto_write.data = malloc((size_t)chan_msg.proto_write.size);
 
 	struct globals g;
 	g.config = config;
@@ -1349,20 +1325,17 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	cleanup_translation_map(&g.map);
 	cleanup_render_data(&g.render);
 	cleanup_hwcontext(&g.render);
-	free(way_msg.dbuffer);
+	free(way_msg.proto_read.data);
+	free(way_msg.proto_write.data);
 	free(way_msg.fds.data);
-	free(way_msg.rbuffer);
-	free(way_msg.dbuffer_edited);
 	cleanup_transfers(&way_msg.transfers);
 	for (int i = 0; i < way_msg.ntrailing; i++) {
 		free(way_msg.trailing[i].iov_base);
 	}
-	// We do not free chan_msg.dbuffer, as it is a subset of
-	// cmsg_buffer
 	free(chan_msg.transf_fds.data);
 	free(chan_msg.proto_fds.data);
 	free(chan_msg.recv_buffer);
-	free(chan_msg.dbuffer_edited);
+	free(chan_msg.proto_write.data);
 	close(chanfd);
 	close(progfd);
 	close(linkfd);
