@@ -67,10 +67,11 @@ static void *start_looper(void *data)
 
 static int create_anon_file(size_t sz)
 {
+	int new_fileno;
 #ifdef HAS_MEMFD
 	char template[256];
 	sprintf(template, "%zx", sz);
-	int new_fileno = memfd_create(template, 0);
+	new_fileno = memfd_create(template, 0);
 #elif defined(SHM_ANON)
 	new_fileno = shm_open(SHM_ANON, O_RDWR, 0600);
 #else
