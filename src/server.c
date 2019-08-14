@@ -176,11 +176,17 @@ static int run_single_server(int control_pipe, const char *socket_path,
 					control_pipe, linkfds[1], token);
 			exit(rc);
 		}
+		close(control_pipe);
+		close(linkfds[1]);
 	}
 
+	/* If there is no reconnection process, the file descriptor linkfds[1]
+	 * is kept alive in this process to avoid hangup spam */
 	int ret = main_interface_loop(
 			chanfd, server_link, linkfds[0], config, false);
-	close(linkfds[1]);
+	if (control_pipe == -1) {
+		close(linkfds[1]);
+	}
 	return ret;
 
 fail_cfd:
@@ -227,6 +233,9 @@ static int handle_new_server_connection(const char *current_sockpath,
 		close(wdisplay_socket);
 		close(control_pipe);
 		close(linksocks[0]);
+		for (int i = 0; i < connmap->count; i++) {
+			close(connmap->data[i].linkfd);
+		}
 		int rc = main_interface_loop(
 				chanfd, appfd, linksocks[1], config, false);
 		exit(rc);
@@ -489,7 +498,8 @@ int run_server(const char *socket_path, const char *wayland_display,
 	}
 
 	int retcode = EXIT_SUCCESS;
-	/* These functions will close server_link and wdisplay_socket */
+	/* These functions will close server_link, wdisplay_socket, and
+	 * control_pipe */
 	if (oneshot) {
 		retcode = run_single_server(control_pipe, socket_path,
 				unlink_at_end, server_link, config);

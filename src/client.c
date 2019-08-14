@@ -300,10 +300,13 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		// socket
 		close(channelsock);
 		close(linkfds[0]);
+		for (int i = 0; i < connmap->count; i++) {
+			close(connmap->data[i].linkfd);
+		}
 
 		int dfd = connect_to_socket(disp_path);
 		if (dfd == -1) {
-			return EXIT_FAILURE;
+			exit(EXIT_FAILURE);
 		}
 		// ignore retcode ?
 		main_interface_loop(chanclient, dfd, linkfds[1], config, true);
@@ -315,6 +318,7 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		goto fail_ps;
 	}
 	// Remove connection from this process
+	close(linkfds[1]);
 	close(chanclient);
 	connmap->data[connmap->count++] = (struct conn_addr){
 			.linkfd = linkfds[0], .token = conn_id, .pid = npid};
