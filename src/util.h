@@ -26,6 +26,7 @@
 #define WAYPIPE_UTIL_H
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -262,34 +263,50 @@ static inline enum wmsg_type transfer_type(uint32_t header)
 	return (enum wmsg_type)(header & ((1u << 5) - 1));
 }
 
-struct transfer_elem {
-	struct iovec vec;
-	uint32_t msgno;
+/** Worker tasks write their resulting messages to this receive buffer,
+ * and the main thread periodically checks the messages and appends the results
+ * to the main thread. */
+struct thread_msg_recv_buf {
+	// TODO: make this lock free, using the fact that valid iovecs have
+	// nonzero fields
+	struct iovec *data;
+	/** [zone_start, zone_end] contains the set of entries which might
+	 * contain data */
+	int zone_start, zone_end, size;
+	pthread_mutex_t lock;
 };
-/** A queue of data blocks to transfer. Users should ensure that each protocol
- * header is 4-aligned in the data stream.
- *
- * This queue exists only to communicate and order new items from the worker
- * threads to the main thread, which periodically copies all items into another,
- * private queue.
- *
- * (TODO: make the communication queue lock-free, because on busy systems it's
- * entirely possible for even tiny critical sections to be preempted and cause
- * several msecs of lag.)
+
+/** A queue of data blocks to be written to the channel. This should only
+ * be used by the main thread; worker tasks should write to a \ref
+ * thread_msg_recv_buf, from which the main thread should in turn collect data
  */
 struct transfer_queue {
-	struct transfer_elem *data;
-	int count, size;
+	/** Data to be writtenveed */
+	struct iovec *vecs;
+	/** Matching vector indicating to which message the corresponding data
+	 * block belongs. */
+	uint32_t *msgnos;
+	/** start: next block to write. end: just after last block to write;
+	 * size: number of iovec blocks */
+	int start, end, size;
+	/** How much of the block at 'start' has been written */
+	size_t partial_write_amt;
 	/** The most recent message number, to be incremented after almost all
 	 * message types */
 	uint32_t last_msgno;
-	/** Guard for all operations */
-	pthread_mutex_t lock;
+	/** Messages added from a worker thread are introduced here, and should
+	 * be periodically copied onto the main queue */
+	struct thread_msg_recv_buf async_recv_queue;
 };
+
 /** Add transfer message to the queue, expanding the queue as necessary. */
-bool transfer_add(struct transfer_queue *transfers, size_t size, void *data,
+int transfer_add(struct transfer_queue *transfers, size_t size, void *data,
 		bool is_ack_msg);
 /** Destroy the transfer queue, deallocating all attached buffers */
 void cleanup_transfer_queue(struct transfer_queue *transfers);
+/** Move any asynchronously loaded messages to the queue */
+int transfer_load_async(struct transfer_queue *w);
+/** Add a message to the async queue */
+void transfer_async_add(struct thread_msg_recv_buf *q, void *data, size_t sz);
 
 #endif // WAYPIPE_UTIL_H

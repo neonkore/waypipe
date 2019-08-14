@@ -222,12 +222,12 @@ static struct bench_result run_sub_bench(bool first,
 		/* Create transfer queue */
 		struct transfer_queue transfer_data;
 		memset(&transfer_data, 0, sizeof(struct transfer_queue));
-		pthread_mutex_init(&transfer_data.lock, NULL);
-		int transfer_nwritten = 0;
+		pthread_mutex_init(&transfer_data.async_recv_queue.lock, NULL);
 
 		struct timespec t0, t1;
 		clock_gettime(CLOCK_REALTIME, &t0);
 		collect_update(&pool, sfd, &transfer_data);
+		start_parallel_work(&pool, &transfer_data.async_recv_queue);
 
 		/* A restricted main loop, in which transfer blocks are
 		 * instantaneously consumed when previous blocks have been
@@ -247,18 +247,18 @@ static struct bench_result run_sub_bench(bool first,
 				run_task(&task, &pool.threads[0]);
 
 				pthread_mutex_lock(&pool.work_mutex);
-				pool.queue_in_progress--;
+				pool.tasks_in_progress--;
 				pthread_mutex_unlock(&pool.work_mutex);
 			}
 
 			struct timespec cur_time;
 			clock_gettime(CLOCK_REALTIME, &cur_time);
 			if (compare_timespec(&next_write_time, &cur_time) < 0) {
-				pthread_mutex_lock(&transfer_data.lock);
-				if (transfer_nwritten < transfer_data.count) {
+				transfer_load_async(&transfer_data);
+				if (transfer_data.start < transfer_data.end) {
 					struct iovec v =
-							transfer_data.data[transfer_nwritten++]
-									.vec;
+							transfer_data.vecs
+									[transfer_data.start++];
 					float delay_s = (float)v.iov_len /
 							(bandwidth_mBps * 1e6f);
 					total_wire_size += v.iov_len;
@@ -276,13 +276,11 @@ static struct bench_result run_sub_bench(bool first,
 					next_write_time = timespec_add(
 							cur_time, delay_ns);
 				}
-				pthread_mutex_unlock(&transfer_data.lock);
 			} else {
 				/* Very short delay, for poll loop */
 				bool tasks_remaining = false;
 				pthread_mutex_lock(&pool.work_mutex);
-				tasks_remaining = pool.queue_end >
-						  pool.queue_start;
+				tasks_remaining = pool.stack_count > 0;
 				pthread_mutex_unlock(&pool.work_mutex);
 
 				struct timespec delay_time;
@@ -302,9 +300,7 @@ static struct bench_result run_sub_bench(bool first,
 				nanosleep(&delay_time, NULL);
 			}
 			bool all_sent = false;
-			pthread_mutex_lock(&transfer_data.lock);
-			all_sent = transfer_nwritten == transfer_data.count;
-			pthread_mutex_unlock(&transfer_data.lock);
+			all_sent = transfer_data.start == transfer_data.end;
 
 			if (done && all_sent) {
 				break;

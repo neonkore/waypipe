@@ -64,6 +64,7 @@ struct fd_translation_map {
 	int local_sign;
 };
 
+/** Thread pool and associated global information */
 struct thread_pool {
 	int nthreads;
 	struct thread_data *threads; // including a slot for the zero thread
@@ -80,11 +81,12 @@ struct thread_pool {
 	pthread_mutex_t work_mutex;
 	pthread_cond_t work_cond;
 
-	int queue_start, queue_end, queue_size;
-	struct task_data *queue;
+	bool do_work;
+	int stack_count, stack_size;
+	struct task_data *stack;
 	// TODO: distinct queues for wayland->channel and channel->wayland,
 	// to make multithreaded decompression possible
-	int queue_in_progress;
+	int tasks_in_progress;
 
 	// to wake the main loop
 	int selfpipe_r, selfpipe_w;
@@ -120,7 +122,7 @@ struct task_data {
 	int damage_len;
 	bool damaged_end;
 
-	struct transfer_queue *transfers;
+	struct thread_msg_recv_buf *msg_queue;
 };
 
 /** Shadow object types, signifying file descriptor type and usage */
@@ -301,6 +303,10 @@ void extend_shm_shadow(struct fd_translation_map *map,
 		struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size);
 
+/** Notify the threads so that they can start working on the tasks in the pool,
+ * and return the total number of tasks */
+int start_parallel_work(struct thread_pool *pool,
+		struct thread_msg_recv_buf *recv_queue);
 /** Return true if there is a work task (not a stop task) remaining for the
  * main thread to work on; also set *is_done if all tasks have completed. */
 bool request_work_task(struct thread_pool *pool, struct task_data *task,

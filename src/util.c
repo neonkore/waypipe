@@ -289,41 +289,78 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 	return wmsg_types[tp];
 }
 
-bool transfer_add(struct transfer_queue *transfers, size_t size, void *data,
+int transfer_add(struct transfer_queue *w, size_t size, void *data,
 		bool is_ack_msg)
 {
 	if (size == 0) {
-		return true;
+		return 0;
 	}
-
-	pthread_mutex_lock(&transfers->lock);
-	if (buf_ensure_size(transfers->count + 1, sizeof(*transfers->data),
-			    &transfers->size,
-			    (void **)&transfers->data) == -1) {
-		wp_error("Resize of transfer queue to %d failed",
-				transfers->count + 1);
-
-		pthread_mutex_unlock(&transfers->lock);
-		return false;
+	int sz = w->size;
+	if (buf_ensure_size(w->end + 1, sizeof(struct iovec), &sz,
+			    (void **)&w->vecs) == -1) {
+		return -1;
 	}
-	struct transfer_elem t;
-	t.vec.iov_len = size;
-	t.vec.iov_base = data;
-	t.msgno = transfers->last_msgno;
-	transfers->data[transfers->count++] = t;
+	sz = w->size;
+	if (buf_ensure_size(w->end + 1, sizeof(struct iovec), &sz,
+			    (void **)&w->msgnos) == -1) {
+		return -1;
+	}
+	w->size = sz;
+
+	w->vecs[w->end].iov_len = size;
+	w->vecs[w->end].iov_base = data;
+	w->msgnos[w->end] = w->last_msgno;
+	w->end++;
 	if (!is_ack_msg) {
-		transfers->last_msgno++;
+		w->last_msgno++;
 	}
 
-	pthread_mutex_unlock(&transfers->lock);
 	return true;
+}
+
+void transfer_async_add(struct thread_msg_recv_buf *q, void *data, size_t sz)
+{
+	struct iovec vec;
+	vec.iov_len = sz;
+	vec.iov_base = data;
+	pthread_mutex_lock(&q->lock);
+	q->data[q->zone_end++] = vec;
+	pthread_mutex_unlock(&q->lock);
+}
+
+int transfer_load_async(struct transfer_queue *w)
+{
+	pthread_mutex_lock(&w->async_recv_queue.lock);
+	int zstart = w->async_recv_queue.zone_start;
+	int zend = w->async_recv_queue.zone_end;
+	w->async_recv_queue.zone_start = zend;
+	pthread_mutex_unlock(&w->async_recv_queue.lock);
+
+	for (int i = zstart; i < zend; i++) {
+		struct iovec v = w->async_recv_queue.data[i];
+		memset(&w->async_recv_queue.data[i], 0, sizeof(struct iovec));
+		if (v.iov_len == 0 || v.iov_base == NULL) {
+			wp_error("Unexpected empty message");
+			continue;
+		}
+		/* Only fill/diff messages are received async, so msgno
+		 * is always incremented */
+		if (transfer_add(w, v.iov_len, v.iov_base, false) == -1) {
+			wp_error("Failed to add message to transfer queue");
+			pthread_mutex_unlock(&w->async_recv_queue.lock);
+			return -1;
+		}
+	}
+	return 0;
 }
 
 void cleanup_transfer_queue(struct transfer_queue *td)
 {
-	pthread_mutex_destroy(&td->lock);
-	for (int i = 0; i < td->count; i++) {
-		free(td->data[i].vec.iov_base);
+	pthread_mutex_destroy(&td->async_recv_queue.lock);
+	free(td->async_recv_queue.data);
+	for (int i = 0; i < td->end; i++) {
+		free(td->vecs[i].iov_base);
 	}
-	free(td->data);
+	free(td->vecs);
+	free(td->msgnos);
 }

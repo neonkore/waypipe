@@ -116,18 +116,18 @@ static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 static struct bytebuf combine_transfer_blocks(struct transfer_queue *td)
 {
 	size_t net_size = 0;
-	for (int i = 0; i < td->count; i++) {
-		net_size += td->data[i].vec.iov_len;
+	for (int i = td->start; i < td->end; i++) {
+		net_size += td->vecs[i].iov_len;
 	}
 
 	struct bytebuf ret_block;
 	ret_block.size = net_size;
 	ret_block.data = malloc(net_size);
 	size_t pos = 0;
-	for (int i = 0; i < td->count; i++) {
-		memcpy(ret_block.data + pos, td->data[i].vec.iov_base,
-				td->data[i].vec.iov_len);
-		pos += td->data[i].vec.iov_len;
+	for (int i = td->start; i < td->end; i++) {
+		memcpy(ret_block.data + pos, td->vecs[i].iov_base,
+				td->vecs[i].iov_len);
+		pos += td->vecs[i].iov_len;
 	}
 	return ret_block;
 }
@@ -203,7 +203,7 @@ static void wait_for_thread_pool(struct thread_pool *pool)
 			run_task(&task, &pool->threads[0]);
 
 			pthread_mutex_lock(&pool->work_mutex);
-			pool->queue_in_progress--;
+			pool->tasks_in_progress--;
 			pthread_mutex_unlock(&pool->work_mutex);
 			/* To skip the next poll */
 		} else {
@@ -220,29 +220,33 @@ static bool test_transfer(struct fd_translation_map *src_map,
 {
 	struct transfer_queue transfer_data;
 	memset(&transfer_data, 0, sizeof(struct transfer_queue));
-	pthread_mutex_init(&transfer_data.lock, NULL);
+	pthread_mutex_init(&transfer_data.async_recv_queue.lock, NULL);
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
 	collect_update(src_pool, src_shadow, &transfer_data);
+	start_parallel_work(src_pool, &transfer_data.async_recv_queue);
 	wait_for_thread_pool(src_pool);
 	finish_update(src_shadow);
+	transfer_load_async(&transfer_data);
 
 	if (ndiff == 0) {
 		size_t ns = 0;
-		for (int i = 0; i < transfer_data.count; i++) {
-			ns += transfer_data.data[i].vec.iov_len;
+		for (int i = transfer_data.start; i < transfer_data.end; i++) {
+			ns += transfer_data.vecs[i].iov_len;
 		}
 		cleanup_transfer_queue(&transfer_data);
-		if (transfer_data.count > 0) {
+		if (transfer_data.end > transfer_data.start) {
 			wp_error("Collecting updates gave a transfer (%zd bytes, %d blocks) when none was expected",
-					ns, transfer_data.count);
+					ns,
+					transfer_data.end -
+							transfer_data.start);
 			return false;
 		}
 		return true;
 	}
-	if (transfer_data.count == 0) {
+	if (transfer_data.end == transfer_data.start) {
 		wp_error("Collecting updates gave a unexpected number (%d) of transfers",
-				transfer_data.count);
+				transfer_data.end - transfer_data.start);
 		cleanup_transfer_queue(&transfer_data);
 		return false;
 	}

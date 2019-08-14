@@ -200,26 +200,21 @@ void setup_translation_map(struct fd_translation_map *map, bool display_side)
 static void shutdown_threads(struct thread_pool *pool)
 {
 	pthread_mutex_lock(&pool->work_mutex);
-	buf_ensure_size(pool->queue_end + pool->nthreads - 1,
-			sizeof(struct task_data), &pool->queue_size,
-			(void **)&pool->queue);
-	/* Discard all queue elements; this will need adjustment if tasks ever
-	 * own their own memory */
-	pool->queue_start = 0;
-	pool->queue_end = 0;
-	pool->queue_in_progress = 0;
-	for (int i = 1; i < pool->nthreads; i++) {
-		struct task_data task;
-		memset(&task, 0, sizeof(task));
-		task.type = TASK_STOP;
-		pool->queue[pool->queue_end++] = task;
-	}
-	pthread_mutex_unlock(&pool->work_mutex);
+	free(pool->stack);
+	struct task_data task;
+	memset(&task, 0, sizeof(task));
+	task.type = TASK_STOP;
+	pool->stack = &task;
+	pool->stack_count = 1;
+	pool->stack_size = 1;
+	pool->do_work = true;
 	pthread_cond_broadcast(&pool->work_cond);
+	pthread_mutex_unlock(&pool->work_mutex);
 
 	for (int i = 1; i < pool->nthreads; i++) {
 		pthread_join(pool->threads[i].thread, NULL);
 	}
+	pool->stack = NULL;
 }
 
 void setup_thread_pool(struct thread_pool *pool,
@@ -238,11 +233,11 @@ void setup_thread_pool(struct thread_pool *pool,
 	} else {
 		pool->nthreads = n_threads;
 	}
-	pool->queue_size = 0;
-	pool->queue_end = 0;
-	pool->queue_start = 0;
-	pool->queue_in_progress = 0;
-	pool->queue = NULL;
+	pool->stack_size = 0;
+	pool->stack_count = 0;
+	pool->stack = NULL;
+	pool->tasks_in_progress = 0;
+	pool->do_work = true;
 
 	pthread_mutex_init(&pool->work_mutex, NULL);
 	pthread_cond_init(&pool->work_cond, NULL);
@@ -292,7 +287,7 @@ void cleanup_thread_pool(struct thread_pool *pool)
 	pthread_mutex_destroy(&pool->work_mutex);
 	pthread_cond_destroy(&pool->work_cond);
 	free(pool->threads);
-	free(pool->queue);
+	free(pool->stack);
 
 	close(pool->selfpipe_r);
 	close(pool->selfpipe_w);
@@ -735,9 +730,7 @@ static void worker_run_compress_diff(
 	header.ntrailing = (uint32_t)ntrailing;
 	memcpy(msg, &header, sizeof(struct wmsg_buffer_diff));
 
-	struct transfer_queue *transfers = task->transfers;
-
-	transfer_add(transfers, alignz(sz, 4), msg, false);
+	transfer_async_add(task->msg_queue, msg, alignz(sz, 4));
 
 end:
 	DTRACE_PROBE1(waypipe, worker_compdiff_exit, diffsize);
@@ -800,9 +793,7 @@ static void worker_run_compress_block(
 	header.end = (uint32_t)source_end;
 	memcpy(msg, &header, sizeof(struct wmsg_buffer_fill));
 
-	struct transfer_queue *transfers = task->transfers;
-
-	transfer_add(transfers, alignz(sz, 4), msg, false);
+	transfer_async_add(task->msg_queue, msg, alignz(sz, 4));
 
 end:
 	DTRACE_PROBE1(waypipe, worker_comp_exit,
@@ -829,24 +820,24 @@ static void queue_fill_transfers(struct thread_pool *threads,
 	int nshards = ceildiv((region_end - region_start), chunksize);
 
 	pthread_mutex_lock(&threads->work_mutex);
-	buf_ensure_size(threads->queue_end + nshards, sizeof(struct task_data),
-			&threads->queue_size, (void **)&threads->queue);
+	buf_ensure_size(threads->stack_count + nshards,
+			sizeof(struct task_data), &threads->stack_size,
+			(void **)&threads->stack);
 
 	for (int i = 0; i < nshards; i++) {
 		struct task_data task;
 		memset(&task, 0, sizeof(task));
 		task.type = TASK_COMPRESS_BLOCK;
 		task.sfd = sfd;
-		task.transfers = transfers;
+		task.msg_queue = &transfers->async_recv_queue;
 
 		int range = (region_end - region_start);
 		task.zone_start = region_start + (range * i) / nshards;
 		task.zone_end = region_start + (range * (i + 1)) / nshards;
 
-		threads->queue[threads->queue_end++] = task;
+		threads->stack[threads->stack_count++] = task;
 	}
 	pthread_mutex_unlock(&threads->work_mutex);
-	pthread_cond_broadcast(&threads->work_cond);
 }
 
 static void queue_diff_transfers(struct thread_pool *threads,
@@ -938,27 +929,26 @@ static void queue_diff_transfers(struct thread_pool *threads,
 	reset_damage(&sfd->damage);
 
 	pthread_mutex_lock(&threads->work_mutex);
-	buf_ensure_size(threads->queue_end + nshards, sizeof(struct task_data),
-			&threads->queue_size, (void **)&threads->queue);
+	buf_ensure_size(threads->stack_count + nshards,
+			sizeof(struct task_data), &threads->stack_size,
+			(void **)&threads->stack);
 
 	for (int i = 0; i < nshards; i++) {
 		struct task_data task;
 		memset(&task, 0, sizeof(task));
 		task.type = TASK_COMPRESS_DIFF;
 		task.sfd = sfd;
-		task.transfers = transfers;
+		task.msg_queue = &transfers->async_recv_queue;
 
 		task.damage_len = offsets[i + 1] - offsets[i];
 		task.damage_intervals =
 				&sfd->damage_task_interval_store[offsets[i]];
 		task.damaged_end = (i == nshards - 1) && check_tail;
 
-		threads->queue[threads->queue_end++] = task;
+		threads->stack[threads->stack_count++] = task;
 	}
 	pthread_mutex_unlock(&threads->work_mutex);
 	free(offsets);
-
-	pthread_cond_broadcast(&threads->work_cond);
 }
 
 static void add_dmabuf_create_request(struct transfer_queue *transfers,
@@ -1887,23 +1877,54 @@ void run_task(struct task_data *task, struct thread_data *local)
 		worker_run_compress_block(task, local);
 	} else if (task->type == TASK_COMPRESS_DIFF) {
 		worker_run_compress_diff(task, local);
+	} else {
+		wp_error("Unidentified task type");
 	}
+}
+
+int start_parallel_work(struct thread_pool *pool,
+		struct thread_msg_recv_buf *recv_queue)
+{
+	pthread_mutex_lock(&pool->work_mutex);
+	if (recv_queue->zone_start != recv_queue->zone_end) {
+		wp_error("Some async messages not yet sent");
+	}
+	recv_queue->zone_start = 0;
+	recv_queue->zone_end = 0;
+	int num_mt_tasks = pool->stack_count;
+	if (buf_ensure_size(num_mt_tasks, sizeof(struct iovec),
+			    &recv_queue->size,
+			    (void **)&recv_queue->data) == -1) {
+		wp_error("Failed to provide enough space for receive queue, skipping all work tasks");
+		num_mt_tasks = 0;
+	}
+	pool->do_work = num_mt_tasks > 0;
+
+	/* Start the work tasks here */
+	if (num_mt_tasks > 0) {
+		pthread_cond_broadcast(&pool->work_cond);
+	}
+	pthread_mutex_unlock(&pool->work_mutex);
+
+	return num_mt_tasks;
 }
 
 bool request_work_task(
 		struct thread_pool *pool, struct task_data *task, bool *is_done)
 {
 	pthread_mutex_lock(&pool->work_mutex);
-	*is_done = pool->queue_end == pool->queue_start &&
-		   pool->queue_in_progress == 0;
+	*is_done = pool->stack_count == 0 && pool->tasks_in_progress == 0;
 	bool has_task = false;
-	if (pool->queue_start < pool->queue_end) {
-		int i = pool->queue_start;
-		if (pool->queue[i].type != TASK_STOP) {
-			*task = pool->queue[i];
+	if (pool->stack_count > 0 && pool->do_work) {
+		int i = pool->stack_count - 1;
+		if (pool->stack[i].type != TASK_STOP) {
+			*task = pool->stack[i];
 			has_task = true;
-			pool->queue_start++;
-			pool->queue_in_progress++;
+			pool->stack_count--;
+			pool->tasks_in_progress++;
+			if (pool->stack_count <= 0) {
+				pool->do_work = false;
+			}
 		}
 	}
 	pthread_mutex_unlock(&pool->work_mutex);
@@ -1922,23 +1943,32 @@ static void *worker_thread_main(void *arg)
 	 */
 	pthread_mutex_lock(&pool->work_mutex);
 	while (1) {
-		while (pool->queue_start == pool->queue_end) {
+		while (!pool->do_work) {
 			pthread_cond_wait(&pool->work_cond, &pool->work_mutex);
 		}
+		if (pool->stack_count <= 0) {
+			pool->do_work = false;
+			continue;
+		}
 		/* Copy task, since the queue may be resized */
-		struct task_data task = pool->queue[pool->queue_start++];
-		pool->queue_in_progress++;
+		int i = pool->stack_count - 1;
+		struct task_data task = pool->stack[i];
+		if (task.type == TASK_STOP) {
+			break;
+		}
+		pool->tasks_in_progress++;
+		pool->stack_count--;
+		if (pool->stack_count <= 0) {
+			pool->do_work = false;
+		}
 		pthread_mutex_unlock(&pool->work_mutex);
 		run_task(&task, data);
 		pthread_mutex_lock(&pool->work_mutex);
 
 		uint8_t triv = 0;
-		pool->queue_in_progress--;
+		pool->tasks_in_progress--;
 		if (write(pool->selfpipe_w, &triv, 1) == -1) {
 			wp_error("Failed to write to self-pipe");
-		}
-		if (task.type == TASK_STOP) {
-			break;
 		}
 	}
 	pthread_mutex_unlock(&pool->work_mutex);
