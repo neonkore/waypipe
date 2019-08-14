@@ -859,9 +859,9 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		// Read /once/
 		ssize_t rc = iovec_read(progfd,
 				wmsg->proto_read.data +
-						wmsg->proto_read.zone_start,
+						wmsg->proto_read.zone_end,
 				(size_t)(wmsg->proto_read.size -
-						wmsg->proto_read.zone_start),
+						wmsg->proto_read.zone_end),
 				&wmsg->fds);
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
