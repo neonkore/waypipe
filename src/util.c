@@ -300,7 +300,8 @@ bool transfer_add(struct transfer_queue *transfers, size_t size, void *data,
 	if (buf_ensure_size(transfers->count + 1, sizeof(*transfers->data),
 			    &transfers->size,
 			    (void **)&transfers->data) == -1) {
-		wp_error("Resize of transfer queue failed");
+		wp_error("Resize of transfer queue to %d failed",
+				transfers->count + 1);
 
 		pthread_mutex_unlock(&transfers->lock);
 		return false;

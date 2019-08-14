@@ -633,6 +633,17 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	return sfd;
 }
 
+static void *shrink_buffer(void *buf, size_t sz)
+{
+	void *nbuf = realloc(buf, sz);
+	if (nbuf) {
+		return nbuf;
+	} else {
+		wp_debug("Failed to shrink buffer with realloc, not a problem");
+		return buf;
+	}
+}
+
 /* Construct and optionally compress a diff between sfd->mem_mirror and
  * the actual memmap'd data */
 static void worker_run_compress_diff(
@@ -662,10 +673,17 @@ static void worker_run_compress_diff(
 	if (pool->compression == COMP_NONE) {
 		diff_buffer = malloc(
 				damage_space + sizeof(struct wmsg_buffer_diff));
+		if (!diff_buffer) {
+			wp_error("Allocation failed, dropping diff transfer block");
+			goto end;
+		}
 		diff_target = diff_buffer + sizeof(struct wmsg_buffer_diff);
 	} else {
-		buf_ensure_size((int)damage_space, 1, &local->tmp_size,
-				&local->tmp_buf);
+		if (buf_ensure_size((int)damage_space, 1, &local->tmp_size,
+				    &local->tmp_buf) == -1) {
+			wp_error("Allocation failed, dropping diff transfer block");
+			goto end;
+		}
 		diff_target = local->tmp_buf;
 	}
 
@@ -697,6 +715,10 @@ static void worker_run_compress_diff(
 		size_t comp_size = compress_bufsize(pool, net_diff_sz);
 		char *comp_buf = malloc(alignz(comp_size, 4) +
 					sizeof(struct wmsg_buffer_diff));
+		if (!comp_buf) {
+			wp_error("Allocation failed, dropping diff transfer block");
+			goto end;
+		}
 		compress_buffer(pool, &local->comp_ctx, net_diff_sz,
 				diff_target, comp_size,
 				comp_buf + sizeof(struct wmsg_buffer_diff),
@@ -704,7 +726,7 @@ static void worker_run_compress_diff(
 		sz = dst.size + sizeof(struct wmsg_buffer_diff);
 		msg = (uint8_t *)comp_buf;
 	}
-	msg = realloc(msg, alignz(sz, 4));
+	msg = shrink_buffer(msg, alignz(sz, 4));
 	memset(msg + sz, 0, alignz(sz, 4) - sz);
 	struct wmsg_buffer_diff header;
 	header.size_and_type = transfer_header(sz, WMSG_BUFFER_DIFF);
@@ -738,36 +760,37 @@ static void worker_run_compress_block(
 	size_t source_end = (size_t)task->zone_end;
 	DTRACE_PROBE1(waypipe, worker_comp_enter, source_end - source_start);
 
-	size_t sz;
+	size_t sz = 0;
 	uint8_t *msg;
 	if (pool->compression == COMP_NONE) {
 		sz = sizeof(struct wmsg_buffer_fill) +
 		     (source_end - source_start);
 
 		msg = malloc(alignz(sz, 4));
+		if (!msg) {
+			wp_error("Allocation failed, dropping fill transfer block");
+			goto end;
+		}
 		memcpy(msg + sizeof(struct wmsg_buffer_fill),
 				sfd->mem_mirror + source_start,
 				source_end - source_start);
 	} else {
 		size_t comp_size = compress_bufsize(
 				pool, source_end - source_start);
-		struct bytebuf dst;
 		msg = malloc(alignz(comp_size, 4) +
 				sizeof(struct wmsg_buffer_fill));
+		if (!msg) {
+			wp_error("Allocation failed, dropping fill transfer block");
+			goto end;
+		}
+		struct bytebuf dst;
 		compress_buffer(pool, &local->comp_ctx,
 				source_end - source_start,
 				&sfd->mem_mirror[source_start], comp_size,
 				(char *)msg + sizeof(struct wmsg_buffer_fill),
 				&dst);
-		void *nmsg = realloc(msg,
-				alignz(dst.size, 4) +
-						sizeof(struct wmsg_buffer_fill));
-		if (nmsg) {
-			msg = nmsg;
-		} else {
-			wp_debug("Failed to shrink buffer with realloc");
-		}
 		sz = dst.size + sizeof(struct wmsg_buffer_fill);
+		msg = shrink_buffer(msg, alignz(sz, 4));
 	}
 	memset(msg + sz, 0, alignz(sz, 4) - sz);
 	struct wmsg_buffer_fill header;
@@ -781,6 +804,7 @@ static void worker_run_compress_block(
 
 	transfer_add(transfers, alignz(sz, 4), msg, false);
 
+end:
 	DTRACE_PROBE1(waypipe, worker_comp_exit,
 			sz - sizeof(struct wmsg_buffer_fill));
 }
