@@ -90,62 +90,32 @@ except ImportError:
 
 nontrivial_failures = False
 
+subenv = {
+    "WAYLAND_DISPLAY": abs_socket_path,
+    "WAYLAND_DEBUG": "1",
+    "XDG_RUNTIME_DIR": xdg_runtime_dir,
+    "LD_LIBRARY_PATH": ld_library_path,
+}
 
-@asyncio.coroutine
-def run_sub_test(sub_test_name, command):
-    global nontrivial_failures
+wp_serv_env = {
+    "WAYLAND_DEBUG": "1",
+    "XDG_RUNTIME_DIR": xdg_runtime_dir,
+    "LD_LIBRARY_PATH": ld_library_path,
+}
 
-    subenv = {
-        "WAYLAND_DISPLAY": abs_socket_path,
-        "WAYLAND_DEBUG": "1",
-        "XDG_RUNTIME_DIR": xdg_runtime_dir,
-        "LD_LIBRARY_PATH": ld_library_path,
-    }
+subproc_args = {"env": subenv, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT}
 
-    wp_serv_env = {
-        "WAYLAND_DEBUG": "1",
-        "XDG_RUNTIME_DIR": xdg_runtime_dir,
-        "LD_LIBRARY_PATH": ld_library_path,
-    }
+wp_serv_args = {
+    "env": wp_serv_env,
+    "stdin": subprocess.DEVNULL,
+    "stderr": subprocess.STDOUT,
+}
 
-    subproc_args = {
-        "env": subenv,
-        "stdin": subprocess.DEVNULL,
-        "stderr": subprocess.STDOUT,
-    }
 
-    wp_serv_args = {
-        "env": wp_serv_env,
-        "stdin": subprocess.DEVNULL,
-        "stderr": subprocess.STDOUT,
-    }
-
-    ref_log_path = os.path.join(xdg_runtime_dir, sub_test_name + "_ref_out.txt")
-    ref_out = open(ref_log_path, "wb")
-    ref_proc = subprocess.Popen(command, stdout=ref_out, **subproc_args)
-
-    wp_log_path = os.path.join(xdg_runtime_dir, sub_test_name + "_wp_out.txt")
-    wp_out = open(wp_log_path, "wb")
-
-    control_path = os.path.join(xdg_runtime_dir, sub_test_name + "_ctrl")
-    wp_socket_path = os.path.join(xdg_runtime_dir, sub_test_name + "_socket")
-    try_unlink(wp_socket_path)
-    try_unlink(control_path)
-    # '--oneshot', to make cleanup easier
-    wp_prefix = [waypipe_path, "--debug", "--oneshot", "--socket", wp_socket_path]
-    wp_client_command = wp_prefix + ["client"]
-    wp_server_command = wp_prefix + ["--control", control_path, "server"] + command
-    wp_client = subprocess.Popen(wp_client_command, stdout=wp_out, **subproc_args)
-    if not wait_until_exists(wp_socket_path):
-        raise Exception(
-            "The waypipe socket file at " + wp_socket_path + " did not appear"
-        )
-    wp_server = subprocess.Popen(wp_server_command, stdout=wp_out, **wp_serv_args)
-
-    wp_child = None
+def get_child_process(proc_pid, expected_name, sub_test_name):
     if psutil is not None:
         # assuming pid has not been recycled/duplicated
-        proc = psutil.Process(wp_server.pid)
+        proc = psutil.Process(proc_pid)
         if proc.name() == "waypipe":
             for i in range(5):
                 kids = proc.children()
@@ -161,15 +131,99 @@ def run_sub_test(sub_test_name, command):
             if len(kids) == 1:
                 wp_child = kids[0]
                 try:
-                    if wp_child.name() != os.path.basename(command[0]):
+                    if wp_child.name() != expected_name:
                         print(
                             "Unusual child process name",
                             wp_child.name(),
                             "does not match",
-                            command[0],
+                            expected_name,
                         )
                 except psutil.NoSuchProcess:
                     pass
+
+
+def open_logfile(name):
+    path = os.path.join(xdg_runtime_dir, name)
+    return path, open(path, "wb")
+
+
+def start_waypipe(socket_path, control_path, logfile, command, oneshot):
+    prefix = [waypipe_path, "--debug", "--socket", socket_path]
+    if oneshot:
+        prefix += ["--oneshot"]
+    client_command = prefix + ["client"]
+    server_command = prefix + ["--control", control_path, "server"] + command
+    client = subprocess.Popen(client_command, stdout=logfile, **subproc_args)
+    if not wait_until_exists(socket_path):
+        raise Exception("The waypipe socket file at " + socket_path + " did not appear")
+    server = subprocess.Popen(server_command, stdout=logfile, **wp_serv_args)
+    return server, client
+
+
+def cleanup_oneshot(client, server, child):
+    if child is not None:
+        try:
+            child.send_signal(signal.SIGINT)
+        except psutil.NoSuchProcess:
+            time.sleep(0.05)
+            safe_cleanup(server)
+            time.sleep(0.05)
+            safe_cleanup(client)
+        else:
+            server.wait()
+            client.wait()
+    else:
+        safe_cleanup(server)
+        time.sleep(0.05)
+        safe_cleanup(client)
+    return client.returncode, server.returncode
+
+
+def cleanup_multi(client, server, child):
+    if child is not None:
+        try:
+            child.send_signal(signal.SIGINT)
+        except psutil.NoSuchProcess:
+            pass
+    time.sleep(0.05)
+    safe_cleanup(server)
+    time.sleep(0.05)
+    safe_cleanup(client)
+    return client.returncode, server.returncode
+
+
+@asyncio.coroutine
+def run_sub_test(sub_test_name, command):
+    global nontrivial_failures
+
+    ocontrol_path = os.path.join(xdg_runtime_dir, sub_test_name + "_octrl")
+    mcontrol_path = os.path.join(xdg_runtime_dir, sub_test_name + "_mctrl")
+    owp_socket_path = os.path.join(xdg_runtime_dir, sub_test_name + "_osocket")
+    mwp_socket_path = os.path.join(xdg_runtime_dir, sub_test_name + "_msocket")
+    try_unlink(owp_socket_path)
+    try_unlink(mwp_socket_path)
+    try_unlink(ocontrol_path)
+    try_unlink(mcontrol_path)
+
+    ref_log_path, ref_out = open_logfile(sub_test_name + "_ref_out.txt")
+    ref_proc = subprocess.Popen(command, stdout=ref_out, **subproc_args)
+
+    owp_log_path, owp_out = open_logfile(sub_test_name + "_owp_out.txt")
+    mwp_log_path, mwp_out = open_logfile(sub_test_name + "_mwp_out.txt")
+
+    owp_server, owp_client = start_waypipe(
+        owp_socket_path, ocontrol_path, owp_out, command, True
+    )
+    mwp_server, mwp_client = start_waypipe(
+        mwp_socket_path, mcontrol_path, mwp_out, command, False
+    )
+
+    owp_child = get_child_process(
+        owp_server.pid, os.path.basename(command[0]), sub_test_name
+    )
+    mwp_child = get_child_process(
+        mwp_server.pid, os.path.basename(command[0]), sub_test_name
+    )
 
     print("Launched", sub_test_name)
     yield from asyncio.sleep(1)
@@ -177,8 +231,10 @@ def run_sub_test(sub_test_name, command):
     # (Since the connection is a unix domain socket, almost no packets will be in flight,
     # so the test isn't that comprehensive)
     print("Resetting", sub_test_name)
-    open(control_path, "w").write(wp_socket_path)
-    try_unlink(control_path)
+    open(ocontrol_path, "w").write(owp_socket_path)
+    open(mcontrol_path, "w").write(mwp_socket_path)
+    try_unlink(ocontrol_path)
+    try_unlink(mcontrol_path)
     yield from asyncio.sleep(1)
     print("Closing", sub_test_name)
 
@@ -186,23 +242,13 @@ def run_sub_test(sub_test_name, command):
     safe_cleanup(ref_proc)
     ref_out.close()
 
-    if wp_child is not None:
-        try:
-            wp_child.send_signal(signal.SIGINT)
-        except psutil.NoSuchProcess:
-            time.sleep(0.05)
-            safe_cleanup(wp_server)
-            time.sleep(0.05)
-            safe_cleanup(wp_client)
-        else:
-            wp_server.wait()
-            wp_client.wait()
-    else:
-        safe_cleanup(wp_server)
-        time.sleep(0.05)
-        safe_cleanup(wp_client)
-    wp_out.close()
-    try_unlink(wp_socket_path)
+    occode, oscode = cleanup_oneshot(owp_client, owp_server, owp_child)
+    mccode, mscode = cleanup_multi(mwp_client, mwp_server, mwp_child)
+
+    try_unlink(owp_socket_path)
+    try_unlink(mwp_socket_path)
+    owp_out.close()
+    mwp_out.close()
 
     # -2, because applications sometimes return with the sigint error
     if ref_proc.returncode not in (0, -2):
@@ -212,15 +258,21 @@ def run_sub_test(sub_test_name, command):
             )
         )
     else:
-        if wp_server.returncode in (0, -2) and wp_client.returncode == 0:
-            print("Test", sub_test_name, "passed")
+        if oscode in (0, -2) and occode == 0:
+            print("Oneshot test", sub_test_name, "passed")
         else:
             print(
-                "Test {}, run indirectly, failed (ccode={} scode={}). See logfile at {}".format(
-                    sub_test_name,
-                    wp_client.returncode,
-                    wp_server.returncode,
-                    wp_log_path,
+                "Oneshot test {}, run indirectly, failed (ccode={} scode={}). See logfile at {}".format(
+                    sub_test_name, occode, oscode, owp_log_path
+                )
+            )
+            nontrivial_failures = True
+        if mscode in (0, -2) and mccode in (0, -2):
+            print("Regular test", sub_test_name, "passed")
+        else:
+            print(
+                "Regular test {}, run indirectly, failed (ccode={} scode={}). See logfile at {}".format(
+                    sub_test_name, mccode, mscode, mwp_log_path
                 )
             )
             nontrivial_failures = True
