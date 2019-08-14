@@ -150,6 +150,24 @@ static int compare_timespec(const struct timespec *a, const struct timespec *b)
 	return 0;
 }
 
+/* requires delta >= 0 */
+static struct timespec timespec_add(struct timespec base, int64_t delta_ns)
+{
+	struct timespec ret;
+	ret.tv_sec = base.tv_sec + delta_ns / 1000000000LL;
+	ret.tv_nsec = base.tv_nsec + delta_ns % 1000000000LL;
+	if (ret.tv_nsec > 1000000000LL) {
+		ret.tv_nsec -= 1000000000LL;
+		ret.tv_sec++;
+	}
+	return ret;
+}
+
+static int64_t timespec_sub(struct timespec a, struct timespec b)
+{
+	return (a.tv_sec - b.tv_sec) * 1000000000LL + (a.tv_nsec - b.tv_nsec);
+}
+
 #define NSAMPLES 5
 
 static struct bench_result run_sub_bench(bool first,
@@ -254,19 +272,9 @@ static struct bench_result run_sub_bench(bool first,
 
 					/* Advance timer for next receipt */
 					int64_t delay_ns = (int64_t)(
-							delay_s * 1000000000LL);
-					next_write_time.tv_sec =
-							cur_time.tv_sec +
-							delay_ns / 1000000000LL;
-					next_write_time.tv_nsec =
-							cur_time.tv_nsec +
-							delay_ns % 1000000000LL;
-					if (next_write_time.tv_nsec >
-							1000000000LL) {
-						next_write_time.tv_nsec -=
-								1000000000LL;
-						next_write_time.tv_sec++;
-					}
+							delay_s * 1e9f);
+					next_write_time = timespec_add(
+							cur_time, delay_ns);
 				}
 				pthread_mutex_unlock(&transfer_data.lock);
 			} else {
@@ -281,12 +289,9 @@ static struct bench_result run_sub_bench(bool first,
 				delay_time.tv_sec = 0;
 				delay_time.tv_nsec = 10000;
 				if (!tasks_remaining) {
-					int64_t nsecs_left =
-							(next_write_time.tv_sec -
-									cur_time.tv_sec) *
-									1000000000LL +
-							(next_write_time.tv_nsec -
-									cur_time.tv_nsec);
+					int64_t nsecs_left = timespec_sub(
+							next_write_time,
+							cur_time);
 					if (nsecs_left > 1000000000LL) {
 						nsecs_left = 1000000000LL;
 					}
