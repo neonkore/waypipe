@@ -129,9 +129,7 @@ struct task_data {
 enum fdcat {
 	FDC_UNKNOWN,
 	FDC_FILE,      /* Shared memory buffer */
-	FDC_PIPE_IR,   /* pipe-like object, reading from program */
-	FDC_PIPE_IW,   /* pipe-like object, writing to program */
-	FDC_PIPE_RW,   /* pipe-like object, read+write support */
+	FDC_PIPE,      /* pipe-like object */
 	FDC_DMABUF,    /* DMABUF buffer (will be exactly replicated) */
 	FDC_DMAVID_IR, /* DMABUF-based video, reading from program */
 	FDC_DMAVID_IW, /* DMABUF-based video, writing to program */
@@ -139,8 +137,40 @@ enum fdcat {
 
 struct pipe_buffer {
 	char *data;
-	ssize_t size;
-	ssize_t used;
+	int size;
+	int used;
+};
+
+/** Reference count for a struct shadow_fd; the object can be safely deleted
+ * iff all counts are zero/false. */
+struct refcount {
+	/** How many protocol objects refer to this shadow structure */
+	int protocol;
+	/** How many times must the shadow_fd still be sent to the Wayland
+	 * program */
+	int transfer;
+	/** Do any thread tasks potentially refer to this */
+	bool compute;
+};
+
+struct pipe_state {
+	/** Temporary buffers to contain small chunks of data, before it is
+	 * transported further */
+	struct pipe_buffer send;
+	struct pipe_buffer recv;
+	/** Internal file descriptor through which all pipe interactions
+	 * are mediated. This equals fd_local, except during the time period
+	 * where the shadow_fd is created but the fd_local has not yet been
+	 * sent to the remote process. */
+	int fd;
+	/** 4 bits are needed for the pipe state machine (once the pipe has
+	 * been created. They describe the properties of `pipe_fd` locally
+	 * and remotely */
+	bool can_read, can_write;
+	bool remote_can_read, remote_can_write;
+	/** What is the state of the pipe, according to poll ?
+	 * (POLLIN|POLLHUP -> readable ; POLLOUT -> writeable) */
+	bool readable, writable;
 };
 
 /**
@@ -154,6 +184,9 @@ struct shadow_fd {
 	enum fdcat type;
 	int remote_id; // + if created serverside; - if created clientside
 	int fd_local;
+	/** true iff the shadow structure is newly created and no message
+	 * to create a copy has been sent yet */
+	bool only_here;
 	// Dirty state.
 	bool has_owner; // Are there protocol handlers which control the
 			// is_dirty flag?
@@ -162,17 +195,7 @@ struct shadow_fd {
 	/* For worker threads, contains their allocated damage intervals */
 	struct interval *damage_task_interval_store;
 
-	/* There are two types of reference counts for shadow_fd objects;
-	 * a struct shadow_fd can only be safely deleted when both counts are
-	 * zero. The protocol refcount tracks the number of protocol objects
-	 * which have a reference to the shadow_fd (and which may try to
-	 * mark it dirty.) The transfer refcount tracks the number of times
-	 * that the object id (as either remote_id, or fd_local) must be passed
-	 * on to the next program (waypipe instance, or application/compositor)
-	 * so that said program can correctly parse its Wayland messages. */
-	int refcount_protocol; // Number of references from protocol objects
-	int refcount_transfer; // Number of references from fd transfer logic
-	bool refcount_compute; // Are the any thread tasks referring to this?
+	struct refcount refcount;
 
 	// common buffers for file-like types
 	/* total memory size of either the dmabuf or the file */
@@ -186,14 +209,7 @@ struct shadow_fd {
 	size_t remote_bufsize; // used to check for and send file extensions
 
 	// Pipe data
-	struct pipe_buffer pipe_send;
-	struct pipe_buffer pipe_recv;
-	/* this is a pipe end we can read/write from. It only sometimes
-	 * equals fd_local */
-	int pipe_fd;
-	bool pipe_readable, pipe_writable, pipe_onlyhere;
-	// pipe closure (as in, POLLHUP, other end writeclose) -> statemachine?
-	bool pipe_lclosed, pipe_rclosed;
+	struct pipe_state pipe;
 
 	// DMAbuf data
 	struct gbm_bo *dmabuf_bo;
@@ -235,7 +251,8 @@ const char *fdcat_to_str(enum fdcat cat);
  * a DMABUF should be automatically detected. */
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, enum fdcat type, size_t sz,
-		const struct dmabuf_slice_data *info, bool read_modifier);
+		const struct dmabuf_slice_data *info, bool read_modifier,
+		bool force_pipe_iw);
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct thread_pool *threads, struct shadow_fd *cur,

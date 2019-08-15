@@ -193,8 +193,10 @@ enum wmsg_type {
 	WMSG_OPEN_RW_PIPE, // wmsg_basic
 	/** Transfer data to the pipe */
 	WMSG_PIPE_TRANSFER, // wmsg_basic
-	/** No more data will be transferred to this pipe. */
-	WMSG_PIPE_HANGUP, // wmsg_basic
+	/** Shutdown the read end of the pipe that waypipe uses. */
+	WMSG_PIPE_SHUTDOWN_R, // wmsg_basic
+	/** Shutdown the write end of the pipe that waypipe uses. */
+	WMSG_PIPE_SHUTDOWN_W, // wmsg_basic
 	/** Create a DMABUF (with following data parameters) that will be used
 	 * to produce/consume video frames. Format: \ref wmsg_open_dmabuf */
 	WMSG_OPEN_DMAVID_SRC,

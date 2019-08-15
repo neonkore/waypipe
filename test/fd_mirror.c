@@ -297,7 +297,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	size_t fdsz = 0;
 	enum fdcat fdtype = get_fd_type(new_file_fd, &fdsz);
 	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
-			fdtype, fdsz, slice_data, false);
+			fdtype, fdsz, slice_data, false, false);
 	struct shadow_fd *dst_shadow = NULL;
 	int rid = src_shadow->remote_id;
 
@@ -348,7 +348,7 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
-	if (mkdir("test", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1 &&
+	if (mkdir("run", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1 &&
 			errno != EEXIST) {
 		wp_error("Not allowed to create test directory, cannot run tests.");
 		return EXIT_FAILURE;

@@ -22,7 +22,14 @@ test_mirror = executable(
 	dependencies: [libgbm]
 )
 # disable leak checking, because library code is often responsible
-test('How well file descriptors are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 40)
+test('How well buffers are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 40)
+test_pipe = executable(
+	'pipe_mirror',
+	['pipe_mirror.c'],
+	include_directories: waypipe_includes,
+	link_with: lib_waypipe_src
+)
+test('How well pipes are replicated', test_pipe, timeout: 20)
 test_fnlist = files('test_fnlist.txt')
 testproto_src = custom_target(
 	'test-proto code',

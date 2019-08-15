@@ -142,8 +142,8 @@ static void translate_fds(struct fd_translation_map *map,
 		/* Autodetect type */
 		size_t fdsz = 0;
 		enum fdcat fdtype = get_fd_type(fds[i], &fdsz);
-		ids[i] = translate_fd(
-				map, render, fds[i], fdtype, fdsz, NULL, false)
+		ids[i] = translate_fd(map, render, fds[i], fdtype, fdsz, NULL,
+				false, false)
 					 ->remote_id;
 	}
 }
@@ -612,7 +612,6 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 	}
 	if (cmsg->proto_write.zone_start == cmsg->proto_write.zone_end) {
 		wp_debug("Write to the %s succeeded", progdesc);
-		close_local_pipe_ends(&g->map);
 		cmsg->state = CM_WAITING_FOR_CHANNEL;
 		DTRACE_PROBE(waypipe, chanmsg_channel_wait);
 	}
@@ -679,10 +678,8 @@ static int partial_write_transfer(
 		td->vecs[td->start].iov_base = orig_base;
 		td->vecs[td->start].iov_len = orig_len;
 
-		if (wr == -1 && errno == EWOULDBLOCK) {
+		if (wr == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			break;
-		} else if (wr == -1 && errno == EAGAIN) {
-			continue;
 		} else if (wr == -1) {
 			wp_error("chanfd write failure: %s", strerror(errno));
 			return -1;
@@ -888,8 +885,12 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 				true);
 	}
 
-	for (struct shadow_fd *cur = g->map.list; cur; cur = cur->next) {
+	for (struct shadow_fd *cur = g->map.list, *nxt = NULL; cur; cur = nxt) {
+		nxt = cur->next;
 		collect_update(&g->threads, cur, &wmsg->transfers);
+		/* collecting updates can reset `pipe.remote_can_X` state, so
+		 * garbage collect the sfd immediately after */
+		destroy_shadow_if_unreferenced(&g->map, cur);
 	}
 
 	int num_mt_tasks = start_parallel_work(
@@ -1297,7 +1298,6 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 
 		// Periodic maintenance. It doesn't matter who does this
 		flush_writable_pipes(&g.map);
-		close_rclosed_pipes(&g.map);
 	}
 	wp_debug("Exiting main loop, attempting close message");
 

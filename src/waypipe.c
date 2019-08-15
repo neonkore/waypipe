@@ -582,6 +582,10 @@ int main(int argc, char **argv)
 	ca.sa_handler = handle_noop;
 	sigemptyset(&ca.sa_mask);
 	ca.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	struct sigaction pa;
+	pa.sa_handler = SIG_IGN;
+	sigemptyset(&pa.sa_mask);
+	pa.sa_flags = 0;
 	if (sigaction(SIGINT, &ia, NULL) == -1) {
 		wp_error("Failed to set signal action for SIGINT");
 		return EXIT_FAILURE;
@@ -589,6 +593,10 @@ int main(int argc, char **argv)
 	if (sigaction(SIGCHLD, &ca, NULL) == -1) {
 		wp_error("Failed to set signal action for SIGCHLD");
 		return EXIT_FAILURE;
+	}
+	if (sigaction(SIGPIPE, &pa, NULL) == -1) {
+		wp_error("Failed to set signal action for SIGPIPE");
+		return EXIT_SUCCESS;
 	}
 
 	bool via_socket = getenv("WAYLAND_SOCKET") != NULL;

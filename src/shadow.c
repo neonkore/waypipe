@@ -50,11 +50,6 @@
 #include <zstd.h>
 #endif
 
-static bool fdcat_ispipe(enum fdcat t)
-{
-	return t == FDC_PIPE_IR || t == FDC_PIPE_RW || t == FDC_PIPE_IW;
-}
-
 struct shadow_fd *get_shadow_for_local_fd(
 		struct fd_translation_map *map, int lfd)
 {
@@ -77,6 +72,8 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
 static void destroy_unlinked_sfd(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
+	wp_debug("Destroying %s RID=%d", fdcat_to_str(sfd->type),
+			sfd->remote_id);
 	/* video must be cleaned up before any buffers that it may rely on */
 	destroy_video_data(sfd);
 
@@ -91,15 +88,14 @@ static void destroy_unlinked_sfd(
 			sfd->type == FDC_DMAVID_IW) {
 		destroy_dmabuf(sfd->dmabuf_bo);
 		free(sfd->mem_mirror);
-	} else if (fdcat_ispipe(sfd->type)) {
-		if (sfd->pipe_fd != sfd->fd_local && sfd->pipe_fd != -1 &&
-				sfd->pipe_fd != -2) {
-			close(sfd->pipe_fd);
+	} else if (sfd->type == FDC_PIPE) {
+		if (sfd->pipe.fd != sfd->fd_local && sfd->pipe.fd != -1) {
+			close(sfd->pipe.fd);
 		}
-		free(sfd->pipe_recv.data);
-		free(sfd->pipe_send.data);
+		free(sfd->pipe.recv.data);
+		free(sfd->pipe.send.data);
 	}
-	if (sfd->fd_local != -2 && sfd->fd_local != -1) {
+	if (sfd->fd_local != -1) {
 		if (close(sfd->fd_local) == -1) {
 			wp_error("Incorrect close(%d): %s", sfd->fd_local,
 					strerror(errno));
@@ -165,8 +161,14 @@ void cleanup_translation_map(struct fd_translation_map *map)
 bool destroy_shadow_if_unreferenced(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
-	if (sfd->refcount_protocol == 0 && sfd->refcount_transfer == 0 &&
-			sfd->refcount_compute == false && sfd->has_owner) {
+	bool autodelete = sfd->has_owner;
+	if (sfd->type == FDC_PIPE && !sfd->pipe.can_read &&
+			!sfd->pipe.can_write && !sfd->pipe.remote_can_read &&
+			!sfd->pipe.remote_can_write) {
+		autodelete = true;
+	}
+	if (sfd->refcount.protocol == 0 && sfd->refcount.transfer == 0 &&
+			sfd->refcount.compute == false && autodelete) {
 		for (struct shadow_fd *cur = map->list, *prev = NULL; cur;
 				prev = cur, cur = cur->next) {
 			if (cur == sfd) {
@@ -181,10 +183,10 @@ bool destroy_shadow_if_unreferenced(
 
 		destroy_unlinked_sfd(map, sfd);
 		return true;
-	} else if (sfd->refcount_protocol < 0 || sfd->refcount_transfer < 0) {
+	} else if (sfd->refcount.protocol < 0 || sfd->refcount.transfer < 0) {
 		wp_error("Negative refcount for rid=%d: %d protocol references, %d transfer references",
-				sfd->remote_id, sfd->refcount_protocol,
-				sfd->refcount_transfer);
+				sfd->remote_id, sfd->refcount.protocol,
+				sfd->refcount.transfer);
 	}
 	return false;
 }
@@ -300,12 +302,8 @@ const char *fdcat_to_str(enum fdcat cat)
 		return "FDC_UNKNOWN";
 	case FDC_FILE:
 		return "FDC_FILE";
-	case FDC_PIPE_IR:
-		return "FDC_PIPE_IR";
-	case FDC_PIPE_IW:
-		return "FDC_PIPE_IW";
-	case FDC_PIPE_RW:
-		return "FDC_PIPE_RW";
+	case FDC_PIPE:
+		return "FDC_PIPE";
 	case FDC_DMABUF:
 		return "FDC_DMABUF";
 	case FDC_DMAVID_IR:
@@ -343,17 +341,7 @@ enum fdcat get_fd_type(int fd, size_t *size)
 					fd, (int64_t)fsdata.st_size,
 					fsdata.st_mode);
 		}
-		int flags = fcntl(fd, F_GETFL, 0);
-		if (flags == -1) {
-			wp_error("fctnl F_GETFL failed!");
-		}
-		if ((flags & O_ACCMODE) == O_RDONLY) {
-			return FDC_PIPE_IR;
-		} else if ((flags & O_ACCMODE) == O_WRONLY) {
-			return FDC_PIPE_IW;
-		} else {
-			return FDC_PIPE_RW;
-		}
+		return FDC_PIPE;
 	} else if (is_dmabuf(fd)) {
 		return FDC_DMABUF;
 	} else {
@@ -508,7 +496,7 @@ static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, enum fdcat type,
 		size_t file_sz, const struct dmabuf_slice_data *info,
-		bool read_modifier)
+		bool read_modifier, bool force_pipe_iw)
 {
 	struct shadow_fd *sfd = get_shadow_for_local_fd(map, fd);
 	if (sfd) {
@@ -538,10 +526,14 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	/* Start the number of expected transfers to channel remaining
 	 * at one, and number of protocol objects referencing this
 	 * shadow_fd at zero.*/
-	sfd->refcount_transfer = 1;
-	sfd->refcount_protocol = 0;
+	sfd->refcount.transfer = 1;
+	sfd->refcount.protocol = 0;
+	sfd->refcount.compute = false;
 
-	wp_debug("Creating new shadow buffer for local fd %d", fd);
+	sfd->only_here = true;
+
+	wp_debug("Creating new %s shadow RID=%d for local fd %d",
+			fdcat_to_str(sfd->type), sfd->remote_id, fd);
 	if (sfd->type == FDC_FILE) {
 		if (file_sz >= UINT32_MAX / 2) {
 			wp_error("Failed to create shadow structure, file size %zu too large to transfer",
@@ -560,19 +552,33 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		}
 		// This will be created at the first transfer
 		sfd->mem_mirror = NULL;
-	} else if (fdcat_ispipe(sfd->type)) {
+	} else if (sfd->type == FDC_PIPE) {
 		// Make this end of the pipe nonblocking, so that we can
 		// include it in our main loop.
 		if (set_nonblocking(sfd->fd_local) == -1) {
 			wp_error("Failed to make fd nonblocking");
 		}
-		sfd->pipe_fd = sfd->fd_local;
+		sfd->pipe.fd = sfd->fd_local;
 
-		// Allocate a reasonably small read buffer
-		sfd->pipe_recv.size = 16384;
-		sfd->pipe_recv.data = calloc((size_t)sfd->pipe_recv.size, 1);
-
-		sfd->pipe_onlyhere = true;
+		if (force_pipe_iw) {
+			sfd->pipe.can_write = true;
+		} else {
+			/* this classification overestimates with
+			 * socketpairs that have partially been shutdown.
+			 * what about platform-specific RW pipes? */
+			int flags = fcntl(fd, F_GETFL, 0);
+			if (flags == -1) {
+				wp_error("fctnl F_GETFL failed!");
+			}
+			if ((flags & O_ACCMODE) == O_RDONLY) {
+				sfd->pipe.can_read = true;
+			} else if ((flags & O_ACCMODE) == O_WRONLY) {
+				sfd->pipe.can_write = true;
+			} else {
+				sfd->pipe.can_read = true;
+				sfd->pipe.can_write = true;
+			}
+		}
 	} else if (sfd->type == FDC_DMAVID_IR) {
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
@@ -604,8 +610,6 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 			return sfd;
 		}
 		(void)setup_video_decode(sfd, render);
-		/* notify remote side with sentinel frame */
-		sfd->video_frameno = -1;
 	} else if (sfd->type == FDC_DMABUF) {
 		sfd->buffer_size = 0;
 
@@ -646,11 +650,6 @@ static void worker_run_compress_diff(
 {
 	struct shadow_fd *sfd = task->sfd;
 	struct thread_pool *pool = local->pool;
-
-	/* Depending on the buffer format, doing a memcpy before running the
-	 * diff construction routine can be significantly faster. */
-	// TODO: Either autodetect when this happens, or write a
-	// faster/vectorizable diff routine
 
 	size_t damage_space = 0;
 	for (int i = 0; i < task->damage_len; i++) {
@@ -815,7 +814,7 @@ static void queue_fill_transfers(struct thread_pool *threads,
 	}
 
 	/* Keep sfd alive at least until write to channel is done */
-	sfd->refcount_compute = true;
+	sfd->refcount.compute = true;
 
 	int nshards = ceildiv((region_end - region_start), chunksize);
 
@@ -849,7 +848,7 @@ static void queue_diff_transfers(struct thread_pool *threads,
 	}
 
 	/* Keep sfd alive at least until write to channel is done */
-	sfd->refcount_compute = true;
+	sfd->refcount.compute = true;
 
 	int bs = 1 << threads->diff_alignment_bits;
 	int align_end = bs * ((int)sfd->buffer_size / bs);
@@ -983,7 +982,7 @@ static void add_file_create_request(
 
 void finish_update(struct shadow_fd *sfd)
 {
-	if (!sfd->refcount_compute) {
+	if (!sfd->refcount.compute) {
 		return;
 	}
 	if (sfd->type == FDC_DMABUF && sfd->dmabuf_map_handle) {
@@ -996,7 +995,7 @@ void finish_update(struct shadow_fd *sfd)
 		free(sfd->damage_task_interval_store);
 		sfd->damage_task_interval_store = NULL;
 	}
-	sfd->refcount_compute = false;
+	sfd->refcount.compute = false;
 }
 
 void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
@@ -1010,7 +1009,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		}
 		// Clear dirty state
 		sfd->is_dirty = false;
-		if (!sfd->mem_mirror) {
+		if (sfd->only_here) {
+			sfd->only_here = false;
 			reset_damage(&sfd->damage);
 
 			// increase space, to avoid overflow when
@@ -1058,10 +1058,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		sfd->is_dirty = false;
 
 		bool first = false;
-		if (!sfd->mem_mirror) {
-			size_t alignment = 1u << threads->diff_alignment_bits;
-			sfd->mem_mirror = aligned_alloc(alignment,
-					alignz(sfd->buffer_size, alignment));
+		if (sfd->only_here) {
+			sfd->only_here = false;
 			first = true;
 
 			add_dmabuf_create_request(
@@ -1079,6 +1077,9 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			}
 		}
 		if (first) {
+			size_t alignment = 1u << threads->diff_alignment_bits;
+			sfd->mem_mirror = aligned_alloc(alignment,
+					alignz(sfd->buffer_size, alignment));
 			// Q: is it better to run the copy in parallel?
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
@@ -1100,31 +1101,38 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			// ^ was not previously able to create buffer
 			return;
 		}
-		if (sfd->video_frameno == 0) {
+		if (sfd->only_here) {
+			sfd->only_here = false;
 			add_dmabuf_create_request(
 					transfers, sfd, WMSG_OPEN_DMAVID_DST);
 		}
 		collect_video_from_mirror(sfd, transfers);
 	} else if (sfd->type == FDC_DMAVID_IW) {
 		sfd->is_dirty = false;
-		if (sfd->video_frameno == -1) {
+		if (sfd->only_here) {
+			sfd->only_here = false;
 			add_dmabuf_create_request(
 					transfers, sfd, WMSG_OPEN_DMAVID_SRC);
-			sfd->video_frameno++;
 		}
-	} else if (fdcat_ispipe(sfd->type)) {
+	} else if (sfd->type == FDC_PIPE) {
 		// Pipes always update, no matter what the message
 		// stream indicates.
-		if (sfd->pipe_onlyhere) {
+		if (sfd->only_here) {
+			sfd->only_here = false;
+
 			struct wmsg_basic *createh =
 					calloc(1, sizeof(struct wmsg_basic));
 			enum wmsg_type type;
-			if (sfd->type == FDC_PIPE_IR) {
+			if (sfd->pipe.can_read && !sfd->pipe.can_write) {
 				type = WMSG_OPEN_IW_PIPE;
-			} else if (sfd->type == FDC_PIPE_IW) {
+				sfd->pipe.remote_can_write = true;
+			} else if (sfd->pipe.can_write && !sfd->pipe.can_read) {
 				type = WMSG_OPEN_IR_PIPE;
+				sfd->pipe.remote_can_read = true;
 			} else {
 				type = WMSG_OPEN_RW_PIPE;
+				sfd->pipe.remote_can_read = true;
+				sfd->pipe.remote_can_write = true;
 			}
 			createh->size_and_type = transfer_header(
 					sizeof(struct wmsg_basic), type);
@@ -1132,42 +1140,47 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 
 			transfer_add(transfers, sizeof(struct wmsg_basic),
 					createh, false);
-
-			sfd->pipe_onlyhere = false;
 		}
 
-		if (sfd->pipe_recv.used > 0) {
+		if (sfd->pipe.recv.used > 0) {
 			size_t msgsz = sizeof(struct wmsg_basic) +
-				       (size_t)sfd->pipe_recv.used;
+				       (size_t)sfd->pipe.recv.used;
 			char *buf = malloc(alignz(msgsz, 4));
 			struct wmsg_basic *header = (struct wmsg_basic *)buf;
 			header->size_and_type = transfer_header(
 					msgsz, WMSG_PIPE_TRANSFER);
 			header->remote_id = sfd->remote_id;
 			memcpy(buf + sizeof(struct wmsg_basic),
-					sfd->pipe_recv.data,
-					(size_t)sfd->pipe_recv.used);
+					sfd->pipe.recv.data,
+					(size_t)sfd->pipe.recv.used);
 			memset(buf + msgsz, 0, alignz(msgsz, 4) - msgsz);
 
 			transfer_add(transfers, alignz(msgsz, 4), buf, false);
 
-			sfd->pipe_recv.used = 0;
+			sfd->pipe.recv.used = 0;
 		}
 
-		if (sfd->pipe_lclosed && !sfd->pipe_rclosed) {
-			struct wmsg_basic *hanguph =
+		if (!sfd->pipe.can_read && sfd->pipe.remote_can_write) {
+			struct wmsg_basic *header =
 					calloc(1, sizeof(struct wmsg_basic));
-			hanguph->size_and_type = transfer_header(
+			header->size_and_type = transfer_header(
 					sizeof(struct wmsg_basic),
-					WMSG_PIPE_HANGUP);
-			hanguph->remote_id = sfd->remote_id;
-
+					WMSG_PIPE_SHUTDOWN_W);
+			header->remote_id = sfd->remote_id;
 			transfer_add(transfers, sizeof(struct wmsg_basic),
-					hanguph, false);
-
-			sfd->pipe_rclosed = true;
-			close(sfd->pipe_fd);
-			sfd->pipe_fd = -2;
+					header, false);
+			sfd->pipe.remote_can_write = false;
+		}
+		if (!sfd->pipe.can_write && sfd->pipe.remote_can_read) {
+			struct wmsg_basic *header =
+					calloc(1, sizeof(struct wmsg_basic));
+			header->size_and_type = transfer_header(
+					sizeof(struct wmsg_basic),
+					WMSG_PIPE_SHUTDOWN_R);
+			header->remote_id = sfd->remote_id;
+			transfer_add(transfers, sizeof(struct wmsg_basic),
+					header, false);
+			sfd->pipe.remote_can_read = false;
 		}
 	}
 }
@@ -1200,11 +1213,13 @@ static int create_from_update(struct fd_translation_map *map,
 	sfd->fd_local = -1;
 	sfd->is_dirty = false;
 	reset_damage(&sfd->damage);
+	sfd->only_here = false;
 	/* Start the object reference at one, so that, if it is owned by
 	 * some known protocol object, it can not be deleted until the
 	 * fd has at least be transferred over the Wayland connection */
-	sfd->refcount_transfer = 1;
-	sfd->refcount_protocol = 0;
+	sfd->refcount.transfer = 1;
+	sfd->refcount.protocol = 0;
+	sfd->refcount.compute = false;
 	if (type == WMSG_OPEN_FILE) {
 
 		const struct wmsg_open_file header =
@@ -1247,6 +1262,8 @@ static int create_from_update(struct fd_translation_map *map,
 		memcpy(sfd->mem_local, sfd->mem_mirror, sfd->buffer_size);
 	} else if (type == WMSG_OPEN_RW_PIPE || type == WMSG_OPEN_IW_PIPE ||
 			type == WMSG_OPEN_IR_PIPE) {
+		sfd->type = FDC_PIPE;
+
 		int pipedes[2];
 		if (type == WMSG_OPEN_RW_PIPE) {
 			if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipedes) ==
@@ -1268,30 +1285,30 @@ static int create_from_update(struct fd_translation_map *map,
 		if (type == WMSG_OPEN_IR_PIPE) {
 			// Read end is 0; the other process writes
 			sfd->fd_local = pipedes[1];
-			sfd->pipe_fd = pipedes[0];
-			sfd->type = FDC_PIPE_IR;
+			sfd->pipe.fd = pipedes[0];
+			sfd->pipe.can_read = true;
+			sfd->pipe.remote_can_write = true;
 		} else if (type == WMSG_OPEN_IW_PIPE) {
 			// Write end is 1; the other process reads
 			sfd->fd_local = pipedes[0];
-			sfd->pipe_fd = pipedes[1];
-			sfd->type = FDC_PIPE_IW;
+			sfd->pipe.fd = pipedes[1];
+			sfd->pipe.can_write = true;
+			sfd->pipe.remote_can_read = true;
 		} else { // FDC_PIPE_RW
 			// Here, it doesn't matter which end is which
 			sfd->fd_local = pipedes[0];
-			sfd->pipe_fd = pipedes[1];
-			sfd->type = FDC_PIPE_RW;
+			sfd->pipe.fd = pipedes[1];
+			sfd->pipe.can_read = true;
+			sfd->pipe.can_write = true;
+			sfd->pipe.remote_can_read = true;
+			sfd->pipe.remote_can_write = true;
 		}
 
-		if (set_nonblocking(sfd->pipe_fd) == -1) {
+		if (set_nonblocking(sfd->pipe.fd) == -1) {
 			wp_error("Failed to make private pipe end nonblocking: %s",
 					strerror(errno));
 			return 0;
 		}
-
-		// Allocate a reasonably small read buffer
-		sfd->pipe_recv.size = 16384;
-		sfd->pipe_recv.data = calloc((size_t)sfd->pipe_recv.size, 1);
-		sfd->pipe_onlyhere = false;
 	} else if (type == WMSG_OPEN_DMAVID_DST) {
 		/* remote read data, this side writes data */
 		sfd->type = FDC_DMAVID_IW;
@@ -1423,6 +1440,43 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 	}
 }
 
+static void pipe_close_write(struct shadow_fd *sfd)
+{
+	if (sfd->pipe.can_read) {
+		/* if pipe.fd is both readable and writable, assume
+		 * socket
+		 */
+		shutdown(sfd->pipe.fd, SHUT_WR);
+	} else {
+		close(sfd->pipe.fd);
+		if (sfd->fd_local == sfd->pipe.fd) {
+			sfd->fd_local = -1;
+		}
+		sfd->pipe.fd = -1;
+	}
+	sfd->pipe.can_write = false;
+
+	/* Also free any accumulated data that can no longer be delivered*/
+	free(sfd->pipe.send.data);
+	memset(&sfd->pipe.send, 0, sizeof(sfd->pipe.send));
+}
+static void pipe_close_read(struct shadow_fd *sfd)
+{
+	if (sfd->pipe.can_write) {
+		/* if pipe.fd is both readable and writable, assume
+		 * socket
+		 */
+		shutdown(sfd->pipe.fd, SHUT_RD);
+	} else {
+		close(sfd->pipe.fd);
+		if (sfd->fd_local == sfd->pipe.fd) {
+			sfd->fd_local = -1;
+		}
+		sfd->pipe.fd = -1;
+	}
+	sfd->pipe.can_read = false;
+}
+
 int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		struct render_data *render, enum wmsg_type type, int remote_id,
 		const struct bytebuf *msg)
@@ -1433,6 +1487,12 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			type == WMSG_OPEN_RW_PIPE ||
 			type == WMSG_OPEN_DMAVID_SRC ||
 			type == WMSG_OPEN_DMAVID_DST) {
+		struct shadow_fd *sfd = get_shadow_for_rid(map, remote_id);
+		if (sfd) {
+			wp_error("shadow structure for RID=%d was already created",
+					remote_id);
+			return -1;
+		}
 		return create_from_update(
 				map, threads, render, type, remote_id, msg);
 	}
@@ -1587,43 +1647,56 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			}
 		}
 	} else if (type == WMSG_PIPE_TRANSFER) {
-		if (sfd->type != FDC_PIPE_IW && sfd->type != FDC_PIPE_RW) {
-			wp_error("Trying to write data to RID=%d, type=%s, which is not a writable pipe",
+		if (sfd->type != FDC_PIPE) {
+			wp_error("Trying to write data to RID=%d, type=%s, which is not a pipe",
 					remote_id, fdcat_to_str(sfd->type));
 			return -1;
+		}
+		if (!sfd->pipe.can_write) {
+			wp_debug("Discarding transfer to pipe RID=%d, because pipe cannot be written to",
+					remote_id);
+			return 0;
 		}
 
 		size_t transf_data_sz = msg->size - sizeof(struct wmsg_basic);
 
-		ssize_t netsize = sfd->pipe_send.used + (ssize_t)transf_data_sz;
-		if (sfd->pipe_send.size <= 1024) {
-			sfd->pipe_send.size = 1024;
-		}
-		while (sfd->pipe_send.size < netsize) {
-			sfd->pipe_send.size *= 2;
-		}
-		if (sfd->pipe_send.data) {
-			sfd->pipe_send.data = realloc(sfd->pipe_send.data,
-					(size_t)sfd->pipe_send.size);
-		} else {
-			sfd->pipe_send.data =
-					calloc((size_t)sfd->pipe_send.size, 1);
-		}
-		memcpy(sfd->pipe_send.data + sfd->pipe_send.used,
+		int netsize = sfd->pipe.send.used + (int)transf_data_sz;
+		buf_ensure_size(netsize, 1, &sfd->pipe.send.size,
+				(void **)&sfd->pipe.send.data);
+		memcpy(sfd->pipe.send.data + sfd->pipe.send.used,
 				msg->data + sizeof(struct wmsg_basic),
 				transf_data_sz);
-		sfd->pipe_send.used = netsize;
+		sfd->pipe.send.used = netsize;
 
 		// The pipe itself will be flushed/or closed later by
 		// flush_writable_pipes
-		sfd->pipe_writable = true;
-	} else if (type == WMSG_PIPE_HANGUP) {
-		if (sfd->type != FDC_PIPE_IW && sfd->type != FDC_PIPE_RW) {
-			wp_error("Trying to hang up the pipe RID=%d, type=%s, which is not a writable pipe",
+		sfd->pipe.writable = true;
+	} else if (type == WMSG_PIPE_SHUTDOWN_R) {
+		if (sfd->type != FDC_PIPE) {
+			wp_error("Trying to read shutdown the pipe RID=%d, type=%s, which is not a pipe",
 					remote_id, fdcat_to_str(sfd->type));
 			return -1;
 		}
-		sfd->pipe_rclosed = true;
+		sfd->pipe.remote_can_write = false;
+		if (!sfd->pipe.can_read) {
+			wp_debug("Discarding read shutdown to pipe RID=%d, which cannot read",
+					remote_id);
+			return 0;
+		}
+		pipe_close_read(sfd);
+	} else if (type == WMSG_PIPE_SHUTDOWN_W) {
+		if (sfd->type != FDC_PIPE) {
+			wp_error("Trying to write shutdown the pipe RID=%d, type=%s, which is not a pipe",
+					remote_id, fdcat_to_str(sfd->type));
+			return -1;
+		}
+		sfd->pipe.remote_can_read = false;
+		if (!sfd->pipe.can_write) {
+			wp_debug("Discarding write shutdown to pipe RID=%d, which cannot write",
+					remote_id);
+			return 0;
+		}
+		pipe_close_write(sfd);
 	} else if (type == WMSG_SEND_DMAVID_PACKET) {
 		if (sfd->type != FDC_DMAVID_IW) {
 			wp_error("Trying to send video packet to RID=%d, type=%s, which is not a video output buffer",
@@ -1649,28 +1722,40 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 bool shadow_decref_protocol(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
-	sfd->refcount_protocol--;
+	sfd->refcount.protocol--;
 	return destroy_shadow_if_unreferenced(map, sfd);
 }
 
 bool shadow_decref_transfer(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
 {
-	sfd->refcount_transfer--;
+	sfd->refcount.transfer--;
+	if (sfd->refcount.transfer == 0 && sfd->type == FDC_PIPE) {
+		/* fd_local has been transferred for the last time, so close
+		 * it and make it match pipe.fd, just as on the side where
+		 * the original pipe was introduced */
+		if (sfd->pipe.fd != sfd->fd_local) {
+			close(sfd->fd_local);
+			sfd->fd_local = sfd->pipe.fd;
+		}
+	}
 	return destroy_shadow_if_unreferenced(map, sfd);
 }
 struct shadow_fd *shadow_incref_protocol(struct shadow_fd *sfd)
 {
 	sfd->has_owner = true;
-	sfd->refcount_protocol++;
+	sfd->refcount.protocol++;
 	return sfd;
 }
 struct shadow_fd *shadow_incref_transfer(struct shadow_fd *sfd)
 {
-	sfd->refcount_transfer++;
+	sfd->has_owner = true;
+	if (sfd->type == FDC_PIPE && sfd->refcount.protocol == 0) {
+		wp_error("The other pipe end may have been closed");
+	}
+	sfd->refcount.protocol++;
 	return sfd;
 }
-
 void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
 {
 	for (int i = 0; i < nfds; i++) {
@@ -1691,7 +1776,7 @@ int count_npipes(const struct fd_translation_map *map)
 {
 	int np = 0;
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type)) {
+		if (cur->type == FDC_PIPE) {
 			np++;
 		}
 	}
@@ -1702,20 +1787,16 @@ int fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds,
 {
 	int np = 0;
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type)) {
-			if (!cur->pipe_lclosed) {
-				pfds[np].fd = cur->pipe_fd;
-				pfds[np].events = 0;
-				if (check_read &&
-						(cur->type == FDC_PIPE_RW ||
-								cur->type == FDC_PIPE_IR)) {
-					pfds[np].events |= POLLIN;
-				}
-				if (cur->pipe_send.used > 0) {
-					pfds[np].events |= POLLOUT;
-				}
-				np++;
+		if (cur->type == FDC_PIPE && cur->pipe.fd != -1) {
+			pfds[np].fd = cur->pipe.fd;
+			pfds[np].events = 0;
+			if (check_read && cur->pipe.readable) {
+				pfds[np].events |= POLLIN;
 			}
+			if (cur->pipe.send.used > 0) {
+				pfds[np].events |= POLLOUT;
+			}
+			np++;
 		}
 	}
 	return np;
@@ -1725,7 +1806,7 @@ static struct shadow_fd *get_shadow_for_pipe_fd(
 		struct fd_translation_map *map, int pipefd)
 {
 	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type) && cur->pipe_fd == pipefd) {
+		if (cur->type == FDC_PIPE && cur->pipe.fd == pipefd) {
 			return cur;
 		}
 	}
@@ -1743,103 +1824,103 @@ void mark_pipe_object_statuses(
 					lfd);
 			continue;
 		}
-		if (pfds[i].revents & POLLIN) {
-			sfd->pipe_readable = true;
+		if (pfds[i].revents & POLLIN || pfds[i].revents & POLLHUP) {
+			/* In */
+			sfd->pipe.readable = true;
 		}
 		if (pfds[i].revents & POLLOUT) {
-			sfd->pipe_writable = true;
-		}
-		if (pfds[i].revents & POLLHUP) {
-			sfd->pipe_lclosed = true;
+			sfd->pipe.writable = true;
 		}
 	}
 }
 
 void flush_writable_pipes(struct fd_translation_map *map)
 {
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type) && cur->pipe_writable &&
-				cur->pipe_send.used > 0) {
-			cur->pipe_writable = false;
-			wp_debug("Flushing %zd bytes into RID=%d",
-					cur->pipe_send.used, cur->remote_id);
-			ssize_t changed = write(cur->pipe_fd,
-					cur->pipe_send.data,
-					(size_t)cur->pipe_send.used);
+	for (struct shadow_fd *sfd = map->list; sfd; sfd = sfd->next) {
+		if (sfd->type != FDC_PIPE || !sfd->pipe.writable ||
+				sfd->pipe.send.used <= 0) {
+			continue;
+		}
 
-			if (changed == -1) {
-				wp_error("Failed to write into pipe with remote_id=%d: %s",
-						cur->remote_id,
-						strerror(errno));
-			} else if (changed == 0) {
-				wp_debug("Zero write event");
-			} else {
-				cur->pipe_send.used -= changed;
-				if (cur->pipe_send.used) {
-					memmove(cur->pipe_send.data,
-							cur->pipe_send.data +
-									changed,
-							(size_t)cur->pipe_send
-									.used);
-				} else {
-					free(cur->pipe_send.data);
-					cur->pipe_send.data = NULL;
-					cur->pipe_send.size = 0;
-					cur->pipe_send.used = 0;
-				}
+		sfd->pipe.writable = false;
+		wp_debug("Flushing %zd bytes into RID=%d", sfd->pipe.send.used,
+				sfd->remote_id);
+		ssize_t changed = write(sfd->pipe.fd, sfd->pipe.send.data,
+				(size_t)sfd->pipe.send.used);
+
+		if (changed == -1 &&
+				(errno == EAGAIN || errno == EWOULDBLOCK)) {
+			wp_debug("Writing to pipe RID=%d would block\n",
+					sfd->remote_id);
+			continue;
+		} else if (changed == -1 && errno == EPIPE) {
+			/* No process has access to the other end of the pipe */
+			pipe_close_write(sfd);
+		} else if (changed == -1) {
+			wp_error("Failed to write into pipe with remote_id=%d: %s",
+					sfd->remote_id, strerror(errno));
+		} else {
+			wp_debug("Wrote %zd more bytes into pipe RID=%d",
+					changed, sfd->remote_id);
+			sfd->pipe.send.used -= (int)changed;
+			if (sfd->pipe.send.used > 0) {
+				memmove(sfd->pipe.send.data,
+						sfd->pipe.send.data + changed,
+						(size_t)sfd->pipe.send.used);
 			}
 		}
+	}
+	/* Destroy any new unreferenced objects */
+	for (struct shadow_fd *cur = map->list, *nxt = NULL; cur; cur = nxt) {
+		nxt = cur->next;
+		destroy_shadow_if_unreferenced(map, cur);
 	}
 }
 void read_readable_pipes(struct fd_translation_map *map)
 {
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type) && cur->pipe_readable &&
-				cur->pipe_recv.size > cur->pipe_recv.used) {
-			cur->pipe_readable = false;
-			ssize_t changed = read(cur->pipe_fd,
-					cur->pipe_recv.data +
-							cur->pipe_recv.used,
-					(size_t)(cur->pipe_recv.size -
-							cur->pipe_recv.used));
-			if (changed == -1) {
+	for (struct shadow_fd *sfd = map->list; sfd; sfd = sfd->next) {
+		if (sfd->type != FDC_PIPE || !sfd->pipe.readable) {
+			continue;
+		}
+
+		if (sfd->pipe.recv.size == 0) {
+			sfd->pipe.recv.size = 32768;
+			sfd->pipe.recv.data =
+					malloc((size_t)sfd->pipe.recv.size);
+		}
+		if (sfd->pipe.recv.size > sfd->pipe.recv.used) {
+			sfd->pipe.readable = false;
+			ssize_t changed = read(sfd->pipe.fd,
+					sfd->pipe.recv.data +
+							sfd->pipe.recv.used,
+					(size_t)(sfd->pipe.recv.size -
+							sfd->pipe.recv.used));
+			if (changed == 0) {
+				/* No process has access to the other end of the
+				 * pipe */
+				pipe_close_read(sfd);
+			} else if (changed == -1 &&
+					(errno == EAGAIN ||
+							errno == EWOULDBLOCK)) {
+				wp_debug("Reading from pipe RID=%d would block\n",
+						sfd->remote_id);
+				continue;
+			} else if (changed == -1) {
 				wp_error("Failed to read from pipe with remote_id=%d: %s",
-						cur->remote_id,
+						sfd->remote_id,
 						strerror(errno));
-			} else if (changed == 0) {
-				wp_debug("Zero write event");
 			} else {
-				wp_debug("Read %zd more bytes from RID=%d",
-						changed, cur->remote_id);
-				cur->pipe_recv.used += changed;
+				wp_debug("Read %zd more bytes from pipe RID=%d",
+						changed, sfd->remote_id);
+				sfd->pipe.recv.used += (int)changed;
 			}
 		}
 	}
-}
 
-void close_local_pipe_ends(struct fd_translation_map *map)
-{
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type) && cur->fd_local != -2 &&
-				cur->fd_local != cur->pipe_fd) {
-			close(cur->fd_local);
-			cur->fd_local = -2;
-		}
-	}
-}
-
-void close_rclosed_pipes(struct fd_translation_map *map)
-{
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
-		if (fdcat_ispipe(cur->type) && cur->pipe_rclosed &&
-				!cur->pipe_lclosed) {
-			close(cur->pipe_fd);
-			if (cur->pipe_fd == cur->fd_local) {
-				cur->fd_local = -2;
-			}
-			cur->pipe_fd = -2;
-			cur->pipe_lclosed = true;
-		}
+	/* Destroy any new unreferenced objects */
+	for (struct shadow_fd *cur = map->list, *nxt = NULL; cur; cur = nxt) {
+		nxt = cur->next;
+		destroy_shadow_if_unreferenced(map, cur);
 	}
 }
 
