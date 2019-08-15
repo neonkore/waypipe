@@ -819,9 +819,13 @@ static void queue_fill_transfers(struct thread_pool *threads,
 	int nshards = ceildiv((region_end - region_start), chunksize);
 
 	pthread_mutex_lock(&threads->work_mutex);
-	buf_ensure_size(threads->stack_count + nshards,
-			sizeof(struct task_data), &threads->stack_size,
-			(void **)&threads->stack);
+	if (buf_ensure_size(threads->stack_count + nshards,
+			    sizeof(struct task_data), &threads->stack_size,
+			    (void **)&threads->stack) == -1) {
+		wp_error("Allocation failed, dropping some fill tasks");
+		pthread_mutex_unlock(&threads->work_mutex);
+		return;
+	}
 
 	for (int i = 0; i < nshards; i++) {
 		struct task_data task;
@@ -892,6 +896,12 @@ static void queue_diff_transfers(struct thread_pool *threads,
 			sizeof(struct interval) *
 			(size_t)(sfd->damage.ndamage_intvs + nshards));
 	int *offsets = calloc((size_t)nshards + 1, sizeof(int));
+	if (!offsets) {
+		// TODO: avoid making this allocation entirely
+		wp_error("Failed to allocate diff region control buffer, dropping diff tasks");
+		return;
+	}
+
 	sfd->damage_task_interval_store = intvs;
 	int tot_blocks = net_damage / bs;
 	int ir = 0, iw = 0, acc_prev_blocks = 0;
@@ -928,9 +938,14 @@ static void queue_diff_transfers(struct thread_pool *threads,
 	reset_damage(&sfd->damage);
 
 	pthread_mutex_lock(&threads->work_mutex);
-	buf_ensure_size(threads->stack_count + nshards,
-			sizeof(struct task_data), &threads->stack_size,
-			(void **)&threads->stack);
+	if (buf_ensure_size(threads->stack_count + nshards,
+			    sizeof(struct task_data), &threads->stack_size,
+			    (void **)&threads->stack) == -1) {
+		wp_error("Allocation failed, dropping some diff tasks");
+		pthread_mutex_unlock(&threads->work_mutex);
+		free(offsets);
+		return;
+	}
 
 	for (int i = 0; i < nshards; i++) {
 		struct task_data task;
@@ -1546,8 +1561,11 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 		size_t uncomp_size = header->end - header->start;
 		struct thread_data *local = &threads->threads[0];
-		buf_ensure_size((int)uncomp_size, 1, &local->tmp_size,
-				&local->tmp_buf);
+		if (buf_ensure_size((int)uncomp_size, 1, &local->tmp_size,
+				    &local->tmp_buf) == -1) {
+			wp_error("Failed to expand temporary decompression buffer, dropping update");
+			return 0;
+		}
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
@@ -1605,8 +1623,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				(const struct wmsg_buffer_diff *)msg->data;
 
 		struct thread_data *local = &threads->threads[0];
-		buf_ensure_size((int)(header->diff_size + header->ntrailing), 1,
-				&local->tmp_size, &local->tmp_buf);
+		if (buf_ensure_size((int)(header->diff_size +
+						    header->ntrailing),
+				    1, &local->tmp_size,
+				    &local->tmp_buf) == -1) {
+			wp_error("Failed to expand temporary decompression buffer, dropping update");
+			return 0;
+		}
 
 		const char *act_buffer = NULL;
 		size_t act_size = 0;
@@ -1661,8 +1684,12 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		size_t transf_data_sz = msg->size - sizeof(struct wmsg_basic);
 
 		int netsize = sfd->pipe.send.used + (int)transf_data_sz;
-		buf_ensure_size(netsize, 1, &sfd->pipe.send.size,
-				(void **)&sfd->pipe.send.data);
+		if (buf_ensure_size(netsize, 1, &sfd->pipe.send.size,
+				    (void **)&sfd->pipe.send.data) == -1) {
+			wp_error("Failed to expand pipe transfer buffer, dropping data");
+			return 0;
+		}
+
 		memcpy(sfd->pipe.send.data + sfd->pipe.send.used,
 				msg->data + sizeof(struct wmsg_basic),
 				transf_data_sz);

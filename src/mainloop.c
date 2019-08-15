@@ -73,10 +73,15 @@ static ssize_t iovec_read(
 		int *data = (int *)CMSG_DATA(header);
 		int nf = (int)((header->cmsg_len - CMSG_LEN(0)) / sizeof(int));
 
-		for (int i = 0; i < nf; i++) {
-			buf_ensure_size(fds->zone_end + 1, sizeof(int),
-					&fds->size, (void **)&fds->data);
-			fds->data[fds->zone_end++] = data[i];
+		if (buf_ensure_size(fds->zone_end + nf, sizeof(int), &fds->size,
+				    (void **)&fds->data) == -1) {
+			wp_error("Failed to allocate space for new fds");
+			errno = ENOMEM;
+			ret = -1;
+		} else {
+			for (int i = 0; i < nf; i++) {
+				fds->data[fds->zone_end++] = data[i];
+			}
 		}
 
 		header = nxt_hdr;
@@ -356,16 +361,21 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		int nfds = (int)((unpadded_size - sizeof(uint32_t)) /
 				 sizeof(int32_t));
 
-		buf_ensure_size(nfds, sizeof(int), &cmsg->transf_fds.size,
-				(void **)&cmsg->transf_fds.data);
+		if (buf_ensure_size(nfds, sizeof(int), &cmsg->transf_fds.size,
+				    (void **)&cmsg->transf_fds.data) == -1) {
+			wp_error("Allocation failure for fd transfer queue, expect a crash");
+		}
 		/* Reset transfer buffer; all fds in here were already sent */
 		cmsg->transf_fds.zone_start = 0;
 		cmsg->transf_fds.zone_end = nfds;
 		untranslate_ids(&g->map, nfds, fds, cmsg->transf_fds.data);
 		if (nfds > 0) {
-			buf_ensure_size(cmsg->proto_fds.zone_end + nfds,
-					sizeof(int), &cmsg->proto_fds.size,
-					(void **)&cmsg->proto_fds.data);
+			if (buf_ensure_size(cmsg->proto_fds.zone_end + nfds,
+					    sizeof(int), &cmsg->proto_fds.size,
+					    (void **)&cmsg->proto_fds.data) ==
+					-1) {
+				wp_error("Allocation failure for fd protocol queue, expect a crash");
+			}
 
 			// Append the new file descriptors to the parsing queue
 			memcpy(cmsg->proto_fds.data + cmsg->proto_fds.zone_end,
@@ -382,8 +392,11 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		int protosize = (int)(unpadded_size - sizeof(uint32_t));
 		// TODO: have message editing routines ensure size, so
 		// that this limit can be tighter
-		buf_ensure_size(protosize + 1024, 1, &cmsg->proto_write.size,
-				(void **)&cmsg->proto_write.data);
+		if (buf_ensure_size(protosize + 1024, 1,
+				    &cmsg->proto_write.size,
+				    (void **)&cmsg->proto_write.data) == -1) {
+			wp_error("Allocation failure for message workspace, expect a crash");
+		}
 		cmsg->proto_write.zone_end = 0;
 		cmsg->proto_write.zone_start = 0;
 
@@ -450,10 +463,13 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 				cmsg->recv_start + sizeof(uint32_t)) {
 			/* Didn't quite finish reading the header */
 			int recvsz = (int)cmsg->recv_size;
-			buf_ensure_size((int)cmsg->recv_end +
-							RECV_GOAL_READ_SIZE,
-					1, &recvsz,
-					(void **)&cmsg->recv_buffer);
+			if (buf_ensure_size((int)cmsg->recv_end +
+							    RECV_GOAL_READ_SIZE,
+					    1, &recvsz,
+					    (void **)&cmsg->recv_buffer) ==
+					-1) {
+				wp_error("Allocation failure, resizing receive buffer failed, expect a crash");
+			}
 			cmsg->recv_size = (size_t)recvsz;
 
 			nvec = 1;
@@ -475,8 +491,11 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 								RECV_GOAL_READ_SIZE);
 			}
 			int recvsz = (int)cmsg->recv_size;
-			buf_ensure_size((int)read_end, 1, &recvsz,
-					(void **)&cmsg->recv_buffer);
+			if (buf_ensure_size((int)read_end, 1, &recvsz,
+					    (void **)&cmsg->recv_buffer) ==
+					-1) {
+				wp_error("Allocation failure, resizing receive buffer failed, expect a crash");
+			}
 			cmsg->recv_size = (size_t)recvsz;
 
 			nvec = 1;
@@ -843,9 +862,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 				wmsg->fds.zone_end - old_fbuffer_end,
 				wmsg->fds.zone_end);
 
-		buf_ensure_size(wmsg->proto_read.size + 1024, 1,
-				&wmsg->proto_write.size,
-				(void **)&wmsg->proto_write.data);
+		if (buf_ensure_size(wmsg->proto_read.size + 1024, 1,
+				    &wmsg->proto_write.size,
+				    (void **)&wmsg->proto_write.data) == -1) {
+			wp_error("Allocation failure for message workspace, expect a crash");
+		}
 
 		wmsg->proto_write.zone_start = 0;
 		wmsg->proto_write.zone_end = 0;
@@ -1169,8 +1190,10 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	int pfds_size = 0;
 	while (!shutdown_flag) {
 		int psize = 4 + count_npipes(&g.map);
-		buf_ensure_size(psize, sizeof(struct pollfd), &pfds_size,
-				(void **)&pfds);
+		if (buf_ensure_size(psize, sizeof(struct pollfd), &pfds_size,
+				    (void **)&pfds) == -1) {
+			wp_error("Allocation failure, not enough space for pollfds, expect a crash");
+		}
 		pfds[0].fd = chanfd;
 		pfds[1].fd = progfd;
 		pfds[2].fd = linkfd;

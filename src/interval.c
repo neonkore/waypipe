@@ -91,9 +91,12 @@ static int fix_merge_stack_property(int size, struct merge_stack_elem *stack,
 			return size;
 		}
 
-		buf_ensure_size(top.count + nxt.count + 1,
-				sizeof(struct interval), &temp->size,
-				(void **)&temp->data);
+		if (buf_ensure_size(top.count + nxt.count + 1,
+				    sizeof(struct interval), &temp->size,
+				    (void **)&temp->data) == -1) {
+			wp_error("Failed to resize a merge buffer, some damage intervals may be lost");
+			return size;
+		}
 
 		int xs = stream_merge(top.count, &base->data[top.offset],
 				nxt.count, &base->data[nxt.offset], temp->data,
@@ -206,8 +209,12 @@ void merge_mergesort(const int old_count, struct interval *old_list,
 			e.rep = 1;
 		}
 
-		buf_ensure_size(base.count + e.rep + 1, sizeof(struct interval),
-				&base.size, (void **)&base.data);
+		if (buf_ensure_size(base.count + e.rep + 1,
+				    sizeof(struct interval), &base.size,
+				    (void **)&base.data) == -1) {
+			wp_error("Failed to resize a merge buffer, some damage intervals may be lost");
+			continue;
+		}
 
 		struct interval *vec = &base.data[base.count];
 		int iw = unpack_ext_interval(vec, e, alignment_bits);

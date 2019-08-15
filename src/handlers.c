@@ -683,6 +683,28 @@ void do_wl_surface_req_commit(struct context *ctx)
 	surface->damage_list_len = 0;
 	surface->damage_list_size = 0;
 }
+static void append_damage_record(struct wp_surface *surface, int32_t x,
+		int32_t y, int32_t width, int32_t height,
+		bool in_buffer_coordinates)
+{
+	if (buf_ensure_size(surface->damage_list_len + 1,
+			    sizeof(struct damage_record),
+			    &surface->damage_list_size,
+			    (void **)&surface->damage_list) == -1) {
+		wp_error("Failed to allocate space for damage list, dropping damage record");
+		return;
+	}
+
+	// A rectangle of the buffer was damaged, hence backing buffers
+	// may be updated.
+	struct damage_record *damage =
+			&surface->damage_list[surface->damage_list_len++];
+	damage->buffer_coordinates = in_buffer_coordinates;
+	damage->x = x;
+	damage->y = y;
+	damage->width = width;
+	damage->height = height;
+}
 void do_wl_surface_req_damage(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
 {
@@ -690,21 +712,8 @@ void do_wl_surface_req_damage(struct context *ctx, int32_t x, int32_t y,
 		// The display side does not need to track the damage
 		return;
 	}
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
-	buf_ensure_size(surface->damage_list_len + 1,
-			sizeof(struct damage_record),
-			&surface->damage_list_size,
-			(void **)&surface->damage_list);
-
-	// A rectangle of the buffer was damaged, hence backing buffers
-	// may be updated.
-	struct damage_record *damage =
-			&surface->damage_list[surface->damage_list_len++];
-	damage->buffer_coordinates = false;
-	damage->x = x;
-	damage->y = y;
-	damage->width = width;
-	damage->height = height;
+	append_damage_record((struct wp_surface *)ctx->obj, x, y, width, height,
+			false);
 }
 void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
@@ -713,21 +722,8 @@ void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		// The display side does not need to track the damage
 		return;
 	}
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
-	buf_ensure_size(surface->damage_list_len + 1,
-			sizeof(struct damage_record),
-			&surface->damage_list_size,
-			(void **)&surface->damage_list);
-
-	// A rectangle of the buffer was damaged, hence backing buffers
-	// may be updated.
-	struct damage_record *damage =
-			&surface->damage_list[surface->damage_list_len++];
-	damage->buffer_coordinates = true;
-	damage->x = x;
-	damage->y = y;
-	damage->width = width;
-	damage->height = height;
+	append_damage_record((struct wp_surface *)ctx->obj, x, y, width, height,
+			true);
 }
 void do_wl_surface_req_set_buffer_transform(
 		struct context *ctx, int32_t transform)
