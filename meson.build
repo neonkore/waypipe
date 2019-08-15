@@ -63,12 +63,12 @@ endif
 libavcodec = dependency('libavcodec', required: get_option('with_video'))
 libavutil = dependency('libavutil', required: get_option('with_video'))
 libswscale = dependency('libswscale', required: get_option('with_video'))
+libva = dependency('libva', required: get_option('with_vaapi'))
 if libavcodec.found() and libavutil.found() and libswscale.found()
 	config_data.set('HAS_VIDEO', 1, description: 'Enable video (de)compression')
-endif
-libva = dependency('libva', required: get_option('with_vaapi'))
-if libva.found()
-	config_data.set('HAS_VAAPI', 1, description: 'Enable hardware video (de)compression with VAAPI')
+	if libva.found()
+		config_data.set('HAS_VAAPI', 1, description: 'Enable hardware video (de)compression with VAAPI')
+	endif
 endif
 
 waypipe_includes = [include_directories('protocols'), include_directories('src')]

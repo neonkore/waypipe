@@ -1,15 +1,26 @@
 
 waypipe_source_files = ['dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'platform.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
-waypipe_dependencies = [
-	libgbm,          # General GPU buffer creation, aligned with dmabuf proto
-	liblz4,          # Fast compression option
-	libzstd,         # Slow compression option
-	libavcodec,libavutil,libswscale, # Video encoding
+waypipe_deps = [
 	pthreads,        # To run expensive computations in parallel
 	protos,          # Wayland protocol data
 	rt,              # For shared memory
-	libva,           # For NV12->RGB conversions
 ]
+if config_data.has('HAS_DMABUF')
+	# General GPU buffer creation, aligned with dmabuf proto
+	waypipe_deps += [libgbm]
+endif
+if config_data.has('HAS_LZ4')
+	waypipe_deps += [liblz4] # Fast compression option
+endif
+if config_data.has('HAS_ZSTD')
+	waypipe_deps += [libzstd] # Slow compression option
+endif
+if config_data.has('HAS_VIDEO')
+	waypipe_deps += [libavcodec,libavutil,libswscale]
+endif
+if config_data.has('HAS_VAAPI')
+	waypipe_deps += [libva] # For NV12->RGB conversions
+endif
 
 # Conditionally compile SIMD-optimized code.
 # (The meson simd module is a bit too limited for this)
@@ -53,7 +64,7 @@ lib_waypipe_src = static_library(
 	waypipe_source_files,
 	include_directories: waypipe_includes,
 	link_with: kernel_libs,
-	dependencies: waypipe_dependencies,
+	dependencies: waypipe_deps,
 )
 
 waypipe_prog = executable(
