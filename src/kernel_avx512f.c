@@ -46,8 +46,7 @@ size_t run_interval_diff_avx512f(const int diff_window_size,
 		for (; i < i_end; i++) {
 			__m512i m = _mm512_load_si512(&mod[i]);
 			__m512i b = _mm512_load_si512(&base[i]);
-			uint32_t mask = _cvtmask16_u32(
-					_mm512_cmpeq_epi32_mask(m, b));
+			uint32_t mask = (uint32_t)_mm512_cmpeq_epi32_mask(m, b);
 			if (mask != 0xffff) {
 				_mm512_store_si512(&base[i], m);
 
@@ -90,8 +89,7 @@ size_t run_interval_diff_avx512f(const int diff_window_size,
 		for (; i < i_end; i++) {
 			__m512i m = _mm512_load_si512(&mod[i]);
 			__m512i b = _mm512_load_si512(&base[i]);
-			uint32_t mask = _cvtmask16_u32(
-					_mm512_cmpeq_epi32_mask(m, b));
+			uint32_t mask = (uint32_t)_mm512_cmpeq_epi32_mask(m, b);
 
 			/* Reset trailing counter if anything changed */
 			uint32_t amask = ~(mask << 16);
