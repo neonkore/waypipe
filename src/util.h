@@ -311,4 +311,9 @@ int transfer_load_async(struct transfer_queue *w);
 /** Add a message to the async queue */
 void transfer_async_add(struct thread_msg_recv_buf *q, void *data, size_t sz);
 
+/* Functions that are unsually platform specific */
+int create_anon_file(void);
+int get_hardware_thread_count(void);
+int get_iov_max(void);
+
 #endif // WAYPIPE_UTIL_H

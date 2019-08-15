@@ -23,7 +23,6 @@
  * SOFTWARE.
  */
 
-#define _GNU_SOURCE
 #include "main.h"
 
 #include <errno.h>
@@ -41,13 +40,6 @@
 #include <unistd.h>
 
 #include <pthread.h>
-
-#if defined(__linux__)
-/* memfd_create was introduced in glibc 2.27 */
-#if !defined(__GLIBC__) || (__GLIBC__ >= 2 && __GLIBC_MINOR__ >= 27)
-#define HAS_MEMFD 1
-#endif
-#endif
 
 struct copy_setup {
 	int conn;
@@ -84,33 +76,6 @@ static void *read_file_into_mem(const char *path, size_t *len)
 	}
 	close(fd);
 	return buf;
-}
-static int create_anon_file(size_t sz)
-{
-	int new_fileno;
-#ifdef HAS_MEMFD
-	char template[256];
-	sprintf(template, "%zx", sz);
-	new_fileno = memfd_create(template, 0);
-#elif defined(SHM_ANON)
-	new_fileno = shm_open(SHM_ANON, O_RDWR, 0600);
-#else
-	/* WARNING: this can be rather file-system
-	 * intensive */
-	char template[256];
-	strcpy(template, "/tmp/fuzz_hook_XXXXXX");
-	new_fileno = mkstemp(template);
-	unlink(template);
-#endif
-	if (new_fileno == -1) {
-		wp_error("Failed to mkstemp");
-		return -1;
-	} else if (ftruncate(new_fileno, (off_t)sz) == -1) {
-		wp_error("Failed to resize tempfile");
-		close(new_fileno);
-		return -1;
-	}
-	return new_fileno;
 }
 
 log_handler_func_t log_funcs[2] = {NULL, NULL};
@@ -195,7 +160,12 @@ int main(int argc, char **argv)
 			} else {
 				/* avoid buffer overflow */
 				fsize = fsize > 1000000 ? 1000000 : fsize;
-				new_fileno = create_anon_file(fsize);
+				new_fileno = create_anon_file();
+				if (ftruncate(new_fileno, (off_t)fsize) == -1) {
+					wp_error("Failed to resize tempfile");
+					close(new_fileno);
+					return -1;
+				}
 			}
 		}
 

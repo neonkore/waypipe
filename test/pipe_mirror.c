@@ -23,7 +23,6 @@
  * SOFTWARE.
  */
 
-#define _GNU_SOURCE
 #include "shadow.h"
 
 #include <errno.h>
@@ -243,7 +242,12 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 			// todo: try multiple sync cycles (?)
 			ssize_t rr = read(read_fd, buf, 4096);
 			bool tf_pass = rr == amt;
-			success = success && tf_pass != expect_transfer_fail;
+			if (!expect_transfer_fail) {
+				/* on some systems, pipe is bidirectional,
+				 * making some additional transfers succeed.
+				 * This is fine. */
+				success = success && tf_pass;
+			}
 			const char *resdesc = tf_pass != expect_transfer_fail
 							      ? "expected"
 							      : "unexpected";

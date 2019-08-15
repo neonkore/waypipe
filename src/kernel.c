@@ -32,13 +32,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__linux__) && defined(__arm__)
-#include <asm/hwcap.h>
-#include <sys/auxv.h>
-#elif defined(__FreeBSD__) && defined(__arm__)
-#include <sys/auxv.h>
-#endif
-
 size_t run_interval_diff_C(const int diff_window_size,
 		const void *__restrict__ imod, void *__restrict__ ibase,
 		uint32_t *__restrict__ idiff, size_t i, const size_t i_end)
@@ -121,18 +114,7 @@ size_t run_interval_diff_avx2(const int diff_window_size,
 #endif
 
 #ifdef HAVE_NEON
-static bool neon_available(void)
-{
-	/* The actual methods are platform-dependent */
-#if defined(__linux__) && defined(__arm__)
-	return (getauxval(AT_HWCAP) & HWCAP_NEON) != 0;
-#elif defined(__FreeBSD__) && defined(__arm__)
-	unsigned long hwcap = 0;
-	elf_aux_info(AT_HWCAP, &hwcap, sizeof(hwcap));
-	return (hwcap & HWCAP_NEON) != 0;
-#endif
-	return true;
-}
+bool neon_available(void); // in platform.c
 size_t run_interval_diff_neon(const int diff_window_size,
 		const void *__restrict__ imod, void *__restrict__ ibase,
 		uint32_t *__restrict__ idiff, size_t i, const size_t i_end);

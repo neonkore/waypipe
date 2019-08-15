@@ -23,11 +23,6 @@
  * SOFTWARE.
  */
 
-#if !defined(__FreeBSD__)
-/* CMSG_LEN isn't part of any X/Open version */
-#define _XOPEN_SOURCE 700
-#endif
-
 #include "main.h"
 
 #include <errno.h>
@@ -278,6 +273,8 @@ struct way_msg_state {
 	struct transfer_queue transfers;
 	/** bytes written in this cycle, for debug */
 	int total_written;
+	/** Maximum chunk size to writev at once*/
+	int max_iov;
 
 	/** Transfers to send after the compute queue is empty */
 	int ntrailing;
@@ -681,8 +678,8 @@ static void clear_old_transfers(
 }
 
 /* Returns 0 if done, 1 if partial, -1 if fatal error, -2 if closed */
-static int partial_write_transfer(
-		int chanfd, struct transfer_queue *td, int *total_written)
+static int partial_write_transfer(int chanfd, struct transfer_queue *td,
+		int *total_written, int max_iov)
 {
 	// Waiting for channel write to complete
 	while (td->start < td->end) {
@@ -692,7 +689,7 @@ static int partial_write_transfer(
 		td->vecs[td->start].iov_base =
 				orig_base + td->partial_write_amt;
 		td->vecs[td->start].iov_len = orig_len - td->partial_write_amt;
-		int count = min(IOV_MAX, td->end - td->start);
+		int count = min(max_iov, td->end - td->start);
 		ssize_t wr = writev(chanfd, &td->vecs[td->start], count);
 		td->vecs[td->start].iov_base = orig_base;
 		td->vecs[td->start].iov_len = orig_len;
@@ -748,8 +745,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 	// First, clear out any transfers that are no longer needed
 	clear_old_transfers(&wmsg->transfers, cxs->last_confirmed_msgno);
-	int ret = partial_write_transfer(
-			chanfd, &wmsg->transfers, &wmsg->total_written);
+	int ret = partial_write_transfer(chanfd, &wmsg->transfers,
+			&wmsg->total_written, wmsg->max_iov);
 	if (ret < 0) {
 		return ret;
 	}
@@ -1138,7 +1135,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	way_msg.fds.data = malloc((size_t)way_msg.fds.size * sizeof(int));
 	way_msg.proto_write.size = 2 * max_read_size;
 	way_msg.proto_write.data = malloc((size_t)way_msg.proto_write.size);
-
+	way_msg.max_iov = get_iov_max();
 	pthread_mutex_init(&way_msg.transfers.async_recv_queue.lock, NULL);
 
 	struct chan_msg_state chan_msg;

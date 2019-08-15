@@ -11,6 +11,10 @@ project(
 	version: '0.5.0',
 )
 
+# DEFAULT_SOURCE implies POSIX_C_SOURCE 200809L + extras like CMSG_LEN
+# requires glibc >= 4.19 (2014), freebsd libc (since 2016?), musl >= 1.15 (2014)
+add_project_arguments('-D_DEFAULT_SOURCE', language: 'c')
+
 cc = meson.get_compiler('c')
 config_data = configuration_data()
 

@@ -23,7 +23,6 @@
  * SOFTWARE.
  */
 
-#define _XOPEN_SOURCE 700
 #include "shadow.h"
 
 #include <stdlib.h>

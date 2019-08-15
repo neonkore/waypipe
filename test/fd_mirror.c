@@ -23,7 +23,6 @@
  * SOFTWARE.
  */
 
-#define _GNU_SOURCE
 #include "shadow.h"
 
 #include <errno.h>
@@ -208,7 +207,10 @@ static void wait_for_thread_pool(struct thread_pool *pool)
 			/* To skip the next poll */
 		} else {
 			/* Wait a short amount */
-			usleep(100);
+			struct timespec waitspec;
+			waitspec.tv_sec = 0;
+			waitspec.tv_nsec = 100000;
+			nanosleep(&waitspec, NULL);
 		}
 	}
 }

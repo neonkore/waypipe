@@ -23,8 +23,6 @@
  * SOFTWARE.
  */
 
-#define _XOPEN_SOURCE 700
-
 #include "shadow.h"
 
 #if !defined(HAS_VIDEO) || !defined(HAS_DMABUF)

@@ -23,8 +23,6 @@
  * SOFTWARE.
  */
 
-#define _XOPEN_SOURCE 700
-
 #include "main.h"
 
 #include <fcntl.h>

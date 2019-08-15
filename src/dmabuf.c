@@ -23,7 +23,6 @@
  * SOFTWARE.
  */
 
-#define _XOPEN_SOURCE 700
 #include "dmabuf.h"
 #include "util.h"
 

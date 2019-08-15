@@ -23,11 +23,6 @@
  * SOFTWARE.
  */
 
-#if !defined(__DragonFly__) && !defined(__FreeBSD__) && !defined(__NetBSD__)
-/* _SC_NPROCESSORS_ONLN isn't part of any X/Open version */
-#define _XOPEN_SOURCE 700
-#endif
-
 #include "shadow.h"
 
 #include <errno.h>
@@ -230,7 +225,7 @@ void setup_thread_pool(struct thread_pool *pool,
 	pool->compression_level = comp_level;
 	if (n_threads <= 0) {
 		// platform dependent
-		int nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+		int nt = get_hardware_thread_count();
 		pool->nthreads = max(nt / 2, 1);
 	} else {
 		pool->nthreads = n_threads;
