@@ -36,7 +36,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static int get_inherited_socket()
+static int get_inherited_socket(void)
 {
 	const char *fd_no = getenv("WAYLAND_SOCKET");
 	char *endptr = NULL;

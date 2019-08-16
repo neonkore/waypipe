@@ -328,7 +328,17 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 	enum wmsg_type type = transfer_type(size_and_type);
 	if (type == WMSG_CLOSE) {
 		wp_debug("Other side has closed");
-		return -1;
+		if (unpadded_size < 8) {
+			return ERR_FATAL;
+		}
+		int32_t code = ((int32_t *)packet)[1];
+		if (code == ERR_FATAL) {
+			return ERR_FATAL;
+		} else if (code == ERR_NOMEM) {
+			return ERR_NOMEM;
+		} else {
+			return ERR_STOP;
+		}
 	} else if (type == WMSG_RESTART) {
 		struct wmsg_restart *ackm = (struct wmsg_restart *)packet;
 		wp_debug("Received restart message: remote last saw ack %d (we last recvd %d, acked %d)",
@@ -361,6 +371,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		if (buf_ensure_size(nfds, sizeof(int), &cmsg->transf_fds.size,
 				    (void **)&cmsg->transf_fds.data) == -1) {
 			wp_error("Allocation failure for fd transfer queue, expect a crash");
+			return ERR_NOMEM;
 		}
 		/* Reset transfer buffer; all fds in here were already sent */
 		cmsg->transf_fds.zone_start = 0;
@@ -371,7 +382,8 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 					    sizeof(int), &cmsg->proto_fds.size,
 					    (void **)&cmsg->proto_fds.data) ==
 					-1) {
-				wp_error("Allocation failure for fd protocol queue, expect a crash");
+				wp_error("Allocation failure for fd protocol queue");
+				return ERR_NOMEM;
 			}
 
 			// Append the new file descriptors to the parsing queue
@@ -392,7 +404,8 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		if (buf_ensure_size(protosize + 1024, 1,
 				    &cmsg->proto_write.size,
 				    (void **)&cmsg->proto_write.data) == -1) {
-			wp_error("Allocation failure for message workspace, expect a crash");
+			wp_error("Allocation failure for message workspace");
+			return ERR_NOMEM;
 		}
 		cmsg->proto_write.zone_end = 0;
 		cmsg->proto_write.zone_start = 0;
@@ -407,7 +420,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		if (src.zone_start != src.zone_end) {
 			wp_error("did not expect partial messages over channel, only parsed %d/%d bytes",
 					src.zone_start, src.zone_end);
-			return -1;
+			return ERR_FATAL;
 		}
 		/* Update file descriptor queue */
 		if (cmsg->proto_fds.zone_end > cmsg->proto_fds.zone_start) {
@@ -423,7 +436,7 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		if (unpadded_size < sizeof(struct wmsg_basic)) {
 			wp_error("Message is too small to contain header+RID, %d bytes",
 					unpadded_size);
-			return -1;
+			return ERR_FATAL;
 		}
 		const struct wmsg_basic *op_header =
 				(const struct wmsg_basic *)packet;
@@ -465,7 +478,8 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 					    1, &recvsz,
 					    (void **)&cmsg->recv_buffer) ==
 					-1) {
-				wp_error("Allocation failure, resizing receive buffer failed, expect a crash");
+				wp_error("Allocation failure, resizing receive buffer failed");
+				return ERR_NOMEM;
 			}
 			cmsg->recv_size = (size_t)recvsz;
 
@@ -491,7 +505,8 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 			if (buf_ensure_size((int)read_end, 1, &recvsz,
 					    (void **)&cmsg->recv_buffer) ==
 					-1) {
-				wp_error("Allocation failure, resizing receive buffer failed, expect a crash");
+				wp_error("Allocation failure, resizing receive buffer failed");
+				return ERR_NOMEM;
 			}
 			cmsg->recv_size = (size_t)recvsz;
 
@@ -511,19 +526,19 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 			return 0;
 		} else if (r == -1) {
 			wp_error("chanfd read failure: %s", strerror(errno));
-			return -1;
+			return ERR_FATAL;
 		} else if (r == 0) {
 			wp_debug("Channel connection closed");
-			return -2;
+			return ERR_DISCONN;
 		} else {
 			if (nvec == 2 && (size_t)r >= vec[0].iov_len) {
 				/* Complete parsing this message */
-				if (interpret_chanmsg(cmsg, cxs, g,
-						    display_side,
-						    cmsg->recv_buffer +
-								    cmsg->recv_start) ==
-						-1) {
-					return -1;
+				int cm_ret = interpret_chanmsg(cmsg, cxs, g,
+						display_side,
+						cmsg->recv_buffer +
+								cmsg->recv_start);
+				if (cm_ret < 0) {
+					return cm_ret;
 				}
 
 				cmsg->recv_start = 0;
@@ -547,7 +562,7 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		size_t sz = alignz(transfer_size(*header), 4);
 		if (sz == 0) {
 			wp_error("Encountered malformed zero size packet");
-			return -1;
+			return ERR_FATAL;
 		}
 		i += sz;
 		if (i > cmsg->recv_end) {
@@ -560,9 +575,10 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		char *packet_start = &cmsg->recv_buffer[cmsg->recv_start];
 		uint32_t *header = (uint32_t *)packet_start;
 		size_t sz = transfer_size(*header);
-		if (interpret_chanmsg(cmsg, cxs, g, display_side,
-				    packet_start) == -1) {
-			return -1;
+		int cm_ret = interpret_chanmsg(
+				cmsg, cxs, g, display_side, packet_start);
+		if (cm_ret < 0) {
+			return cm_ret;
 		}
 		cmsg->recv_start += alignz(sz, 4);
 		cmsg->recv_unhandled_messages--;
@@ -593,16 +609,16 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 				cmsg->transf_fds.data,
 				cmsg->transf_fds.zone_end,
 				&cmsg->transf_fds.zone_start);
-		if (wc == -1 && errno == EWOULDBLOCK) {
+		if (wc == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			wp_debug("Write to the %s would block", progdesc);
 			return 0;
+		} else if (wc == -1 && errno == EPIPE) {
+			wp_error("%s has closed", progdesc);
+			return ERR_DISCONN;
 		} else if (wc == -1) {
 			wp_error("%s write failure %zd: %s", progdesc, wc,
 					strerror(errno));
-			return -1;
-		} else if (wc == 0) {
-			wp_error("%s has closed", progdesc);
-			return -1;
+			return ERR_FATAL;
 		} else {
 			cmsg->proto_write.zone_start += (int)wc;
 			wp_debug("Wrote to %s, %d/%d bytes in chunk %zd, %d/%d fds",
@@ -677,12 +693,12 @@ static void clear_old_transfers(
 	}
 }
 
-/* Returns 0 if done, 1 if partial, -1 if fatal error, -2 if closed */
+/* Returns 0 sucessful -1 if fatal error, -2 if closed */
 static int partial_write_transfer(int chanfd, struct transfer_queue *td,
 		int *total_written, int max_iov)
 {
 	// Waiting for channel write to complete
-	while (td->start < td->end) {
+	if (td->start < td->end) {
 		/* Advance the current element by amount actually written */
 		char *orig_base = td->vecs[td->start].iov_base;
 		size_t orig_len = td->vecs[td->start].iov_len;
@@ -695,13 +711,13 @@ static int partial_write_transfer(int chanfd, struct transfer_queue *td,
 		td->vecs[td->start].iov_len = orig_len;
 
 		if (wr == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-			break;
+			return 0;
 		} else if (wr == -1) {
 			wp_error("chanfd write failure: %s", strerror(errno));
-			return -1;
+			return ERR_FATAL;
 		} else if (wr == 0) {
 			wp_debug("Channel connection closed");
-			return -2;
+			return ERR_DISCONN;
 		}
 
 		size_t uwr = (size_t)wr;
@@ -726,12 +742,7 @@ static int partial_write_transfer(int chanfd, struct transfer_queue *td,
 			}
 		}
 	}
-	if (td->start == td->end) {
-		td->partial_write_amt = 0;
-		return 0;
-	} else {
-		return 1;
-	}
+	return 0;
 }
 
 static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
@@ -843,7 +854,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		} else if (rc == -1) {
 			wp_error("%s read failure: %s", progdesc,
 					strerror(errno));
-			return -1;
+			return ERR_FATAL;
 		} else if (rc == 0) {
 			wp_error("%s has closed", progdesc);
 			return 0;
@@ -862,7 +873,8 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		if (buf_ensure_size(wmsg->proto_read.size + 1024, 1,
 				    &wmsg->proto_write.size,
 				    (void **)&wmsg->proto_write.data) == -1) {
-			wp_error("Allocation failure for message workspace, expect a crash");
+			wp_error("Allocation failure for message workspace");
+			return ERR_NOMEM;
 		}
 
 		wmsg->proto_write.zone_start = 0;
@@ -1185,11 +1197,14 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	bool needs_new_channel = false;
 	struct pollfd *pfds = NULL;
 	int pfds_size = 0;
+	int exit_code = 0;
 	while (!shutdown_flag) {
 		int psize = 4 + count_npipes(&g.map);
 		if (buf_ensure_size(psize, sizeof(struct pollfd), &pfds_size,
 				    (void **)&pfds) == -1) {
-			wp_error("Allocation failure, not enough space for pollfds, expect a crash");
+			wp_error("Allocation failure, not enough space for pollfds");
+			exit_code = ERR_NOMEM;
+			break;
 		}
 		pfds[0].fd = chanfd;
 		pfds[1].fd = progfd;
@@ -1239,6 +1254,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			} else {
 				wp_error("poll failed due to, stopping: %s",
 						strerror(errno));
+				exit_code = ERR_FATAL;
 				break;
 			}
 		}
@@ -1284,6 +1300,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			wp_error("Channel hang up detected, waiting for reconnection");
 			int new_fd = reconnect_loop(linkfd, progfd, &recon_fds);
 			if (new_fd == -1) {
+				exit_code = ERR_FATAL;
 				break;
 			} else {
 				/* Actually handle the reconnection/reset state
@@ -1301,28 +1318,57 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		int chanmsg_ret = advance_chanmsg_transfer(&g, &chan_msg,
 				&cross_data, display_side, chanfd, progfd,
 				chanmsg_active);
-		if (chanmsg_ret == -1) {
+		if (chanmsg_ret < 0 && chanmsg_ret != ERR_DISCONN) {
+			exit_code = chanmsg_ret;
 			break;
 		}
 		int waymsg_ret = advance_waymsg_transfer(&g, &way_msg,
 				&cross_data, display_side, chanfd, progfd,
 				progsock_readable);
-		if (waymsg_ret == -1) {
+		if (waymsg_ret < 0 && waymsg_ret != ERR_DISCONN) {
+			exit_code = waymsg_ret;
 			break;
 		}
-		if (chanmsg_ret == -2 || waymsg_ret == -2) {
+		if (chanmsg_ret == ERR_DISCONN || waymsg_ret == ERR_DISCONN) {
 			/* The channel connection has either partially or fully
 			 * closed */
+			wp_error("%d %d", chanmsg_ret, waymsg_ret);
 			needs_new_channel = true;
 		}
 
 		// Periodic maintenance. It doesn't matter who does this
 		flush_writable_pipes(&g.map);
 	}
-	wp_debug("Exiting main loop, attempting close message");
+	wp_debug("Exiting main loop (%d), attempting close message", exit_code);
+
+	/* It's possible, but very very unlikely, that waypipe gets closed
+	 * while Wayland protocol messages are being written to the program
+	 * and the most recent message was only partially written. */
+	if (!display_side) {
+		if (exit_code == ERR_FATAL) {
+			/* wl_display@1, code 3: waypipe internal error */
+			uint32_t fatal_msg[11] = {0x1, 44u << 16, 0x1, 3, 23,
+					0x70796177, 0x20657069, 0x65746e69,
+					0x6c616e72, 0x72726520, 0x0000726f};
+			if (write(progfd, &fatal_msg, sizeof(fatal_msg)) ==
+					-1) {
+				wp_error("Failed to send waypipe error notification");
+			}
+		} else if (exit_code == ERR_NOMEM) {
+			/* wl_display@1, code 2: no memory */
+			uint32_t nomem_msg[8] = {0x1, 32u << 16, 0x1, 2, 10,
+					0x6d206f6e, 0x726f6d65, 0x00000079};
+			if (write(progfd, &nomem_msg, sizeof(nomem_msg)) ==
+					-1) {
+				wp_error("Failed to send OOM notification");
+			}
+		}
+	}
 
 	/* Attempt to notify remote end that the application has closed */
-	uint32_t close_msg = transfer_header(sizeof(close_msg), WMSG_CLOSE);
+	uint32_t close_msg[2];
+	close_msg[0] = transfer_header(sizeof(close_msg), WMSG_CLOSE);
+	close_msg[1] = exit_code == ERR_STOP ? 0 : (uint32_t)exit_code;
 	if (write(chanfd, &close_msg, sizeof(close_msg)) == -1) {
 		wp_error("Failed to send close notification");
 	}

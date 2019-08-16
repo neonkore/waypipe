@@ -352,6 +352,10 @@ int transfer_load_async(struct transfer_queue *w)
 
 void cleanup_transfer_queue(struct transfer_queue *td)
 {
+	for (int i = td->async_recv_queue.zone_start;
+			i < td->async_recv_queue.zone_end; i++) {
+		free(td->async_recv_queue.data[i].iov_base);
+	}
 	pthread_mutex_destroy(&td->async_recv_queue.lock);
 	free(td->async_recv_queue.data);
 	for (int i = 0; i < td->end; i++) {

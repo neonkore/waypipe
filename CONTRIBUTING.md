@@ -28,7 +28,21 @@ format all source code files in the project.
 ## Comments
 
 Explain precisely that which is not obvious. `/* ... */` is preferred to
-`// ...` for longer comments; the leading `/*` and trailing `*/ do not
-need lines of their own. Use Doxygen style (`/**`) for functions and structs
-that need commenting, but not to the point where it hinders source code
-readability. waypipe is not a library.
+`// ...` for longer comments; the leading `/*` and trailing `*/ do not need
+lines of their own. Use Doxygen style (`/**`) for functions and structs that
+need commenting, but not to the point where it hinders source code readability.
+Waypipe is not a library.
+
+## Memory and errors
+
+All error conditions should be handled, including the errors produced by
+allocation failures. (It is relatively easy to test for allocation failure
+by `LD_PRELOAD`ing a library that redefines malloc et al.; see for instance
+"mallocfail" and "failmalloc". `ulimit -v` may be less effective.)
+
+Some errors are unrecoverable, and for those cases Waypipe should shut down
+cleanly. For instance, if Waypipe cannot replicate a file descriptor, then an
+application connected through it will almost certainly crash, and it's better
+to have Waypipe exit instead. Other errors can safely ignored -- if fine
+grained damage tracking fails, a sane fallback would be to assume that an
+entire surface is damaged.

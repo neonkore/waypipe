@@ -27,7 +27,7 @@
 
 #if !defined(HAS_VIDEO) || !defined(HAS_DMABUF)
 
-void setup_video_logging() {}
+void setup_video_logging(void) {}
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
 {
 	(void)format;
@@ -230,7 +230,7 @@ static void video_log_callback(
 	(*fn)("ffmpeg", 0, wp_level, "%s", buf);
 }
 
-void setup_video_logging()
+void setup_video_logging(void)
 {
 	if (log_funcs[WP_DEBUG]) {
 		av_log_set_level(AV_LOG_INFO);
@@ -1119,11 +1119,11 @@ static int setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 }
 
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
-		const struct bytebuf *data)
+		const struct bytebuf *msg)
 {
 	// padding, requires zerod overflow for read
-	sfd->video_packet->data = (uint8_t *)data->data;
-	sfd->video_packet->size = (int)data->size;
+	sfd->video_packet->data = (uint8_t *)msg->data;
+	sfd->video_packet->size = (int)msg->size;
 
 	int sendstat = avcodec_send_packet(
 			sfd->video_context, sfd->video_packet);

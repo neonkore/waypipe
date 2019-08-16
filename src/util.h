@@ -137,6 +137,15 @@ extern log_handler_func_t log_funcs[2];
 bool wait_for_pid_and_clean(pid_t *target_pid, int *status, int options,
 		struct conn_map *map);
 
+/** An unrecoverable error-- say, running out of file descriptors */
+#define ERR_FATAL -1
+/** A memory allocation failed; might be fatal, might not be */
+#define ERR_NOMEM -2
+/** For main loop, channel disconnection */
+#define ERR_DISCONN -3
+/** For main loop, program disconnection */
+#define ERR_STOP -4
+
 /** A helper type, since very often buffers and their sizes are passed together
  * (or returned together) as arguments */
 struct bytebuf {

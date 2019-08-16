@@ -1203,7 +1203,7 @@ static int create_from_update(struct fd_translation_map *map,
 		if (msg->size < sizeof(struct wmsg_open_file)) {
 			wp_error("Message size to create file is too small (%zu bytes)",
 					msg->size);
-			return -1;
+			return ERR_FATAL;
 		}
 	} else if (type == WMSG_OPEN_DMABUF || type == WMSG_OPEN_DMAVID_DST ||
 			type == WMSG_OPEN_DMAVID_SRC) {
@@ -1211,7 +1211,7 @@ static int create_from_update(struct fd_translation_map *map,
 						sizeof(struct dmabuf_slice_data)) {
 			wp_error("Message size to create dmabuf is too small (%zu bytes)",
 					msg->size);
-			return -1;
+			return ERR_FATAL;
 		}
 	}
 
@@ -1418,7 +1418,7 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 	} else {
 		wp_error("Creating unknown file type updates");
-		return -1;
+		return ERR_FATAL;
 	}
 	return 0;
 }
@@ -1501,7 +1501,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd) {
 			wp_error("shadow structure for RID=%d was already created",
 					remote_id);
-			return -1;
+			return ERR_FATAL;
 		}
 		return create_from_update(
 				map, threads, render, type, remote_id, msg);
@@ -1511,18 +1511,18 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 	if (!sfd) {
 		wp_error("shadow structure for RID=%d was not available",
 				remote_id);
-		return -1;
+		return ERR_FATAL;
 	}
 	if (type == WMSG_EXTEND_FILE) {
 		if (sfd->type != FDC_FILE) {
 			wp_error("Trying to extend RID=%d, type=%s, which is not a file",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		if (msg->size < sizeof(struct wmsg_open_file)) {
 			wp_error("File extend message size to RID=%d is too small (%zu) to contain header",
 					remote_id, msg->size);
-			return -1;
+			return ERR_FATAL;
 		}
 
 		const struct wmsg_open_file *header =
@@ -1531,7 +1531,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			wp_error("File extend message for RID=%d does not increase size %u %z",
 					remote_id, header->file_size,
 					sfd->buffer_size);
-			return -1;
+			return ERR_FATAL;
 		}
 
 		if (ftruncate(sfd->fd_local, (off_t)header->file_size) == -1) {
@@ -1544,12 +1544,12 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		if (msg->size < sizeof(struct wmsg_buffer_fill)) {
 			wp_error("Buffer fill message size to RID=%d is too small (%zu) to contain header",
 					remote_id, msg->size);
-			return -1;
+			return ERR_FATAL;
 		}
 		const struct wmsg_buffer_fill *header =
 				(const struct wmsg_buffer_fill *)msg->data;
@@ -1575,12 +1575,12 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (header->end > sfd->buffer_size) {
 			wp_error("Transfer end overflow %" PRIu32 " > %zu",
 					header->end, sfd->buffer_size);
-			return -1;
+			return ERR_FATAL;
 		}
 		if (act_size != header->end - header->start) {
 			wp_error("Transfer size mismatch %zu %" PRIu32,
 					act_size, header->end - header->start);
-			return -1;
+			return ERR_FATAL;
 		}
 		memcpy(sfd->mem_mirror + header->start, act_buffer,
 				header->end - header->start);
@@ -1607,12 +1607,12 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to apply diff to RID=%d, type=%s, which is not a buffer-type",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		if (msg->size < sizeof(struct wmsg_buffer_diff)) {
 			wp_error("Buffer diff message size to RID=%d is too small (%zu) to contain header",
 					remote_id, msg->size);
-			return -1;
+			return ERR_FATAL;
 		}
 		const struct wmsg_buffer_diff *header =
 				(const struct wmsg_buffer_diff *)msg->data;
@@ -1639,7 +1639,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (act_size != header->diff_size + header->ntrailing) {
 			wp_error("Transfer size mismatch %zu %u", act_size,
 					header->diff_size + header->ntrailing);
-			return -1;
+			return ERR_FATAL;
 		}
 
 		void *handle = NULL;
@@ -1668,7 +1668,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_PIPE) {
 			wp_error("Trying to write data to RID=%d, type=%s, which is not a pipe",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		if (!sfd->pipe.can_write) {
 			wp_debug("Discarding transfer to pipe RID=%d, because pipe cannot be written to",
@@ -1697,7 +1697,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_PIPE) {
 			wp_error("Trying to read shutdown the pipe RID=%d, type=%s, which is not a pipe",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		sfd->pipe.remote_can_write = false;
 		if (!sfd->pipe.can_read) {
@@ -1710,7 +1710,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_PIPE) {
 			wp_error("Trying to write shutdown the pipe RID=%d, type=%s, which is not a pipe",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		sfd->pipe.remote_can_read = false;
 		if (!sfd->pipe.can_write) {
@@ -1723,7 +1723,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type != FDC_DMAVID_IW) {
 			wp_error("Trying to send video packet to RID=%d, type=%s, which is not a video output buffer",
 					remote_id, fdcat_to_str(sfd->type));
-			return -1;
+			return ERR_FATAL;
 		}
 		if (!sfd->dmabuf_bo) {
 			wp_error("Applying update to nonexistent dma buffer object rid=%d",
@@ -1736,7 +1736,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		apply_video_packet(sfd, render, &data);
 	} else {
 		wp_error("Unexpected update type: %s", wmsg_type_to_str(type));
-		return -1;
+		return ERR_FATAL;
 	}
 	return 0;
 }
