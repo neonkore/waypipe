@@ -1778,10 +1778,10 @@ struct shadow_fd *shadow_incref_protocol(struct shadow_fd *sfd)
 struct shadow_fd *shadow_incref_transfer(struct shadow_fd *sfd)
 {
 	sfd->has_owner = true;
-	if (sfd->type == FDC_PIPE && sfd->refcount.protocol == 0) {
+	if (sfd->type == FDC_PIPE && sfd->refcount.transfer == 0) {
 		wp_error("The other pipe end may have been closed");
 	}
-	sfd->refcount.protocol++;
+	sfd->refcount.transfer++;
 	return sfd;
 }
 void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
