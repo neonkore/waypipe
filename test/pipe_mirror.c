@@ -130,6 +130,15 @@ static char fd_is_writable(int fd)
 	return (flags == O_WRONLY || flags == O_RDWR) ? 'W' : 'n';
 }
 
+static void print_pipe_state(const char *desc, struct pipe_state *p)
+{
+	printf("%s state: %c %c %c %c%s\n", desc, p->can_read ? 'R' : 'n',
+			p->can_write ? 'W' : 'n',
+			p->remote_can_read ? 'R' : 'n',
+			p->remote_can_write ? 'W' : 'n',
+			p->pending_w_shutdown ? " shutdownWpending" : "");
+}
+
 static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 		bool half_open_socket, bool interpret_as_force_iw)
 {
@@ -184,20 +193,8 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 			fd_is_readable(opp_end), fd_is_writable(opp_end),
 			fd_is_readable(anti_end), fd_is_writable(anti_end));
 
-	if (dst_map.list != NULL) {
-		printf("dst state: %c %c %c %c\n",
-				dst_shadow->pipe.can_read ? 'R' : 'n',
-				dst_shadow->pipe.can_write ? 'W' : 'n',
-				dst_shadow->pipe.remote_can_read ? 'R' : 'n',
-				dst_shadow->pipe.remote_can_write ? 'W' : 'n');
-	}
-	if (src_map.list != NULL) {
-		printf("src state: %c %c %c %c\n",
-				src_shadow->pipe.can_read ? 'R' : 'n',
-				src_shadow->pipe.can_write ? 'W' : 'n',
-				src_shadow->pipe.remote_can_read ? 'R' : 'n',
-				src_shadow->pipe.remote_can_write ? 'W' : 'n');
-	}
+	print_pipe_state("dst", &dst_shadow->pipe);
+	print_pipe_state("src", &src_shadow->pipe);
 
 	/* Step 2: transfer tests */
 	for (int i = 0; i < 4; i++) {
@@ -268,11 +265,11 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 	struct shadow_fd *cls_shadow = close_src ? src_shadow : dst_shadow;
 	int cls_fd = close_src ? opp_end : anti_end;
 
-	bool shutdown_deletes =
-			(cls_shadow->pipe.can_read &&
-					!cls_shadow->pipe.can_write) ||
-			(interpret_as_force_iw && !cls_shadow->pipe.can_write &&
-					close_src);
+	bool shutdown_deletes = (cls_shadow->pipe.can_read &&
+				 !cls_shadow->pipe.can_write);
+	/* Special cases, which aren't very important */
+	shutdown_deletes |= (interpret_as_force_iw &&
+			     !cls_shadow->pipe.can_write && close_src);
 
 	cls_shadow->pipe.readable = cls_shadow->pipe.can_read;
 	cls_shadow->pipe.writable = cls_shadow->pipe.can_write;
@@ -285,24 +282,15 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 	}
 	bool deleted_shadows = true;
 	if (dst_map.list != NULL) {
-		printf("dst state: %c %c %c %c\n",
-				dst_shadow->pipe.can_read ? 'R' : 'n',
-				dst_shadow->pipe.can_write ? 'W' : 'n',
-				dst_shadow->pipe.remote_can_read ? 'R' : 'n',
-				dst_shadow->pipe.remote_can_write ? 'W' : 'n');
+		print_pipe_state("dst", &dst_shadow->pipe);
 		deleted_shadows = false;
 	}
 	if (src_map.list != NULL) {
-		printf("src state: %c %c %c %c\n",
-				src_shadow->pipe.can_read ? 'R' : 'n',
-				src_shadow->pipe.can_write ? 'W' : 'n',
-				src_shadow->pipe.remote_can_read ? 'R' : 'n',
-				src_shadow->pipe.remote_can_write ? 'W' : 'n');
+		print_pipe_state("src", &src_shadow->pipe);
 		deleted_shadows = false;
 	}
 
 	bool correct_teardown = deleted_shadows == shutdown_deletes;
-
 	success = success && correct_teardown;
 	printf("Deleted shadows: %c (expected %c)\n",
 			deleted_shadows ? 'Y' : 'n',

@@ -1332,7 +1332,6 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		if (chanmsg_ret == ERR_DISCONN || waymsg_ret == ERR_DISCONN) {
 			/* The channel connection has either partially or fully
 			 * closed */
-			wp_error("%d %d", chanmsg_ret, waymsg_ret);
 			needs_new_channel = true;
 		}
 

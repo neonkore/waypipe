@@ -1466,7 +1466,7 @@ static void pipe_close_write(struct shadow_fd *sfd)
 	}
 	sfd->pipe.can_write = false;
 
-	/* Also free any accumulated data that can no longer be delivered*/
+	/* Also free any accumulated data that was not delivered */
 	free(sfd->pipe.send.data);
 	memset(&sfd->pipe.send, 0, sizeof(sfd->pipe.send));
 }
@@ -1670,7 +1670,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					remote_id, fdcat_to_str(sfd->type));
 			return ERR_FATAL;
 		}
-		if (!sfd->pipe.can_write) {
+		if (!sfd->pipe.can_write || sfd->pipe.pending_w_shutdown) {
 			wp_debug("Discarding transfer to pipe RID=%d, because pipe cannot be written to",
 					remote_id);
 			return 0;
@@ -1718,7 +1718,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					remote_id);
 			return 0;
 		}
-		pipe_close_write(sfd);
+		if (sfd->pipe.send.used <= 0) {
+			pipe_close_write(sfd);
+		} else {
+			/* Shutdown as soon as the current data has been written
+			 */
+			sfd->pipe.pending_w_shutdown = true;
+		}
 	} else if (type == WMSG_SEND_DMAVID_PACKET) {
 		if (sfd->type != FDC_DMAVID_IW) {
 			wp_error("Trying to send video packet to RID=%d, type=%s, which is not a video output buffer",
@@ -1875,8 +1881,11 @@ void flush_writable_pipes(struct fd_translation_map *map)
 			wp_debug("Writing to pipe RID=%d would block\n",
 					sfd->remote_id);
 			continue;
-		} else if (changed == -1 && errno == EPIPE) {
-			/* No process has access to the other end of the pipe */
+		} else if (changed == -1 &&
+				(errno == EPIPE || errno == EBADF)) {
+			/* No process has access to the other end of the pipe,
+			 * or the file descriptor is otherwise permanently
+			 * unwriteable */
 			pipe_close_write(sfd);
 		} else if (changed == -1) {
 			wp_error("Failed to write into pipe with remote_id=%d: %s",
@@ -1889,6 +1898,14 @@ void flush_writable_pipes(struct fd_translation_map *map)
 				memmove(sfd->pipe.send.data,
 						sfd->pipe.send.data + changed,
 						(size_t)sfd->pipe.send.used);
+			}
+			if (sfd->pipe.send.used <= 0 &&
+					sfd->pipe.pending_w_shutdown) {
+				/* A shutdown request was made, but can only be
+				 * applied now that the write buffer has been
+				 * cleared */
+				pipe_close_write(sfd);
+				sfd->pipe.pending_w_shutdown = false;
 			}
 		}
 	}

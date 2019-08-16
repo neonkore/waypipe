@@ -171,6 +171,7 @@ struct pipe_state {
 	/** What is the state of the pipe, according to poll ?
 	 * (POLLIN|POLLHUP -> readable ; POLLOUT -> writeable) */
 	bool readable, writable;
+	bool pending_w_shutdown;
 };
 
 /**
