@@ -1364,7 +1364,15 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		}
 	}
 
-	/* Attempt to notify remote end that the application has closed */
+	/* Attempt to notify remote end that the application has closed,
+	 * waiting at most for a very short amount of time */
+	struct pollfd close_poll;
+	close_poll.fd = chanfd;
+	close_poll.events = POLLOUT;
+	int close_ret = poll(&close_poll, 1, 20);
+	if (close_ret == 0) {
+		wp_debug("Exit poll timed out");
+	}
 	uint32_t close_msg[2];
 	close_msg[0] = transfer_header(sizeof(close_msg), WMSG_CLOSE);
 	close_msg[1] = exit_code == ERR_STOP ? 0 : (uint32_t)exit_code;
