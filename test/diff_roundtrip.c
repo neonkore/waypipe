@@ -82,14 +82,14 @@ static const struct subtest subtests[] = {
 static const enum diff_type diff_types[5] = {
 		DIFF_AVX512F,
 		DIFF_AVX2,
-		DIFF_SSE41,
+		DIFF_SSE3,
 		DIFF_NEON,
 		DIFF_C,
 };
 static const char *diff_names[5] = {
 		"avx512",
 		"avx2  ",
-		"sse41 ",
+		"sse3  ",
 		"neon  ",
 		"plainC",
 };

@@ -120,9 +120,9 @@ size_t run_interval_diff_neon(const int diff_window_size,
 		uint32_t *__restrict__ idiff, size_t i, const size_t i_end);
 #endif
 
-#ifdef HAVE_SSE41
-static bool sse41_available(void) { return __builtin_cpu_supports("sse4.1"); }
-size_t run_interval_diff_sse41(const int diff_window_size,
+#ifdef HAVE_SSE3
+static bool sse3_available(void) { return __builtin_cpu_supports("sse3"); }
+size_t run_interval_diff_sse3(const int diff_window_size,
 		const void *__restrict__ imod, void *__restrict__ ibase,
 		uint32_t *__restrict__ idiff, size_t i, const size_t i_end);
 #endif
@@ -148,10 +148,10 @@ interval_diff_fn_t get_diff_function(enum diff_type type, int *alignment_bits)
 		return run_interval_diff_neon;
 	}
 #endif
-#ifdef HAVE_SSE41
-	if ((type == DIFF_FASTEST || type == DIFF_SSE41) && sse41_available()) {
+#ifdef HAVE_SSE3
+	if ((type == DIFF_FASTEST || type == DIFF_SSE3) && sse3_available()) {
 		*alignment_bits = 5;
-		return run_interval_diff_sse41;
+		return run_interval_diff_sse3;
 	}
 #endif
 	if ((type == DIFF_FASTEST || type == DIFF_C)) {

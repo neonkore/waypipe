@@ -37,7 +37,7 @@ enum diff_type {
 	DIFF_FASTEST,
 	DIFF_AVX512F,
 	DIFF_AVX2,
-	DIFF_SSE41,
+	DIFF_SSE3,
 	DIFF_NEON,
 	DIFF_C,
 };

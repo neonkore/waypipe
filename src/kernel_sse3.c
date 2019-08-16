@@ -29,11 +29,9 @@
 
 #include <emmintrin.h> // sse
 #include <pmmintrin.h> // sse2
-#include <smmintrin.h> // sse4.1
 #include <tmmintrin.h> // sse3
-#include <xmmintrin.h> // ssse3
 
-size_t run_interval_diff_sse41(const int diff_window_size,
+size_t run_interval_diff_sse3(const int diff_window_size,
 		const void *__restrict__ imod, void *__restrict__ ibase,
 		uint32_t *__restrict__ diff, size_t i, const size_t i_end)
 {
@@ -63,17 +61,18 @@ size_t run_interval_diff_sse41(const int diff_window_size,
 				_mm_storeu_si128(&base[2 * i], m0);
 				_mm_storeu_si128(&base[2 * i + 1], m1);
 
-				// TODO: is copying onto stack and out with
-				// difference alignments faster? (i.e,
-				// store-to-load forward vs branch mispredict)
-
 				/* Write the changed bytes, starting at the
 				 * first modified term, and set the unchanged
 				 * counter.  */
 				size_t ncom = (size_t)__builtin_ctz(~mask) >> 2;
-				uint32_t *bmod = (uint32_t *)&base[2 * i];
+				union {
+					__m128i s[2];
+					uint32_t v[8];
+				} tmp;
+				tmp.s[0] = m0;
+				tmp.s[1] = m1;
 				for (size_t z = ncom; z < 8; z++) {
-					diff[dc++] = bmod[z];
+					diff[dc++] = tmp.v[z];
 				}
 				trailing_unchanged = __builtin_clz(~mask) >> 2;
 				ctrl_blocks[0] = (uint32_t)(8 * i + ncom);

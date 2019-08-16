@@ -33,9 +33,9 @@ if cc.has_argument('-mavx2') and cc.has_argument('-mlzcnt') and cc.has_argument(
 	kernel_libs += static_library('kernel_avx2', 'kernel_avx2.c', c_args:['-mavx2', '-mlzcnt', '-mbmi'])
 	config_data.set('HAVE_AVX2', 1, description: 'Compiler supports AVX2')
 endif
-if cc.has_argument('-msse4.1')
-	kernel_libs += static_library('kernel_sse41', 'kernel_sse41.c', c_args:['-msse4.1'])
-	config_data.set('HAVE_SSE41', 1, description: 'Compiler supports SSE 4.1')
+if cc.has_argument('-msse3')
+	kernel_libs += static_library('kernel_sse3', 'kernel_sse3.c', c_args:['-msse3'])
+	config_data.set('HAVE_SSE3', 1, description: 'Compiler supports SSE 3')
 endif
 if host_machine.cpu_family() == 'aarch64' or cc.has_argument('-mfpu=neon')
 	neon_args = host_machine.cpu_family() == 'aarch64' ? [] : ['-mfpu=neon']
