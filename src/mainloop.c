@@ -253,7 +253,7 @@ static void parse_and_prune_messages(struct globals *g, bool on_display_side,
 	return;
 }
 
-enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL };
+enum wm_state { WM_WAITING_FOR_PROGRAM, WM_WAITING_FOR_CHANNEL, WM_TERMINAL };
 /** This state corresponds to the in-progress transfer from the program
  * (compositor or application) and its pipes/buffers to the channel. */
 struct way_msg_state {
@@ -281,7 +281,7 @@ struct way_msg_state {
 	struct iovec trailing[3];
 };
 
-enum cm_state { CM_WAITING_FOR_PROGRAM, CM_WAITING_FOR_CHANNEL };
+enum cm_state { CM_WAITING_FOR_PROGRAM, CM_WAITING_FOR_CHANNEL, CM_TERMINAL };
 /** This state corresponds to the in-progress transfer from the channel
  * to the program and the buffers/pipes on which will be written. */
 struct chan_msg_state {
@@ -327,6 +327,10 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 	size_t unpadded_size = transfer_size(size_and_type);
 	enum wmsg_type type = transfer_type(size_and_type);
 	if (type == WMSG_CLOSE) {
+		/* No new messages from the channel to the program will be
+		 * allowed after this */
+		cmsg->state = CM_TERMINAL;
+
 		wp_debug("Other side has closed");
 		if (unpadded_size < 8) {
 			return ERR_FATAL;
@@ -614,7 +618,11 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 			return 0;
 		} else if (wc == -1 && errno == EPIPE) {
 			wp_error("%s has closed", progdesc);
-			return ERR_DISCONN;
+			/* The program has closed its end of the connection,
+			 * so waypipe can also cease to process all messages and
+			 * data updates that would be directed to it */
+			cmsg->state = CM_TERMINAL;
+			return ERR_STOP;
 		} else if (wc == -1) {
 			wp_error("%s write failure %zd: %s", progdesc, wc,
 					strerror(errno));
@@ -659,9 +667,10 @@ static int advance_chanmsg_transfer(struct globals *g,
 	if (cmsg->state == CM_WAITING_FOR_CHANNEL) {
 		return advance_chanmsg_chanread(
 				cmsg, cxs, chanfd, display_side, g);
-	} else {
+	} else if (cmsg->state == CM_WAITING_FOR_PROGRAM) {
 		return advance_chanmsg_progwrite(cmsg, progfd, display_side, g);
 	}
+	return 0;
 }
 
 static void clear_old_transfers(
@@ -1003,10 +1012,11 @@ static int advance_waymsg_transfer(struct globals *g,
 	if (wmsg->state == WM_WAITING_FOR_CHANNEL) {
 		return advance_waymsg_chanwrite(
 				wmsg, cxs, g, chanfd, display_side);
-	} else {
+	} else if (wmsg->state == WM_WAITING_FOR_PROGRAM) {
 		return advance_waymsg_progread(wmsg, cxs, g, progfd,
 				display_side, progsock_readable);
 	}
+	return 0;
 }
 
 static int read_new_chanfd(int linkfd, struct int_window *recon_fds)
@@ -1198,7 +1208,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	struct pollfd *pfds = NULL;
 	int pfds_size = 0;
 	int exit_code = 0;
-	while (!shutdown_flag) {
+	while (!shutdown_flag && exit_code == 0 &&
+			!(way_msg.state == WM_TERMINAL &&
+					chan_msg.state == CM_TERMINAL)) {
 		int psize = 4 + count_npipes(&g.map);
 		if (buf_ensure_size(psize, sizeof(struct pollfd), &pfds_size,
 				    (void **)&pfds) == -1) {
@@ -1216,12 +1228,12 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		pfds[3].events = POLLIN;
 		if (way_msg.state == WM_WAITING_FOR_CHANNEL) {
 			pfds[0].events |= POLLOUT;
-		} else {
+		} else if (way_msg.state == WM_WAITING_FOR_PROGRAM) {
 			pfds[1].events |= POLLIN;
 		}
 		if (chan_msg.state == CM_WAITING_FOR_CHANNEL) {
 			pfds[0].events |= POLLIN;
-		} else {
+		} else if (chan_msg.state == CM_WAITING_FOR_PROGRAM) {
 			pfds[1].events |= POLLOUT;
 		}
 		bool check_read = way_msg.state == WM_WAITING_FOR_PROGRAM;
@@ -1280,7 +1292,18 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		}
 		if (user_hang_up) {
 			wp_error("Connection hang-up detected");
-			break;
+
+			/* Equivalent to ERR_STOP */
+			close(progfd);
+			progfd = -1;
+			if (way_msg.state == WM_WAITING_FOR_PROGRAM) {
+				way_msg.state = WM_TERMINAL;
+			}
+			if (chan_msg.state == CM_WAITING_FOR_PROGRAM ||
+					chan_msg.recv_start ==
+							chan_msg.recv_end) {
+				chan_msg.state = CM_TERMINAL;
+			}
 		}
 		if (link_hang_up) {
 			wp_error("Link to root process hang-up detected");
@@ -1289,7 +1312,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		if (maybe_new_channel) {
 			int new_fd = read_new_chanfd(linkfd, &recon_fds);
 			if (new_fd != -1) {
-				close(chanfd);
+				if (chanfd != -1) {
+					close(chanfd);
+				}
 				chanfd = new_fd;
 				reset_connection(&cross_data, &chan_msg,
 						&way_msg, chanfd);
@@ -1305,7 +1330,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			} else {
 				/* Actually handle the reconnection/reset state
 				 */
-				close(chanfd);
+				if (chanfd != -1) {
+					close(chanfd);
+				}
 				chanfd = new_fd;
 				reset_connection(&cross_data, &chan_msg,
 						&way_msg, chanfd);
@@ -1315,35 +1342,77 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 
 		// Q: randomize the order of these?, to highlight
 		// accidental dependencies?
-		int chanmsg_ret = advance_chanmsg_transfer(&g, &chan_msg,
-				&cross_data, display_side, chanfd, progfd,
-				chanmsg_active);
-		if (chanmsg_ret < 0 && chanmsg_ret != ERR_DISCONN) {
-			exit_code = chanmsg_ret;
-			break;
-		}
-		int waymsg_ret = advance_waymsg_transfer(&g, &way_msg,
-				&cross_data, display_side, chanfd, progfd,
-				progsock_readable);
-		if (waymsg_ret < 0 && waymsg_ret != ERR_DISCONN) {
-			exit_code = waymsg_ret;
-			break;
-		}
-		if (chanmsg_ret == ERR_DISCONN || waymsg_ret == ERR_DISCONN) {
-			/* The channel connection has either partially or fully
-			 * closed */
-			needs_new_channel = true;
+		for (int m = 0; m < 2; m++) {
+			int tr;
+			if (m == 0) {
+				tr = advance_chanmsg_transfer(&g, &chan_msg,
+						&cross_data, display_side,
+						chanfd, progfd, chanmsg_active);
+			} else {
+				tr = advance_waymsg_transfer(&g, &way_msg,
+						&cross_data, display_side,
+						chanfd, progfd,
+						progsock_readable);
+			}
+
+			if (tr >= 0) {
+				/* do nothing */
+			} else if (tr == ERR_DISCONN) {
+				/* Channel connection has at least
+				 * partially been shut down, so close it
+				 * fully. */
+				close(chanfd);
+				chanfd = -1;
+				needs_new_channel = true;
+			} else if (tr == ERR_STOP) {
+				/* Wayland connection has at least
+				 * partially shut down, so close it
+				 * fully. */
+				close(progfd);
+				progfd = -1;
+			} else {
+				/* Fatal error, close and flush */
+				exit_code = tr;
+				break;
+			}
+
+			/* If the program connection has closed, and
+			 * there waypipe is not currently transferring
+			 * any message to the channel, then shutdown the
+			 * program->channel transfers. (The reverse
+			 * situation with the chnanel connection is not
+			 * a cause for permanent closure, thanks to
+			 * reconnection support */
+			if (progfd == -1) {
+				if (way_msg.state == WM_WAITING_FOR_PROGRAM) {
+					way_msg.state = WM_TERMINAL;
+				}
+				if (chan_msg.state == CM_WAITING_FOR_PROGRAM ||
+						chan_msg.recv_start ==
+								chan_msg.recv_end) {
+					chan_msg.state = CM_TERMINAL;
+				}
+			}
 		}
 
 		// Periodic maintenance. It doesn't matter who does this
 		flush_writable_pipes(&g.map);
 	}
-	wp_debug("Exiting main loop (%d), attempting close message", exit_code);
+	wp_debug("Exiting main loop (%d, %d, %d), attempting close message",
+			exit_code, way_msg.state, chan_msg.state);
 
 	/* It's possible, but very very unlikely, that waypipe gets closed
 	 * while Wayland protocol messages are being written to the program
 	 * and the most recent message was only partially written. */
 	if (!display_side) {
+		if (chan_msg.proto_write.zone_start !=
+				chan_msg.proto_write.zone_end) {
+			wp_debug("Final write to %s was incomplete, %d/%d",
+					progdesc,
+					chan_msg.proto_write.zone_start,
+					chan_msg.proto_write.zone_end);
+		}
+
 		if (exit_code == ERR_FATAL) {
 			/* wl_display@1, code 3: waypipe internal error */
 			uint32_t fatal_msg[11] = {0x1, 44u << 16, 0x1, 3, 23,
@@ -1366,18 +1435,31 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 
 	/* Attempt to notify remote end that the application has closed,
 	 * waiting at most for a very short amount of time */
-	struct pollfd close_poll;
-	close_poll.fd = chanfd;
-	close_poll.events = POLLOUT;
-	int close_ret = poll(&close_poll, 1, 20);
-	if (close_ret == 0) {
-		wp_debug("Exit poll timed out");
+	if (way_msg.transfers.start != way_msg.transfers.end) {
+		wp_error("Final write to channel was incomplete, %d+%zu/%d",
+				way_msg.transfers.start,
+				way_msg.transfers.partial_write_amt,
+				way_msg.transfers.end);
 	}
-	uint32_t close_msg[2];
-	close_msg[0] = transfer_header(sizeof(close_msg), WMSG_CLOSE);
-	close_msg[1] = exit_code == ERR_STOP ? 0 : (uint32_t)exit_code;
-	if (write(chanfd, &close_msg, sizeof(close_msg)) == -1) {
-		wp_error("Failed to send close notification");
+
+	if (chanfd != -1) {
+		struct pollfd close_poll;
+		close_poll.fd = chanfd;
+		close_poll.events = POLLOUT;
+		int close_ret = poll(&close_poll, 1, 20);
+		if (close_ret == 0) {
+			wp_debug("Exit poll timed out");
+		}
+		uint32_t close_msg[2];
+		close_msg[0] = transfer_header(sizeof(close_msg), WMSG_CLOSE);
+		close_msg[1] = exit_code == ERR_STOP ? 0 : (uint32_t)exit_code;
+		wp_debug("Sending close message, modecode=%d", close_msg[1]);
+		if (write(chanfd, &close_msg, sizeof(close_msg)) == -1) {
+			wp_error("Failed to send close notification: %s",
+					strerror(errno));
+		}
+	} else {
+		wp_debug("Channel closed, hence no close notification");
 	}
 
 	free(pfds);
@@ -1399,8 +1481,16 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	free(chan_msg.proto_fds.data);
 	free(chan_msg.recv_buffer);
 	free(chan_msg.proto_write.data);
-	close(chanfd);
-	close(progfd);
-	close(linkfd);
+
+	if (chanfd != -1) {
+		close(chanfd);
+	}
+	if (progfd != -1) {
+		close(progfd);
+	}
+	if (linkfd != -1) {
+		close(linkfd);
+	}
+
 	return EXIT_SUCCESS;
 }
