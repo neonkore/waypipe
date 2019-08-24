@@ -98,6 +98,19 @@ struct wire_test {
 	int nwords;
 };
 
+static inline uint32_t pack_u32(uint8_t a0, uint8_t a1, uint8_t a2, uint8_t a3)
+{
+	union {
+		uint8_t s[4];
+		uint32_t v;
+	} u;
+	u.s[0] = a0;
+	u.s[1] = a1;
+	u.s[2] = a2;
+	u.s[3] = a3;
+	return u.v;
+}
+
 log_handler_func_t log_funcs[2] = {test_log_handler, test_log_handler};
 int main(int argc, char **argv)
 {
@@ -126,25 +139,46 @@ int main(int argc, char **argv)
 
 	struct wire_test tests[] = {
 			{call_xtype_req_blue, &intf_xtype.funcs[0][0], {7771},
-					{8, 0x61626162, 0x00616263, 4441,
-							yobj.obj_id, 3331, 4442,
-							xobj.obj_id, 0, 4443},
+					{8, pack_u32(0x62, 0x61, 0x62, 0x61),
+							pack_u32(0x63, 0x62,
+									0x61,
+									0),
+							4441, yobj.obj_id, 3331,
+							4442, xobj.obj_id, 0,
+							4443},
 					1, 10},
 			{call_xtype_evt_yellow, &intf_xtype.funcs[1][0], {0},
 					{4441}, 0, 1},
 			{call_ytype_req_green, &intf_ytype.funcs[0][0], {7771},
-					{4441, 4, 0x00616562, 0, 5, 0x63626263,
-							0x99999900, xobj.obj_id,
-							8, 0x80818081,
-							0x99999990},
+					{4441, 4, pack_u32(0x62, 0x65, 0x61, 0),
+							0, 5,
+							pack_u32(0x63, 0x62,
+									0x62,
+									0x63),
+							pack_u32(0, 0x99, 0x99,
+									0x99),
+							xobj.obj_id, 8,
+							pack_u32(0x81, 0x80,
+									0x81,
+									0x80),
+							pack_u32(0x90, 0x99,
+									0x99,
+									0x99)},
 					1, 11},
 			{call_ytype_evt_red, &intf_ytype.funcs[1][0],
 					{8881, 8882, 8883},
 					{7770, 33330, 7771, 33331, 33332, 7773,
 							33333, 44440, 6,
-							0x62616362, 0x99990061,
-							3, 0x11808080, 99990, 0,
-							yobj.obj_id,
+							pack_u32(0x62, 0x63,
+									0x61,
+									0x62),
+							pack_u32(0x61, 0, 0x99,
+									0x99),
+							3,
+							pack_u32(0x80, 0x80,
+									0x80,
+									0x11),
+							99990, 0, yobj.obj_id,
 							xobj.obj_id},
 					3, 17}};
 

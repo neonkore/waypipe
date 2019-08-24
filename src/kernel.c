@@ -61,8 +61,8 @@ size_t run_interval_diff_C(const int diff_window_size,
 			clear_exit = true;
 			break;
 		}
-		size_t last_header = dc++;
-		diff[last_header] = (uint64_t)((i - 1) * 2);
+		uint32_t *ctrl_blocks = (uint32_t *)&diff[dc++];
+		ctrl_blocks[0] = (uint32_t)((i - 1) * 2);
 		diff[dc++] = changed_val;
 		base[i - 1] = changed_val;
 		// changed_val != base_val, difference occurs at early
@@ -80,7 +80,7 @@ size_t run_interval_diff_C(const int diff_window_size,
 			nskip *= (base_val == changed_val);
 		}
 		dc -= nskip;
-		diff[last_header] |= (uint64_t)((i - nskip) * 2) << 32;
+		ctrl_blocks[1] = (uint32_t)((i - nskip) * 2);
 		/* our sentinel, at worst, causes overcopy by one. this
 		 * is fine
 		 */

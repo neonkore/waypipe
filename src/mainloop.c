@@ -1404,31 +1404,33 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	/* It's possible, but very very unlikely, that waypipe gets closed
 	 * while Wayland protocol messages are being written to the program
 	 * and the most recent message was only partially written. */
-	if (!display_side) {
-		if (chan_msg.proto_write.zone_start !=
-				chan_msg.proto_write.zone_end) {
-			wp_debug("Final write to %s was incomplete, %d/%d",
-					progdesc,
-					chan_msg.proto_write.zone_start,
-					chan_msg.proto_write.zone_end);
-		}
+	exit_code = ERR_FATAL;
+	if (chan_msg.proto_write.zone_start != chan_msg.proto_write.zone_end) {
+		wp_debug("Final write to %s was incomplete, %d/%d", progdesc,
+				chan_msg.proto_write.zone_start,
+				chan_msg.proto_write.zone_end);
+	}
 
+	if (!display_side && progfd != -1) {
 		if (exit_code == ERR_FATAL) {
 			/* wl_display@1, code 3: waypipe internal error */
-			uint32_t fatal_msg[11] = {0x1, 44u << 16, 0x1, 3, 23,
-					0x70796177, 0x20657069, 0x65746e69,
-					0x6c616e72, 0x72726520, 0x0000726f};
+			uint32_t fatal_msg[11] = {0x1, 44u << 16, 0x1, 3, 23, 0,
+					0, 0, 0, 0, 0};
+			memcpy(fatal_msg + 5, "waypipe internal error", 23);
 			if (write(progfd, &fatal_msg, sizeof(fatal_msg)) ==
 					-1) {
-				wp_error("Failed to send waypipe error notification");
+				wp_error("Failed to send waypipe error notification: %s",
+						strerror(errno));
 			}
 		} else if (exit_code == ERR_NOMEM) {
 			/* wl_display@1, code 2: no memory */
-			uint32_t nomem_msg[8] = {0x1, 32u << 16, 0x1, 2, 10,
-					0x6d206f6e, 0x726f6d65, 0x00000079};
+			uint32_t nomem_msg[8] = {
+					0x1, 32u << 16, 0x1, 2, 10, 0, 0};
+			memcpy(nomem_msg + 5, "no memory", 10);
 			if (write(progfd, &nomem_msg, sizeof(nomem_msg)) ==
 					-1) {
-				wp_error("Failed to send OOM notification");
+				wp_error("Failed to send OOM notification: %s",
+						strerror(errno));
 			}
 		}
 	}
