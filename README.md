@@ -14,14 +14,14 @@ application forwarding similar to `ssh -X` [1] feasible.
 a user-friendly command line pattern which prefixes a call to `ssh` and
 automatically sets up a reverse tunnel for protocol data. For example,
 
-    waypipe ssh -C user@theserver weston-terminal
+    waypipe ssh user@theserver weston-terminal
 
 will run `ssh`, connect to `theserver`, and remotely run `weston-terminal`,
 using local and remote `waypipe` processes to synchronize the shared memory
 buffers used by Wayland clients between both computers. Command line arguments
 before `ssh` apply only to `waypipe`; those after `ssh` belong to `ssh`.
 
-Alternatively, one can set up the local and remote processes by hand, with the
+Alternatively, one can launch the local and remote processes by hand, with the
 following set of shell commands:
 
     /usr/bin/waypipe -s /tmp/socket-local client &
@@ -39,24 +39,27 @@ For a more detailed example, see the man page.
 
 Build with meson[0]. A typical incantation is
 
-    cd /path/to/waypipe/..
+    cd /path/to/waypipe/ && cd ..
     mkdir build-waypipe
     meson --buildtype debugoptimized waypipe build-waypipe
     ninja -C build-waypipe install
 
-Requirements:
+Core build requirements:
 
 * meson (build, >= 0.47. with dependencies `ninja`, `pkg-config`, `python3`)
 * wayland (build, >= 1.10 for the `wl_surface::damage_buffer` request)
 * wayland-protocols (build, >= 1.12, for the xdg-shell protocol, and others)
-* liblz4 (optional, >=1.7.0)
-* libzstd (optional, >= 0.4.6)
-* libgbm (optional, to support programs using OpenGL via DMABUFs)
-* libdrm (optional, same as for libgbm)
-* ffmpeg (optional, >=3.1, needs avcodec/avutil/swscale for lossy video encoding)
-* libva (optional, for hardware video encoding and decoding)
-* scdoc (optional, to generate a man page)
-* sys/sdt.h (optional, to provide static tracepoints for profiling)
+
+Optional dependencies:
+
+* liblz4 (for fast compression, >=1.7.0)
+* libzstd (for slower compression, >= 0.4.6)
+* libgbm (to support programs using OpenGL via DMABUFs)
+* libdrm (same as for libgbm)
+* ffmpeg (>=3.1, needs avcodec/avutil/swscale for lossy video encoding)
+* libva (for hardware video encoding and decoding)
+* scdoc (to generate a man page)
+* sys/sdt.h (to provide static tracepoints for profiling)
 * ssh (runtime, OpenSSH >= 6.7, for Unix domain socket forwarding)
 * libx264 (ffmpeg runtime, for software video decoding and encoding)
 
@@ -65,7 +68,7 @@ Requirements:
 
 ## Status
 
-This is usable, but very unstable right now[0]. The main development
+This is usable, but still unstable right now[0]. The main development
 location[1], command-line interface, wire format, and project name may
 yet change completely. Bug reports and patches are always welcome.
 
