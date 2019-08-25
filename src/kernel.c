@@ -88,8 +88,9 @@ size_t run_interval_diff_C(const int diff_window_size,
 
 	/* If only the last block changed */
 	if ((clear_exit || i_start + 1 == i_end) && changed_val != base_val) {
-		diff[dc++] = ((uint64_t)(i_end * 2) << 32) |
-			     (uint64_t)((i_end - 1) * 2);
+		uint32_t *ctrl_blocks = (uint32_t *)&diff[dc++];
+		ctrl_blocks[0] = (uint32_t)(i_end - 1) * 2;
+		ctrl_blocks[1] = (uint32_t)i_end * 2;
 		diff[dc++] = changed_val;
 		base[i_end - 1] = changed_val;
 	}
