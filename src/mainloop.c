@@ -1465,7 +1465,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		struct pollfd close_poll;
 		close_poll.fd = chanfd;
 		close_poll.events = POLLOUT;
-		int close_ret = poll(&close_poll, 1, 20);
+		int close_ret = poll(&close_poll, 1, 200);
 		if (close_ret == 0) {
 			wp_debug("Exit poll timed out");
 		}
