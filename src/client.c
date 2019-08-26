@@ -134,8 +134,8 @@ static int run_single_client_reconnector(
 					close(newclient);
 					break;
 				}
-				bool update = (new_conn & CONN_UPDATE) != 0;
-				new_conn = new_conn & ~CONN_UPDATE;
+				bool update = (new_conn & CONN_UPDATE_BIT) != 0;
+				new_conn = new_conn & ~CONN_UPDATE_BIT;
 				if (new_conn != conn_id) {
 					close(newclient);
 					continue;
@@ -220,33 +220,39 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 	if (retcode == EXIT_FAILURE || shutdown_flag || chanclient == -1) {
 		return retcode;
 	}
-	if (conn_id & CONN_UPDATE) {
+	if (conn_id & CONN_UPDATE_BIT) {
 		wp_error("Initial connection token had update flag set");
 		return retcode;
 	}
 
-	/* Fork a reconnection handler */
-	int linkfds[2];
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
-		wp_error("Failed to create socketpair: %s", strerror(errno));
-		close(chanclient);
-		return EXIT_FAILURE;
-	}
+	/* Fork a reconnection handler, only if the connection is
+	 * reconnectable/has a nonzero id */
+	int linkfds[2] = {-1, -1};
+	if (conn_id != 0) {
+		if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
+			wp_error("Failed to create socketpair: %s",
+					strerror(errno));
+			close(chanclient);
+			return EXIT_FAILURE;
+		}
 
-	pid_t reco_pid = fork();
-	if (reco_pid == -1) {
-		wp_debug("Fork failure");
-		close(chanclient);
-		return EXIT_FAILURE;
-	} else if (reco_pid == 0) {
-		close(linkfds[0]);
-		close(chanclient);
-		close(disp_fd);
-		int rc = run_single_client_reconnector(
-				channelsock, linkfds[1], conn_id);
-		exit(rc);
+		pid_t reco_pid = fork();
+		if (reco_pid == -1) {
+			wp_debug("Fork failure");
+			close(chanclient);
+			return EXIT_FAILURE;
+		} else if (reco_pid == 0) {
+			if (linkfds[0] != -1) {
+				close(linkfds[0]);
+			}
+			close(chanclient);
+			close(disp_fd);
+			int rc = run_single_client_reconnector(
+					channelsock, linkfds[1], conn_id);
+			exit(rc);
+		}
+		close(linkfds[1]);
 	}
-	close(linkfds[1]);
 	close(channelsock);
 
 	return main_interface_loop(
@@ -263,8 +269,8 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		wp_error("Failed to get connection id");
 		goto fail_cc;
 	}
-	if (conn_id & CONN_UPDATE) {
-		conn_id = conn_id & ~CONN_UPDATE;
+	if (conn_id & CONN_UPDATE_BIT) {
+		conn_id = conn_id & ~CONN_UPDATE_BIT;
 		for (int i = 0; i < connmap->count; i++) {
 			if (connmap->data[i].token == conn_id) {
 				if (send_one_fd(connmap->data[i].linkfd,
@@ -279,25 +285,32 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		close(chanclient);
 		return 0;
 	}
+	bool reconnectable = conn_id != 0;
 
-	if (buf_ensure_size(connmap->count + 1, sizeof(struct conn_addr),
-			    &connmap->size, (void **)&connmap->data) == -1) {
+	if (reconnectable && buf_ensure_size(connmap->count + 1,
+					     sizeof(struct conn_addr),
+					     &connmap->size,
+					     (void **)&connmap->data) == -1) {
 		wp_error("Failed to allocate space to track connection");
 		goto fail_cc;
 	}
-	int linkfds[2];
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
-		wp_error("Failed to create socketpair: %s", strerror(errno));
-		goto fail_cc;
+	int linkfds[2] = {-1, -1};
+	if (reconnectable) {
+		if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
+			wp_error("Failed to create socketpair: %s",
+					strerror(errno));
+			goto fail_cc;
+		}
 	}
-
 	pid_t npid = fork();
 	if (npid == 0) {
 		// Run forked process, with the only
 		// shared state being the new channel
 		// socket
 		close(channelsock);
-		close(linkfds[0]);
+		if (reconnectable) {
+			close(linkfds[0]);
+		}
 		for (int i = 0; i < connmap->count; i++) {
 			close(connmap->data[i].linkfd);
 		}
@@ -316,10 +329,15 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		goto fail_ps;
 	}
 	// Remove connection from this process
-	close(linkfds[1]);
+
 	close(chanclient);
-	connmap->data[connmap->count++] = (struct conn_addr){
-			.linkfd = linkfds[0], .token = conn_id, .pid = npid};
+	if (reconnectable) {
+		close(linkfds[1]);
+		connmap->data[connmap->count++] =
+				(struct conn_addr){.linkfd = linkfds[0],
+						.token = conn_id,
+						.pid = npid};
+	}
 
 	return 0;
 fail_ps:

@@ -78,7 +78,7 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
 /** A type to help keep track of the connection handling processes */
-#define CONN_UPDATE 0x1uLL
+#define CONN_UPDATE_BIT 0x1uLL
 struct conn_addr {
 	uint64_t token;
 	pid_t pid;

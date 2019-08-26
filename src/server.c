@@ -38,24 +38,34 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/** Generate a token with a very low accidental collision probability */
+/** Generate a token with a very low accidental collision probability.
+ * The token produced will be a) nonzero, and b) have it's low bit
+ * masked out, so that 'zero' tokens can be used to denote connections
+ * for which resets are not possible, and tokens with the low bit set
+ * to denote reconnection attempts. */
 static uint64_t get_random_token(uint64_t last_token)
 {
-	struct timespec tp;
-	clock_gettime(CLOCK_REALTIME, &tp);
-	uint64_t pid = (uint64_t)getpid();
-	uint64_t base = last_token + 1;
-	base += ((uint64_t)tp.tv_sec * 1000000000uL + (uint64_t)tp.tv_nsec) *
-		0x1000uL;
-	base += pid;
-	/* /dev/urandom isn't always available, e.g., when using chroot */
-	int devrand = open("/dev/urandom", O_RDONLY);
-	if (devrand != -1) {
-		errno = 0;
-		uint64_t offset = 0;
-		(void)read(devrand, &offset, sizeof(offset));
-		close(devrand);
-		base += offset;
+	uint64_t base = 0;
+	while (base == 0) {
+		struct timespec tp;
+		clock_gettime(CLOCK_REALTIME, &tp);
+		uint64_t pid = (uint64_t)getpid();
+		base = last_token + 1;
+		base += ((uint64_t)tp.tv_sec * 1000000000uL +
+					(uint64_t)tp.tv_nsec) *
+			0x1000uL;
+		base += pid;
+		/* /dev/urandom isn't always available, e.g., when using chroot
+		 */
+		int devrand = open("/dev/urandom", O_RDONLY);
+		if (devrand != -1) {
+			errno = 0;
+			uint64_t offset = 0;
+			(void)read(devrand, &offset, sizeof(offset));
+			close(devrand);
+			base += offset;
+		}
+		base = base & ~1uLL;
 	}
 	return base;
 }
@@ -109,7 +119,8 @@ static int run_single_server_reconnector(
 					/* Socket path was invalid */
 					continue;
 				}
-				uint64_t flagged_token = token | CONN_UPDATE;
+				uint64_t flagged_token =
+						token | CONN_UPDATE_BIT;
 				if (write(new_conn, &flagged_token,
 						    sizeof(flagged_token)) !=
 						sizeof(flagged_token)) {
@@ -144,11 +155,13 @@ static int run_single_server(int control_pipe, const char *socket_path,
 	if (unlink_at_end) {
 		unlink(socket_path);
 	}
+	bool reconnectable = control_pipe != -1;
 
-	uint64_t token = get_random_token(0);
-	uint64_t unflagged_token = token & ~CONN_UPDATE;
-	if (write(chanfd, &unflagged_token, sizeof(uint64_t)) !=
-			sizeof(uint64_t)) {
+	uint64_t token = 0;
+	if (reconnectable) {
+		token = get_random_token(0);
+	}
+	if (write(chanfd, &token, sizeof(uint64_t)) != sizeof(uint64_t)) {
 		wp_error("Failed to write connection token to socket");
 		goto fail_cfd;
 	}
@@ -195,29 +208,35 @@ static int handle_new_server_connection(const char *current_sockpath,
 		struct conn_map *connmap, const struct main_config *config,
 		uint64_t new_token)
 {
-	if (buf_ensure_size(connmap->count + 1, sizeof(struct conn_addr),
-			    &connmap->size, (void **)&connmap->data) == -1) {
+	bool reconnectable = control_pipe != -1;
+	if (reconnectable && buf_ensure_size(connmap->count + 1,
+					     sizeof(struct conn_addr),
+					     &connmap->size,
+					     (void **)&connmap->data) == -1) {
 		wp_error("Failed to allocate memory to track new connection");
 		goto fail_appfd;
+	}
+	if (!reconnectable) {
+		new_token = 0;
 	}
 
 	int chanfd = connect_to_socket(current_sockpath);
 	if (chanfd == -1) {
 		goto fail_appfd;
 	}
-	uint64_t unflagged_token = new_token & ~CONN_UPDATE;
-	if (write(chanfd, &unflagged_token, sizeof(uint64_t)) !=
-			sizeof(uint64_t)) {
+	if (write(chanfd, &new_token, sizeof(uint64_t)) != sizeof(uint64_t)) {
 		wp_error("Failed to write connection token: %s",
 				strerror(errno));
 		goto fail_chanfd;
 	}
 
-	int linksocks[2];
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linksocks) == -1) {
-		wp_error("Socketpair for process link failed: %s",
-				strerror(errno));
-		goto fail_chanfd;
+	int linksocks[2] = {-1, -1};
+	if (reconnectable) {
+		if (socketpair(AF_UNIX, SOCK_STREAM, 0, linksocks) == -1) {
+			wp_error("Socketpair for process link failed: %s",
+					strerror(errno));
+			goto fail_chanfd;
+		}
 	}
 
 	pid_t npid = fork();
@@ -225,31 +244,39 @@ static int handle_new_server_connection(const char *current_sockpath,
 		// Run forked process, with the only shared state being the
 		// new channel socket
 		close(wdisplay_socket);
-		close(control_pipe);
-		close(linksocks[0]);
+		if (reconnectable) {
+			close(control_pipe);
+			close(linksocks[0]);
+		}
 		for (int i = 0; i < connmap->count; i++) {
-			close(connmap->data[i].linkfd);
+			if (connmap->data[i].linkfd != -1) {
+				close(connmap->data[i].linkfd);
+			}
 		}
 		int rc = main_interface_loop(
 				chanfd, appfd, linksocks[1], config, false);
 		exit(rc);
 	} else if (npid == -1) {
 		wp_debug("Fork failure");
-		close(linksocks[0]);
-		close(linksocks[1]);
+		if (reconnectable) {
+			close(linksocks[0]);
+			close(linksocks[1]);
+		}
 		goto fail_chanfd;
 	}
 
 	// This process no longer needs the application connection
 	close(chanfd);
 	close(appfd);
-	close(linksocks[1]);
+	if (reconnectable) {
+		close(linksocks[1]);
 
-	connmap->data[connmap->count++] = (struct conn_addr){
-			.token = new_token,
-			.pid = npid,
-			.linkfd = linksocks[0],
-	};
+		connmap->data[connmap->count++] = (struct conn_addr){
+				.token = new_token,
+				.pid = npid,
+				.linkfd = linksocks[0],
+		};
+	}
 
 	return 0;
 fail_chanfd:
@@ -270,7 +297,8 @@ static int update_connections(char current_sockpath[static 110],
 					path, strerror(errno));
 			return -1;
 		}
-		uint64_t flagged_token = connmap->data[i].token | CONN_UPDATE;
+		uint64_t flagged_token =
+				connmap->data[i].token | CONN_UPDATE_BIT;
 		if (write(chanfd, &flagged_token, sizeof(uint64_t)) !=
 				sizeof(uint64_t)) {
 			wp_error("Failed to write token to replacement connection: %s",

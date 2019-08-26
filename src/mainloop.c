@@ -1298,7 +1298,9 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			(void)read(g.threads.selfpipe_r, tmp, sizeof(tmp));
 		}
 		if (user_hang_up) {
-			wp_error("Connection hang-up detected");
+			wp_error("%s hang-up detected",
+					display_side ? "Compositor"
+						     : "Application");
 
 			/* Equivalent to ERR_STOP */
 			close(progfd);
