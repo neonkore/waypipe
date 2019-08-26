@@ -1114,34 +1114,41 @@ static void reset_connection(struct cross_state *cxs,
 	(void)cxs;
 }
 
-int main_interface_loop(int chanfd, int progfd, int linkfd,
-		const struct main_config *config, bool display_side)
+static int set_connections_nonblocking(
+		int chanfd, int progfd, int linkfd, bool display_side)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	if (set_nonblocking(chanfd) == -1) {
 		wp_error("Error making channel connection nonblocking: %s",
 				strerror(errno));
-		close(linkfd);
-		close(chanfd);
-		close(progfd);
-		return EXIT_FAILURE;
+		return -1;
 	}
 	if (set_nonblocking(progfd) == -1) {
 		wp_error("Error making %s connection nonblocking: %s", progdesc,
 				strerror(errno));
-		close(linkfd);
-		close(chanfd);
-		close(progfd);
-		return EXIT_FAILURE;
+		return -1;
 	}
-	if (set_nonblocking(linkfd) == -1) {
+	if (linkfd != -1 && set_nonblocking(linkfd) == -1) {
 		wp_error("Error making link connection nonblocking: %s",
 				strerror(errno));
-		close(linkfd);
+		return -1;
+	}
+	return 0;
+}
+
+int main_interface_loop(int chanfd, int progfd, int linkfd,
+		const struct main_config *config, bool display_side)
+{
+	if (set_connections_nonblocking(chanfd, progfd, linkfd, display_side) ==
+			-1) {
+		if (linkfd != -1) {
+			close(linkfd);
+		}
 		close(chanfd);
 		close(progfd);
 		return EXIT_FAILURE;
 	}
+	const char *progdesc = display_side ? "compositor" : "application";
 
 	struct way_msg_state way_msg;
 	memset(&way_msg, 0, sizeof(way_msg));
@@ -1307,9 +1314,10 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		}
 		if (link_hang_up) {
 			wp_error("Link to root process hang-up detected");
-			break;
+			close(linkfd);
+			linkfd = -1;
 		}
-		if (maybe_new_channel) {
+		if (maybe_new_channel && !link_hang_up) {
 			int new_fd = read_new_chanfd(linkfd, &recon_fds);
 			if (new_fd != -1) {
 				if (chanfd != -1) {
@@ -1321,7 +1329,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				needs_new_channel = false;
 			}
 		}
-		if (needs_new_channel) {
+		if (needs_new_channel && linkfd != -1) {
 			wp_error("Channel hang up detected, waiting for reconnection");
 			int new_fd = reconnect_loop(linkfd, progfd, &recon_fds);
 			if (new_fd == -1) {
@@ -1338,6 +1346,10 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 						&way_msg, chanfd);
 				needs_new_channel = false;
 			}
+		} else if (needs_new_channel) {
+			wp_error("Channel hang up detected, no reconnection link, fatal");
+			exit_code = ERR_FATAL;
+			break;
 		}
 
 		// Q: randomize the order of these?, to highlight
@@ -1363,6 +1375,11 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				 * fully. */
 				close(chanfd);
 				chanfd = -1;
+				if (linkfd == -1) {
+					wp_error("Channel hang up detected, no reconnection link, fatal");
+					exit_code = ERR_FATAL;
+					break;
+				}
 				needs_new_channel = true;
 			} else if (tr == ERR_STOP) {
 				/* Wayland connection has at least
@@ -1493,6 +1510,5 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	if (linkfd != -1) {
 		close(linkfd);
 	}
-
 	return EXIT_SUCCESS;
 }

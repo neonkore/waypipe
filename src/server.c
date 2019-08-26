@@ -153,13 +153,14 @@ static int run_single_server(int control_pipe, const char *socket_path,
 		goto fail_cfd;
 	}
 
-	int linkfds[2];
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
-		wp_error("Failed to create socketpair: %s", strerror(errno));
-		goto fail_cfd;
-	}
-
+	int linkfds[2] = {-1, -1};
 	if (control_pipe != -1) {
+		if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
+			wp_error("Failed to create socketpair: %s",
+					strerror(errno));
+			goto fail_cfd;
+		}
+
 		pid_t reco_pid = fork();
 		if (reco_pid == -1) {
 			wp_debug("Fork failure");
@@ -178,13 +179,8 @@ static int run_single_server(int control_pipe, const char *socket_path,
 		close(linkfds[1]);
 	}
 
-	/* If there is no reconnection process, the file descriptor linkfds[1]
-	 * is kept alive in this process to avoid hangup spam */
 	int ret = main_interface_loop(
 			chanfd, server_link, linkfds[0], config, false);
-	if (control_pipe == -1) {
-		close(linkfds[1]);
-	}
 	return ret;
 
 fail_cfd:

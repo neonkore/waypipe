@@ -51,7 +51,10 @@ struct globals {
  *
  * chanfd: connected socket to channel
  * progfd: connected socket to Wayland program
- * linkfd: optional connected socket providing new chanfds */
+ * linkfd: optional socket providing new chanfds. (-1 means not provided)
+ *
+ * Returns either EXIT_SUCCESS or EXIT_FAILURE (if exit caused by an error.)
+ */
 int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side);
 /** Act as a Wayland server */

@@ -44,7 +44,6 @@
 struct copy_setup {
 	int conn;
 	int wayl;
-	int link;
 	bool is_display_side;
 	struct main_config *mc;
 };
@@ -52,7 +51,7 @@ struct copy_setup {
 static void *start_looper(void *data)
 {
 	struct copy_setup *setup = (struct copy_setup *)data;
-	main_interface_loop(setup->conn, setup->wayl, setup->link, setup->mc,
+	main_interface_loop(setup->conn, setup->wayl, -1, setup->mc,
 			setup->is_display_side);
 	return NULL;
 }
@@ -106,10 +105,9 @@ int main(int argc, char **argv)
 	}
 	printf("Loaded %zu bytes\n", len);
 
-	int way_fds[2], conn_fds[2], link_fds[2];
+	int way_fds[2], conn_fds[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, way_fds) == -1 ||
-			socketpair(AF_UNIX, SOCK_STREAM, 0, conn_fds) == -1 ||
-			socketpair(AF_UNIX, SOCK_STREAM, 0, link_fds) == -1) {
+			socketpair(AF_UNIX, SOCK_STREAM, 0, conn_fds) == -1) {
 		printf("Socketpair failed\n");
 		return EXIT_FAILURE;
 	}
@@ -129,7 +127,6 @@ int main(int argc, char **argv)
 	pthread_t thread;
 	struct copy_setup conf = {.conn = conn_fds[1],
 			.wayl = way_fds[1],
-			.link = link_fds[1],
 			.is_display_side = display_side,
 			.mc = &config};
 	if (pthread_create(&thread, NULL, start_looper, &conf) == -1) {
@@ -295,7 +292,6 @@ int main(int argc, char **argv)
 	}
 	close(conn_fds[0]);
 	close(way_fds[0]);
-	close(link_fds[0]);
 
 	pthread_join(thread, NULL);
 
