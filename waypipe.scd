@@ -135,7 +135,7 @@ the server _exserv_, displaying the result on the local system.
 	waypipe ssh user@exserv weston-flower
 ```
 
-One can obtain similar behavior by explictly running waypipe and ssh:
+One can obtain similar behavior by explicitly running waypipe and ssh:
 
 ```
 	waypipe --socket /tmp/socket-client client  &
