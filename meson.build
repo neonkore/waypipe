@@ -15,6 +15,9 @@ project(
 # requires glibc >= 4.19 (2014), freebsd libc (since 2016?), musl >= 1.15 (2014)
 add_project_arguments('-D_DEFAULT_SOURCE', language: 'c')
 
+# Sometimes ignoring the result of read()/write() is the right thing to do
+add_project_arguments('-Wno-unused-result', language: 'c')
+
 cc = meson.get_compiler('c')
 config_data = configuration_data()
 
