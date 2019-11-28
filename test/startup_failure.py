@@ -53,23 +53,23 @@ def run_test(name, command, env, use_socketpair, expect_success):
         pfds = []
 
     timed_out = False
+    proc = subprocess.Popen(
+        command,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        pass_fds=pfds,
+    )
     try:
-        proc = subprocess.run(
-            command,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=0.25,
-            pass_fds=pfds,
-        )
+        output, none = proc.communicate(timeout=0.25)
     except subprocess.TimeoutExpired as e:
-        timed_out = True
-        output = e.output
         # Program began to wait for a connection
+        proc.kill()
+        output, none = proc.communicate()
         retcode = 0 if "client" in command else (0 if expect_success else 1)
+        timed_out = True
     else:
-        output = proc.stdout
         retcode = proc.returncode
 
     if use_socketpair:
