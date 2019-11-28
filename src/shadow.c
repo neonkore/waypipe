@@ -1269,6 +1269,12 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED,
 				sfd->fd_local, 0);
+		if (sfd->mem_local == MAP_FAILED) {
+			wp_error("Failed to mmap newly created shm file for object %d: %s",
+					sfd->remote_id, strerror(errno));
+			sfd->mem_local = NULL;
+			return 0;
+		}
 		memcpy(sfd->mem_local, sfd->mem_mirror, sfd->buffer_size);
 	} else if (type == WMSG_OPEN_RW_PIPE || type == WMSG_OPEN_IW_PIPE ||
 			type == WMSG_OPEN_IR_PIPE) {
@@ -1586,7 +1592,8 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				header->end - header->start);
 
 		void *handle = NULL;
-		if (sfd->type == FDC_DMABUF) {
+		bool already_mapped = sfd->mem_local != NULL;
+		if (sfd->type == FDC_DMABUF && !already_mapped) {
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
 			if (!sfd->mem_local) {
@@ -1597,7 +1604,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				sfd->mem_mirror + header->start,
 				header->end - header->start);
 
-		if (sfd->type == FDC_DMABUF) {
+		if (sfd->type == FDC_DMABUF && !already_mapped) {
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				return 0;
@@ -1643,7 +1650,8 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 
 		void *handle = NULL;
-		if (sfd->type == FDC_DMABUF) {
+		bool already_mapped = sfd->mem_local != NULL;
+		if (sfd->type == FDC_DMABUF && !already_mapped) {
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
 			if (!sfd->mem_local) {
@@ -1658,7 +1666,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				act_buffer);
 		DTRACE_PROBE(waypipe, apply_diff_exit);
 
-		if (sfd->type == FDC_DMABUF) {
+		if (sfd->type == FDC_DMABUF && !already_mapped) {
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				return 0;
