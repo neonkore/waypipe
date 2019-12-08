@@ -83,6 +83,10 @@ weston_command = [
     "--height=777",
 ]
 
+arguments = subprocess.check_output([weston_path, "--help"]).decode()
+if "--use-gl" in arguments:
+    weston_command.append("--use-gl")
+
 try:
     import psutil
 except ImportError:
