@@ -499,15 +499,11 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 
 		/* Each of the eight transformations corresponds to a
 		 * unique set of reflections: X<->Y | Xflip | Yflip */
-		uint32_t magic = 0x14723650;
+		uint32_t magic = 0x74125630;
 		/* idx     76543210
 		 * xyech = 10101010
-		 * xflip = 01101100
-		 * yflip = 00110110
-		 *         ffff
-		 *         21  21
-		 *         789 789
-		 *         00000000
+		 * xflip = 11000110
+		 * yflip = 10011100
 		 */
 		bool xyexch = magic & (1u << (4 * transform));
 		bool xflip = magic & (1u << (4 * transform + 1));
