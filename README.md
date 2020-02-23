@@ -1,4 +1,4 @@
-waypipe
+Waypipe
 ================================================================================
 
 `waypipe` is a proxy for Wayland[0] clients. It forwards Wayland messages and
@@ -68,11 +68,12 @@ Optional dependencies:
 
 ## Status
 
-This is usable, but still unstable right now[0]. The main development
-location[1], command-line interface, wire format, and project name may
-yet change completely. Bug reports and patches are always welcome.
+This is usable, but still somewhat unstable right now[0]. The main
+development location[1], command-line interface, and wire format may yet
+change completely. Bug reports and patches are always welcome.
 
-Any of the following will crash waypipe:
+Any of the following may make waypipe crash with an error message. If
+it segfaults, file a bug report!
 
 * Different local/client and remote/server versions
 * Differing byte orders
