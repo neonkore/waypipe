@@ -36,6 +36,31 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static inline uint32_t conntoken_version(uint32_t header)
+{
+	return header >> 16;
+}
+static int check_conn_header(uint32_t header)
+{
+	if ((header >> 16) != WAYPIPE_PROTOCOL_VERSION) {
+		wp_error("Rejecting connection, protocol version (%u) does not match (%u). Check that Waypipe has the correct version.",
+				conntoken_version(header),
+				WAYPIPE_PROTOCOL_VERSION);
+		return -1;
+	}
+	if ((header & CONN_FIXED_BIT) == 0) {
+		wp_error("Rejecting connection, server endianness does not match client");
+		return -1;
+	}
+	return 0;
+}
+inline bool key_match(const struct connection_token *token1,
+		const struct connection_token *token2)
+{
+	return token1->key[0] == token2->key[0] &&
+	       token1->key[1] == token2->key[1] &&
+	       token1->key[2] == token2->key[2];
+}
 static int get_inherited_socket(void)
 {
 	const char *fd_no = getenv("WAYLAND_SOCKET");
@@ -86,7 +111,7 @@ static int get_display_path(char path[static MAX_SOCKETPATH_LEN])
 }
 
 static int run_single_client_reconnector(
-		int channelsock, int linkfd, uint64_t conn_id)
+		int channelsock, int linkfd, struct connection_token conn_id)
 {
 	int retcode = EXIT_SUCCESS;
 	while (!shutdown_flag) {
@@ -125,7 +150,8 @@ static int run_single_client_reconnector(
 				retcode = EXIT_FAILURE;
 				break;
 			} else {
-				uint64_t new_conn = 0;
+				struct connection_token new_conn;
+				memset(&new_conn, 0, sizeof(new_conn));
 				if (read(newclient, &new_conn,
 						    sizeof(new_conn)) !=
 						sizeof(new_conn)) {
@@ -134,12 +160,17 @@ static int run_single_client_reconnector(
 					close(newclient);
 					break;
 				}
-				bool update = (new_conn & CONN_UPDATE_BIT) != 0;
-				new_conn = new_conn & ~CONN_UPDATE_BIT;
-				if (new_conn != conn_id) {
+				if (check_conn_header(new_conn.header) < 0) {
+					retcode = EXIT_FAILURE;
+					close(newclient);
+					break;
+				}
+				if (!key_match(&new_conn, &conn_id)) {
 					close(newclient);
 					continue;
 				}
+				bool update = new_conn.header &
+					      CONN_RECONNECTABLE_BIT;
 				if (!update) {
 					wp_error("Connection token is missing update flag");
 					close(newclient);
@@ -167,7 +198,8 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 	 * reconnection watcher process, linked via socketpair */
 	int retcode = EXIT_SUCCESS;
 	int chanclient = -1;
-	uint64_t conn_id = (uint64_t)-1;
+	struct connection_token conn_id;
+	memset(&conn_id, 0, sizeof(conn_id));
 	while (!shutdown_flag) {
 		int status = -1;
 		if (wait_for_pid_and_clean(eol_pid, &status, WNOHANG, NULL)) {
@@ -214,13 +246,18 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 				close(chanclient);
 				chanclient = -1;
 			}
+			if (check_conn_header(conn_id.header) < 0) {
+				retcode = EXIT_FAILURE;
+				close(chanclient);
+				chanclient = -1;
+			}
 			break;
 		}
 	}
 	if (retcode == EXIT_FAILURE || shutdown_flag || chanclient == -1) {
 		return retcode;
 	}
-	if (conn_id & CONN_UPDATE_BIT) {
+	if (conn_id.header & CONN_UPDATE_BIT) {
 		wp_error("Initial connection token had update flag set");
 		return retcode;
 	}
@@ -228,7 +265,7 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 	/* Fork a reconnection handler, only if the connection is
 	 * reconnectable/has a nonzero id */
 	int linkfds[2] = {-1, -1};
-	if (conn_id != 0) {
+	if (conn_id.header & CONN_RECONNECTABLE_BIT) {
 		if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
 			wp_error("Failed to create socketpair: %s",
 					strerror(errno));
@@ -264,15 +301,17 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		const char disp_path[static MAX_SOCKETPATH_LEN])
 {
 
-	uint64_t conn_id;
+	struct connection_token conn_id;
 	if (read(chanclient, &conn_id, sizeof(conn_id)) != sizeof(conn_id)) {
 		wp_error("Failed to get connection id");
 		goto fail_cc;
 	}
-	if (conn_id & CONN_UPDATE_BIT) {
-		conn_id = conn_id & ~CONN_UPDATE_BIT;
+	if (check_conn_header(conn_id.header) < 0) {
+		goto fail_cc;
+	}
+	if (conn_id.header & CONN_UPDATE_BIT) {
 		for (int i = 0; i < connmap->count; i++) {
-			if (connmap->data[i].token == conn_id) {
+			if (key_match(&connmap->data[i].token, &conn_id)) {
 				if (send_one_fd(connmap->data[i].linkfd,
 						    chanclient) == -1) {
 					wp_error("Failed to send new connection fd to subprocess: %s",
@@ -285,7 +324,7 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 		close(chanclient);
 		return 0;
 	}
-	bool reconnectable = conn_id != 0;
+	bool reconnectable = conn_id.header & CONN_RECONNECTABLE_BIT;
 
 	if (reconnectable && buf_ensure_size(connmap->count + 1,
 					     sizeof(struct conn_addr),

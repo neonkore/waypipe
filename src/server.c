@@ -38,40 +38,42 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/** Generate a token with a very low accidental collision probability.
- * The token produced will be a) nonzero, and b) have it's low bit
- * masked out, so that 'zero' tokens can be used to denote connections
- * for which resets are not possible, and tokens with the low bit set
- * to denote reconnection attempts. */
-static uint64_t get_random_token(uint64_t last_token)
+static inline uint32_t conntoken_header(bool reconnectable, bool update)
 {
-	uint64_t base = 0;
-	while (base == 0) {
-		struct timespec tp;
-		clock_gettime(CLOCK_REALTIME, &tp);
-		uint64_t pid = (uint64_t)getpid();
-		base = last_token + 1;
-		base += ((uint64_t)tp.tv_sec * 1000000000uL +
-					(uint64_t)tp.tv_nsec) *
-			0x1000uL;
-		base += pid;
-		/* /dev/urandom isn't always available, e.g., when using chroot
-		 */
-		int devrand = open("/dev/urandom", O_RDONLY);
-		if (devrand != -1) {
-			errno = 0;
-			uint64_t offset = 0;
-			(void)read(devrand, &offset, sizeof(offset));
-			close(devrand);
-			base += offset;
-		}
-		base = base & ~1uLL;
-	}
-	return base;
+	return (WAYPIPE_PROTOCOL_VERSION << 16) |
+	       (update ? CONN_UPDATE_BIT : 0) |
+	       (reconnectable ? CONN_RECONNECTABLE_BIT : 0) | CONN_FIXED_BIT;
 }
 
-static int run_single_server_reconnector(
-		int control_pipe, int linkfd, uint64_t token)
+/** Fill the key for a token using random data with a very low accidental
+ * collision probability. Whatever data was in the key before will be shuffled
+ * in.*/
+static void fill_random_key(struct connection_token *token)
+{
+	token->key[0] *= 13;
+	token->key[1] *= 17;
+	token->key[2] *= 29;
+
+	struct timespec tp;
+	clock_gettime(CLOCK_REALTIME, &tp);
+	token->key[0] += (uint32_t)(tp.tv_sec >> 32);
+	token->key[1] += (uint32_t)tp.tv_sec;
+	token->key[2] += (uint32_t)tp.tv_nsec;
+
+	token->key[0] += 1;
+	token->key[1] += 1;
+	token->key[2] += (uint32_t)getpid();
+
+	int devrand = open("/dev/urandom", O_RDONLY);
+	if (devrand != -1) {
+		errno = 0;
+		(void)read(devrand, token->key, sizeof(token->key));
+		close(devrand);
+	}
+}
+
+static int run_single_server_reconnector(int control_pipe, int linkfd,
+		const struct connection_token *flagged_token)
 {
 	int retcode = EXIT_SUCCESS;
 	while (!shutdown_flag) {
@@ -119,11 +121,10 @@ static int run_single_server_reconnector(
 					/* Socket path was invalid */
 					continue;
 				}
-				uint64_t flagged_token =
-						token | CONN_UPDATE_BIT;
-				if (write(new_conn, &flagged_token,
-						    sizeof(flagged_token)) !=
-						sizeof(flagged_token)) {
+
+				if (write(new_conn, flagged_token,
+						    sizeof(*flagged_token)) !=
+						sizeof(*flagged_token)) {
 					wp_error("Failed to write to new connection: %s",
 							strerror(errno));
 					close(new_conn);
@@ -157,11 +158,11 @@ static int run_single_server(int control_pipe, const char *socket_path,
 	}
 	bool reconnectable = control_pipe != -1;
 
-	uint64_t token = 0;
-	if (reconnectable) {
-		token = get_random_token(0);
-	}
-	if (write(chanfd, &token, sizeof(uint64_t)) != sizeof(uint64_t)) {
+	struct connection_token token;
+	memset(&token, 0, sizeof(token));
+	fill_random_key(&token);
+	token.header = conntoken_header(reconnectable, false);
+	if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
 		wp_error("Failed to write connection token to socket");
 		goto fail_cfd;
 	}
@@ -184,8 +185,11 @@ static int run_single_server(int control_pipe, const char *socket_path,
 			close(chanfd);
 			close(linkfds[0]);
 			close(server_link);
+
+			/* Further uses of the token will be to reconnect */
+			token.header |= CONN_UPDATE_BIT;
 			int rc = run_single_server_reconnector(
-					control_pipe, linkfds[1], token);
+					control_pipe, linkfds[1], &token);
 			exit(rc);
 		}
 		close(control_pipe);
@@ -206,7 +210,7 @@ fail_srv:
 static int handle_new_server_connection(const char *current_sockpath,
 		int control_pipe, int wdisplay_socket, int appfd,
 		struct conn_map *connmap, const struct main_config *config,
-		uint64_t new_token)
+		const struct connection_token *new_token)
 {
 	bool reconnectable = control_pipe != -1;
 	if (reconnectable && buf_ensure_size(connmap->count + 1,
@@ -216,15 +220,13 @@ static int handle_new_server_connection(const char *current_sockpath,
 		wp_error("Failed to allocate memory to track new connection");
 		goto fail_appfd;
 	}
-	if (!reconnectable) {
-		new_token = 0;
-	}
 
 	int chanfd = connect_to_socket(current_sockpath);
 	if (chanfd == -1) {
 		goto fail_appfd;
 	}
-	if (write(chanfd, &new_token, sizeof(uint64_t)) != sizeof(uint64_t)) {
+	if (write(chanfd, new_token, sizeof(*new_token)) !=
+			sizeof(*new_token)) {
 		wp_error("Failed to write connection token: %s",
 				strerror(errno));
 		goto fail_chanfd;
@@ -272,7 +274,7 @@ static int handle_new_server_connection(const char *current_sockpath,
 		close(linksocks[1]);
 
 		connmap->data[connmap->count++] = (struct conn_addr){
-				.token = new_token,
+				.token = *new_token,
 				.pid = npid,
 				.linkfd = linksocks[0],
 		};
@@ -297,10 +299,10 @@ static int update_connections(char current_sockpath[static 110],
 					path, strerror(errno));
 			return -1;
 		}
-		uint64_t flagged_token =
-				connmap->data[i].token | CONN_UPDATE_BIT;
-		if (write(chanfd, &flagged_token, sizeof(uint64_t)) !=
-				sizeof(uint64_t)) {
+		struct connection_token flagged_token = connmap->data[i].token;
+		flagged_token.header |= CONN_UPDATE_BIT;
+		if (write(chanfd, &flagged_token, sizeof(flagged_token)) !=
+				sizeof(flagged_token)) {
 			wp_error("Failed to write token to replacement connection: %s",
 					strerror(errno));
 			close(chanfd);
@@ -339,7 +341,9 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 	pfs[1].events = POLLIN;
 	pfs[1].revents = 0;
 	int retcode = EXIT_SUCCESS;
-	uint64_t last_token = 0;
+	struct connection_token token;
+	memset(&token, 0, sizeof(token));
+	token.header = conntoken_header(control_pipe != -1, false);
 	while (!shutdown_flag) {
 		int status = -1;
 		if (wait_for_pid_and_clean(
@@ -392,13 +396,13 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 				retcode = EXIT_FAILURE;
 				break;
 			} else {
-				last_token = get_random_token(last_token);
+				fill_random_key(&token);
 				if (handle_new_server_connection(
 						    current_sockpath,
 						    control_pipe,
 						    wdisplay_socket, appfd,
 						    &connmap, config,
-						    last_token) == -1) {
+						    &token) == -1) {
 					retcode = EXIT_FAILURE;
 					break;
 				}

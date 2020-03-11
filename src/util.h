@@ -77,10 +77,20 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
 /** Connect to the socket at the given path, returning created fd if
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
+
+#define WAYPIPE_PROTOCOL_VERSION 0x1u
+#define CONN_FIXED_BIT 0x1u
+#define CONN_RECONNECTABLE_BIT 0x2u
+#define CONN_UPDATE_BIT 0x4u
+struct connection_token {
+	/** Indicate protocol version (top 16 bits), endianness, and
+	 * reconnection flags. The highest bit must stay clear. */
+	uint32_t header;
+	uint32_t key[3]; /** Random bits used to identify the connection */
+};
 /** A type to help keep track of the connection handling processes */
-#define CONN_UPDATE_BIT 0x1uLL
 struct conn_addr {
-	uint64_t token;
+	struct connection_token token;
 	pid_t pid;
 	int linkfd;
 };
