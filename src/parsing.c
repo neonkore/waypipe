@@ -239,10 +239,11 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		bool from_client, struct char_window *chars,
 		struct int_window *fds)
 {
+	bool to_wire = from_client == !display_side;
+
 	const uint32_t *const header =
 			(uint32_t *)&chars->data[chars->zone_start];
 	uint32_t obj = header[0];
-	int meth = (int)((header[1] << 16) >> 16);
 	int len = (int)(header[1] >> 16);
 	if (len != chars->zone_end - chars->zone_start) {
 		wp_error("Message length disagreement %d vs %d", len,
@@ -256,6 +257,24 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		wp_debug("Unidentified object %d with %s", obj,
 				from_client ? "request" : "event");
 		return PARSE_UNKNOWN;
+	}
+
+	/* Identify the message type. Messages sent over the wire are tagged
+	 * with the number of file descriptors that are bound to the message.
+	 * This incidentally limits the number of fds to 31, and number of
+	 * messages per type 2047. */
+	int meth = (int)((header[1] << 16) >> 16);
+	int num_fds_with_message = -1;
+	if (!to_wire) {
+		num_fds_with_message = meth >> 11;
+		meth = meth & ((1 << 11) - 1);
+		if (num_fds_with_message > 0) {
+			wp_debug("Reading message tagged with %d fds.",
+					num_fds_with_message);
+		}
+		// Strip out the FD counters
+		((uint32_t *)&chars->data[chars->zone_start])[1] &=
+				~(uint32_t)((1 << 16) - (1 << 11));
 	}
 
 	const struct wp_interface *intf = objh->type;
@@ -314,6 +333,11 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		(*call_fn)(&ctx, payload, &fds->data[fds->zone_start],
 				&g->tracker);
 	}
+	if (num_fds_with_message >= 0 && msg->n_fds != num_fds_with_message) {
+		wp_error("Message used %d file descriptors, but was tagged as using %d",
+				msg->n_fds, num_fds_with_message);
+	}
+
 	fds_used += msg->n_fds;
 
 	if (objh->obj_id >= 0xff000000 && !strcmp(msg->name, "destroy")) {
@@ -355,9 +379,27 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	if (!ctx.fds_changed) {
-		// Default, autoadvance fd queue, unless handler disagreed
+		// Default, autoadvance fd queue, unless handler disagreed.
 		fds->zone_start += fds_used;
+
+		// Tag message with number of FDs. If the fds were modified
+		// nontrivially, (i.e, ctx.fds_changed is true), tagging is
+		// handler's responsibility
+		if (to_wire) {
+			if (fds_used >= 32 || meth >= 2048) {
+				wp_error("Message used %d>=32 file descriptors or had index %d>=2048. FD tagging failed, expect a crash.",
+						fds_used, meth);
+			}
+			if (fds_used > 0) {
+				wp_debug("Tagging message with %d fds.",
+						fds_used);
+				((uint32_t *)&chars->data[chars->zone_start])
+						[1] |=
+						(uint32_t)(fds_used << 11);
+			}
+		}
 	}
+
 	if (fds->zone_end < fds->zone_start) {
 		wp_error("Handler error after %s.%s: fdzs = %d > %d = fdze",
 				intf->name, msg->name, fds->zone_start,

@@ -1146,6 +1146,8 @@ static int reintroduce_add_msgs(
 	for (int i = 0; i < params->nplanes; i++) {
 		memcpy(cmsg + start, params->add[i].msg,
 				(size_t)params->add[i].msg_len);
+		/* Tag the message as having one file descriptor */
+		((uint32_t *)(cmsg + start))[1] |= (uint32_t)(1 << 11);
 		start += params->add[i].msg_len;
 		free(params->add[i].msg);
 		params->add[i].msg = NULL;
