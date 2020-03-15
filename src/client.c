@@ -306,7 +306,7 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 			chanclient, disp_fd, linkfds[0], config, true);
 }
 
-static int handle_new_client_connection(int channelsock, int chanclient,
+static void handle_new_client_connection(int channelsock, int chanclient,
 		struct conn_map *connmap, const struct main_config *config,
 		const char disp_path[static MAX_SOCKETPATH_LEN])
 {
@@ -338,7 +338,7 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 			}
 		}
 		close(chanclient);
-		return 0;
+		return;
 	}
 	bool reconnectable = conn_id.header & CONN_RECONNECTABLE_BIT;
 
@@ -359,9 +359,8 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 	}
 	pid_t npid = fork();
 	if (npid == 0) {
-		// Run forked process, with the only
-		// shared state being the new channel
-		// socket
+		// Run forked process, with the only shared
+		// state being the new channel socket
 		close(channelsock);
 		if (reconnectable) {
 			close(linkfds[0]);
@@ -394,12 +393,12 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 						.pid = npid};
 	}
 
-	return 0;
+	return;
 fail_ps:
 	close(linkfds[0]);
 fail_cc:
 	close(chanclient);
-	return -1;
+	return;
 }
 
 static int run_multi_client(int channelsock, pid_t *eol_pid,
@@ -447,12 +446,10 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 			retcode = EXIT_FAILURE;
 			break;
 		} else {
-			if (handle_new_client_connection(channelsock,
-					    chanclient, &connmap, config,
-					    disp_path) == -1) {
-				retcode = EXIT_FAILURE;
-				break;
-			}
+			/* Failures here are logged, but should not affect this
+			 * process' ability to e.g. handle reconnections. */
+			handle_new_client_connection(channelsock, chanclient,
+					&connmap, config, disp_path);
 		}
 	}
 
