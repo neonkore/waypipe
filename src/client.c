@@ -152,29 +152,30 @@ static int run_single_client_reconnector(
 			} else {
 				struct connection_token new_conn;
 				memset(&new_conn, 0, sizeof(new_conn));
-				if (read(newclient, &new_conn,
-						    sizeof(new_conn)) !=
-						sizeof(new_conn)) {
-					wp_error("Failed to get connection id");
-					retcode = EXIT_FAILURE;
-					close(newclient);
-					break;
+				if (read(newclient, &new_conn.header,
+						    sizeof(new_conn.header)) !=
+						sizeof(new_conn.header)) {
+					wp_error("Failed to get connection id header");
+					goto done;
 				}
 				if (check_conn_header(new_conn.header) < 0) {
-					retcode = EXIT_FAILURE;
-					close(newclient);
-					break;
+					goto done;
 				}
 				if (!key_match(&new_conn, &conn_id)) {
-					close(newclient);
-					continue;
+					wp_error("Connection attempt with unmatched key");
+					goto done;
+				}
+				if (read(newclient, &new_conn.key,
+						    sizeof(new_conn.key)) !=
+						sizeof(new_conn.key)) {
+					wp_error("Failed to get connection id key");
+					goto done;
 				}
 				bool update = new_conn.header &
 					      CONN_RECONNECTABLE_BIT;
 				if (!update) {
 					wp_error("Connection token is missing update flag");
-					close(newclient);
-					continue;
+					goto done;
 				}
 				if (send_one_fd(linkfd, newclient) == -1) {
 					wp_error("Failed to get connection id");
@@ -182,6 +183,7 @@ static int run_single_client_reconnector(
 					close(newclient);
 					break;
 				}
+			done:
 				close(newclient);
 			}
 		}
@@ -239,18 +241,26 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 			retcode = EXIT_FAILURE;
 			break;
 		} else {
-			if (read(chanclient, &conn_id, sizeof(conn_id)) !=
-					sizeof(conn_id)) {
-				wp_error("Failed to get connection id");
-				retcode = EXIT_FAILURE;
-				close(chanclient);
-				chanclient = -1;
+			if (read(chanclient, &conn_id.header,
+					    sizeof(conn_id.header)) !=
+					sizeof(conn_id.header)) {
+				wp_error("Failed to get connection id header");
+				goto fail_cc;
 			}
 			if (check_conn_header(conn_id.header) < 0) {
-				retcode = EXIT_FAILURE;
-				close(chanclient);
-				chanclient = -1;
+				goto fail_cc;
 			}
+			if (read(chanclient, &conn_id.key,
+					    sizeof(conn_id.key)) !=
+					sizeof(conn_id.key)) {
+				wp_error("Failed to get connection id key");
+				goto fail_cc;
+			}
+			break;
+		fail_cc:
+			retcode = EXIT_FAILURE;
+			close(chanclient);
+			chanclient = -1;
 			break;
 		}
 	}
@@ -302,11 +312,17 @@ static int handle_new_client_connection(int channelsock, int chanclient,
 {
 
 	struct connection_token conn_id;
-	if (read(chanclient, &conn_id, sizeof(conn_id)) != sizeof(conn_id)) {
-		wp_error("Failed to get connection id");
+	if (read(chanclient, &conn_id.header, sizeof(conn_id.header)) !=
+			sizeof(conn_id.header)) {
+		wp_error("Failed to get connection id header");
 		goto fail_cc;
 	}
 	if (check_conn_header(conn_id.header) < 0) {
+		goto fail_cc;
+	}
+	if (read(chanclient, &conn_id.key, sizeof(conn_id.key)) !=
+			sizeof(conn_id.key)) {
+		wp_error("Failed to get connection id key");
 		goto fail_cc;
 	}
 	if (conn_id.header & CONN_UPDATE_BIT) {
