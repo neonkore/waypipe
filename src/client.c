@@ -54,12 +54,10 @@ static int check_conn_header(uint32_t header)
 	}
 	return 0;
 }
-inline bool key_match(const struct connection_token *token1,
-		const struct connection_token *token2)
+static inline bool key_match(
+		const uint32_t key1[static 3], const uint32_t key2[static 3])
 {
-	return token1->key[0] == token2->key[0] &&
-	       token1->key[1] == token2->key[1] &&
-	       token1->key[2] == token2->key[2];
+	return key1[0] == key2[0] && key1[1] == key2[1] && key1[2] == key2[2];
 }
 static int get_inherited_socket(void)
 {
@@ -161,14 +159,14 @@ static int run_single_client_reconnector(
 				if (check_conn_header(new_conn.header) < 0) {
 					goto done;
 				}
-				if (!key_match(&new_conn, &conn_id)) {
-					wp_error("Connection attempt with unmatched key");
-					goto done;
-				}
 				if (read(newclient, &new_conn.key,
 						    sizeof(new_conn.key)) !=
 						sizeof(new_conn.key)) {
 					wp_error("Failed to get connection id key");
+					goto done;
+				}
+				if (!key_match(new_conn.key, conn_id.key)) {
+					wp_error("Connection attempt with unmatched key");
 					goto done;
 				}
 				bool update = new_conn.header &
@@ -327,7 +325,8 @@ static void handle_new_client_connection(int channelsock, int chanclient,
 	}
 	if (conn_id.header & CONN_UPDATE_BIT) {
 		for (int i = 0; i < connmap->count; i++) {
-			if (key_match(&connmap->data[i].token, &conn_id)) {
+			if (key_match(connmap->data[i].token.key,
+					    conn_id.key)) {
 				if (send_one_fd(connmap->data[i].linkfd,
 						    chanclient) == -1) {
 					wp_error("Failed to send new connection fd to subprocess: %s",
