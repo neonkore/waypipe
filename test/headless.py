@@ -33,7 +33,7 @@ def safe_cleanup(process):
         if process.poll() is None:
             # certain weston client programs appear to initiate shutdown proceedings correctly; however, they appear to wait for a frame beforehand, and the headless weston doesn't ask for additional frames
             process.send_signal(signal.SIGINT)
-            time.sleep(0.1)
+            time.sleep(0.5)
     try:
         process.wait(100)
     except subprocess.TimeoutExpired:
@@ -169,16 +169,16 @@ def cleanup_oneshot(client, server, child):
         try:
             child.send_signal(signal.SIGINT)
         except psutil.NoSuchProcess:
-            time.sleep(0.05)
+            time.sleep(0.1)
             safe_cleanup(server)
-            time.sleep(0.05)
+            time.sleep(0.1)
             safe_cleanup(client)
         else:
             server.wait()
             client.wait()
     else:
         safe_cleanup(server)
-        time.sleep(0.05)
+        time.sleep(0.1)
         safe_cleanup(client)
     return client.returncode, server.returncode
 
@@ -189,9 +189,9 @@ def cleanup_multi(client, server, child):
             child.send_signal(signal.SIGINT)
         except psutil.NoSuchProcess:
             pass
-    time.sleep(0.05)
+    time.sleep(0.1)
     safe_cleanup(server)
-    time.sleep(0.05)
+    time.sleep(0.1)
     safe_cleanup(client)
     return client.returncode, server.returncode
 

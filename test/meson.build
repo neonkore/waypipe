@@ -89,7 +89,7 @@ endforeach
 
 if weston_prog.found() and have_test_progs
 	test_headless = join_paths(meson.current_source_dir(), 'headless.py')
-	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: envlist, timeout: 10)
+	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: envlist, timeout: 30)
 endif
 test_startup = join_paths(meson.current_source_dir(), 'startup_failure.py')
 test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist, timeout: 10)
