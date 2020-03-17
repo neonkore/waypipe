@@ -161,7 +161,7 @@ int main(int argc, char **argv)
 				if (ftruncate(new_fileno, (off_t)fsize) == -1) {
 					wp_error("Failed to resize tempfile");
 					close(new_fileno);
-					return -1;
+					break;
 				}
 			}
 		}

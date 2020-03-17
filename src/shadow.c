@@ -891,9 +891,11 @@ static void queue_diff_transfers(struct thread_pool *threads,
 			sizeof(struct interval) *
 			(size_t)(sfd->damage.ndamage_intvs + nshards));
 	int *offsets = calloc((size_t)nshards + 1, sizeof(int));
-	if (!offsets) {
+	if (!offsets || !intvs) {
 		// TODO: avoid making this allocation entirely
 		wp_error("Failed to allocate diff region control buffer, dropping diff tasks");
+		free(intvs);
+		free(offsets);
 		return;
 	}
 
