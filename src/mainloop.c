@@ -861,12 +861,14 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		if (rc == -1 && errno == EWOULDBLOCK) {
 			// do nothing
 		} else if (rc == -1) {
+			// sometimes this is ECONNRESET
 			wp_error("%s read failure: %s", progdesc,
 					strerror(errno));
 			return ERR_FATAL;
 		} else if (rc == 0) {
 			wp_error("%s has closed", progdesc);
-			return 0;
+			// state transitions handled in main loop
+			return ERR_STOP;
 		} else {
 			// We have successfully read some data.
 			wmsg->proto_read.zone_end += (int)rc;
@@ -1031,7 +1033,8 @@ static int read_new_chanfd(int linkfd, struct int_window *recon_fds)
 		return -1;
 	} else if (rd == 0) {
 		wp_error("link has closed");
-		return -1;
+		// sentinel value, to indicate that linkfd should be closed
+		return -2;
 	}
 	for (int i = 0; i < recon_fds->zone_end - 1; i++) {
 		close(recon_fds->data[i]);
@@ -1277,51 +1280,28 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				break;
 			}
 		}
-
-		mark_pipe_object_statuses(&g.map, npoll - 4, pfds + 4);
-		bool progsock_readable = pfds[1].revents & POLLIN;
-		bool chanmsg_active = (pfds[0].revents & POLLIN) ||
-				      (pfds[1].revents & POLLOUT) ||
-				      unread_chan_msgs;
-		/* Whether or not POLLHUP is actually set appears to depend on
-		 * if the shutdown is full or partial, and on the OS */
-		bool user_hang_up = pfds[1].revents & POLLHUP;
-		bool link_hang_up = pfds[2].revents & POLLHUP;
-		bool maybe_new_channel = pfds[2].revents & POLLIN;
-		if (pfds[0].revents & POLLHUP) {
-			needs_new_channel = true;
-		}
 		if (pfds[3].revents & POLLIN) {
 			/* After the self pipe has been used to wake up the
 			 * connection, drain it */
 			char tmp[64];
 			(void)read(g.threads.selfpipe_r, tmp, sizeof(tmp));
 		}
-		if (user_hang_up) {
-			wp_error("%s hang-up detected",
-					display_side ? "Compositor"
-						     : "Application");
 
-			/* Equivalent to ERR_STOP */
-			close(progfd);
-			progfd = -1;
-			if (way_msg.state == WM_WAITING_FOR_PROGRAM) {
-				way_msg.state = WM_TERMINAL;
-			}
-			if (chan_msg.state == CM_WAITING_FOR_PROGRAM ||
-					chan_msg.recv_start ==
-							chan_msg.recv_end) {
-				chan_msg.state = CM_TERMINAL;
-			}
-		}
-		if (link_hang_up) {
-			wp_error("Link to root process hang-up detected");
-			close(linkfd);
-			linkfd = -1;
-		}
-		if (maybe_new_channel && !link_hang_up) {
+		mark_pipe_object_statuses(&g.map, npoll - 4, pfds + 4);
+		/* POLLHUP sometimes implies POLLIN, but not on all systems.
+		 * Checking POLLHUP|POLLIN means that we can detect EOF when
+		 * we actually do try to read from the sockets, but also, if
+		 * there was data in the pipe just before the hang up, then we
+		 * can read and handle that data. */
+		bool progsock_readable = pfds[1].revents & (POLLIN | POLLHUP);
+		bool chanmsg_active = (pfds[0].revents & (POLLIN | POLLHUP)) ||
+				      (pfds[1].revents & POLLOUT) ||
+				      unread_chan_msgs;
+
+		bool maybe_new_channel = (pfds[2].revents & (POLLIN | POLLHUP));
+		if (maybe_new_channel) {
 			int new_fd = read_new_chanfd(linkfd, &recon_fds);
-			if (new_fd != -1) {
+			if (new_fd >= 0) {
 				if (chanfd != -1) {
 					close(chanfd);
 				}
@@ -1329,12 +1309,17 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				reset_connection(&cross_data, &chan_msg,
 						&way_msg, chanfd);
 				needs_new_channel = false;
+			} else if (new_fd == -2) {
+				wp_error("Link to root process hang-up detected");
+				close(linkfd);
+				linkfd = -1;
 			}
 		}
 		if (needs_new_channel && linkfd != -1) {
 			wp_error("Channel hang up detected, waiting for reconnection");
 			int new_fd = reconnect_loop(linkfd, progfd, &recon_fds);
-			if (new_fd == -1) {
+			if (new_fd < 0) {
+				// -1 is read failure or misc error, -2 is HUP
 				exit_code = ERR_FATAL;
 				break;
 			} else {
@@ -1384,11 +1369,26 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				}
 				needs_new_channel = true;
 			} else if (tr == ERR_STOP) {
-				/* Wayland connection has at least
-				 * partially shut down, so close it
-				 * fully. */
-				close(progfd);
-				progfd = -1;
+				if (m == 0) {
+					/* Stop returned while writing: Wayland
+					 * connection has at least partially
+					 * shut down, so close it fully. */
+					close(progfd);
+					progfd = -1;
+				} else {
+					/* Stop returned while reading */
+					close(progfd);
+					progfd = -1;
+					if (way_msg.state ==
+							WM_WAITING_FOR_PROGRAM) {
+						way_msg.state = WM_TERMINAL;
+					}
+					if (chan_msg.state == CM_WAITING_FOR_PROGRAM ||
+							chan_msg.recv_start ==
+									chan_msg.recv_end) {
+						chan_msg.state = CM_TERMINAL;
+					}
+				}
 			} else {
 				/* Fatal error, close and flush */
 				exit_code = tr;
