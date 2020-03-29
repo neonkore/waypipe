@@ -525,15 +525,15 @@ static int advance_chanmsg_chanread(struct chan_msg_state *cmsg,
 		}
 
 		ssize_t r = readv(chanfd, vec, nvec);
-		if (r == -1 && errno == EWOULDBLOCK) {
+		if (r == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			wp_debug("Read would block");
 			return 0;
+		} else if (r == 0 || (r == -1 && errno == ECONNRESET)) {
+			wp_debug("Channel connection closed");
+			return ERR_DISCONN;
 		} else if (r == -1) {
 			wp_error("chanfd read failure: %s", strerror(errno));
 			return ERR_FATAL;
-		} else if (r == 0) {
-			wp_debug("Channel connection closed");
-			return ERR_DISCONN;
 		} else {
 			if (nvec == 2 && (size_t)r >= vec[0].iov_len) {
 				/* Complete parsing this message */
@@ -616,7 +616,8 @@ static int advance_chanmsg_progwrite(struct chan_msg_state *cmsg, int progfd,
 		if (wc == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			wp_debug("Write to the %s would block", progdesc);
 			return 0;
-		} else if (wc == -1 && errno == EPIPE) {
+		} else if (wc == -1 &&
+				(errno == EPIPE || errno == ECONNRESET)) {
 			wp_error("%s has closed", progdesc);
 			/* The program has closed its end of the connection,
 			 * so waypipe can also cease to process all messages and
@@ -721,12 +722,13 @@ static int partial_write_transfer(int chanfd, struct transfer_queue *td,
 
 		if (wr == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			return 0;
+		} else if (wr == -1 &&
+				(errno == ECONNRESET || errno == EPIPE)) {
+			wp_debug("Channel connection closed");
+			return ERR_DISCONN;
 		} else if (wr == -1) {
 			wp_error("chanfd write failure: %s", strerror(errno));
 			return ERR_FATAL;
-		} else if (wr == 0) {
-			wp_debug("Channel connection closed");
-			return ERR_DISCONN;
 		}
 
 		size_t uwr = (size_t)wr;
@@ -858,17 +860,16 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 				(size_t)(wmsg->proto_read.size -
 						wmsg->proto_read.zone_end),
 				&wmsg->fds);
-		if (rc == -1 && errno == EWOULDBLOCK) {
+		if (rc == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			// do nothing
-		} else if (rc == -1) {
-			// sometimes this is ECONNRESET
-			wp_error("%s read failure: %s", progdesc,
-					strerror(errno));
-			return ERR_FATAL;
-		} else if (rc == 0) {
+		} else if (rc == 0 || (rc == -1 && errno == ECONNRESET)) {
 			wp_error("%s has closed", progdesc);
 			// state transitions handled in main loop
 			return ERR_STOP;
+		} else if (rc == -1) {
+			wp_error("%s read failure: %s", progdesc,
+					strerror(errno));
+			return ERR_FATAL;
 		} else {
 			// We have successfully read some data.
 			wmsg->proto_read.zone_end += (int)rc;
@@ -1025,16 +1026,16 @@ static int read_new_chanfd(int linkfd, struct int_window *recon_fds)
 {
 	uint8_t tmp = 0;
 	ssize_t rd = iovec_read(linkfd, (char *)&tmp, 1, recon_fds);
-	if (rd == -1 && errno == EWOULDBLOCK) {
+	if (rd == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 		// do nothing
 		return -1;
-	} else if (rd == -1) {
-		wp_error("link read failure: %s", strerror(errno));
-		return -1;
-	} else if (rd == 0) {
+	} else if (rd == 0 || (rd == -1 && errno == ECONNRESET)) {
 		wp_error("link has closed");
 		// sentinel value, to indicate that linkfd should be closed
 		return -2;
+	} else if (rd == -1) {
+		wp_error("link read failure: %s", strerror(errno));
+		return -1;
 	}
 	for (int i = 0; i < recon_fds->zone_end - 1; i++) {
 		close(recon_fds->data[i]);
