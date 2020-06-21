@@ -43,9 +43,11 @@ static inline uint32_t conntoken_version(uint32_t header)
 static int check_conn_header(uint32_t header)
 {
 	if ((header >> 16) != WAYPIPE_PROTOCOL_VERSION) {
-		wp_error("Rejecting connection, protocol version (%u) does not match (%u). Check that Waypipe has the correct version.",
+		wp_error("Rejecting connection, protocol version (%u) does not match (%u).",
 				conntoken_version(header),
 				WAYPIPE_PROTOCOL_VERSION);
+		wp_error("Check that Waypipe has the correct version (>=0.7.0 on both sides; this is %s)",
+				WAYPIPE_VERSION);
 		return -1;
 	}
 	if ((header & CONN_FIXED_BIT) == 0) {
