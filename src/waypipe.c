@@ -438,7 +438,7 @@ int main(int argc, char **argv)
 		if (!(mode & perms->mode_mask) && mode != MODE_FAIL) {
 			fprintf(stderr, "Option %s is not allowed in mode %s\n",
 					options[option_index].name,
-					argv[mode_argc - 1]);
+					argv[mode_argc]);
 			return EXIT_FAILURE;
 		}
 
