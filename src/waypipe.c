@@ -86,6 +86,7 @@ static const char usage_string[] =
 		"      --display D      server,ssh: the Wayland display name or path\n"
 		"      --drm-node R     set the local render node. default: /dev/dri/renderD128\n"
 		"      --remote-node R  ssh: set the remote render node path\n"
+		"      --remote-bin R   ssh: set the remote waypipe binary. default: waypipe\n"
 		"      --login-shell    server: if server CMD is empty, run a login shell\n"
 		"      --threads T      set thread pool size, default=hardware threads/2\n"
 		"      --unlink-socket  server: unlink the socket that waypipe connects to\n"
@@ -315,6 +316,7 @@ void handle_noop(int sig) { (void)sig; }
 #define ARG_VIDEO 1008
 #define ARG_HWVIDEO 1009
 #define ARG_CONTROL 1010
+#define ARG_WAYPIPE_BINARY 1011
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -328,6 +330,7 @@ static const struct option options[] = {
 		{"unlink-socket", no_argument, NULL, ARG_UNLINK},
 		{"drm-node", required_argument, NULL, ARG_DRMNODE},
 		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
+		{"remote-bin", required_argument, NULL, ARG_WAYPIPE_BINARY},
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
 		{"video", no_argument, NULL, ARG_VIDEO},
 		{"hwvideo", no_argument, NULL, ARG_HWVIDEO},
@@ -352,6 +355,7 @@ static const struct arg_permissions arg_permissions[] = {
 		{ARG_UNLINK, MODE_SERVER},
 		{ARG_DRMNODE, MODE_SERVER},
 		{ARG_REMOTENODE, MODE_SSH},
+		{ARG_WAYPIPE_BINARY, MODE_SSH},
 		{ARG_LOGIN_SHELL, MODE_SERVER},
 		{ARG_VIDEO, MODE_SSH | MODE_CLIENT | MODE_SERVER},
 		{ARG_HWVIDEO, MODE_SSH | MODE_CLIENT | MODE_SERVER},
@@ -374,6 +378,7 @@ int main(int argc, char **argv)
 	char *comp_string = NULL;
 	char *nthread_string = NULL;
 	char *wayland_display = NULL;
+	char *waypipe_binary = "waypipe";
 	char *control_path = NULL;
 	const char *socketpath = NULL;
 
@@ -527,6 +532,9 @@ int main(int argc, char **argv)
 				fail = true;
 			}
 		} break;
+		case ARG_WAYPIPE_BINARY:
+			waypipe_binary = optarg;
+			break;
 		default:
 			fail = true;
 			break;
@@ -720,9 +728,7 @@ int main(int argc, char **argv)
 			for (int i = 0; i <= dstidx; i++) {
 				arglist[offset + i] = argv[i];
 			}
-			/* NOTE: the remote waypipe instance must be in
-			 * the default PATH */
-			arglist[dstidx + 1 + offset++] = "waypipe";
+			arglist[dstidx + 1 + offset++] = waypipe_binary;
 			if (debug) {
 				arglist[dstidx + 1 + offset++] = "-d";
 			}

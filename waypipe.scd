@@ -104,6 +104,11 @@ compressible as images containing pictures.
 	In ssh mode, specify the path *R* to the drm device that the remote instance
 	of waypipe (running in server mode) should use.
 
+*--remote-bin R*
+	In ssh mode, specify the path *R* to the waypipe binary on the remote
+	computer, or its name if it is available in _PATH_. It defaults to
+	*waypipe* if this option isn’t passed.
+
 *--login-shell*
 	Only for server mode; if no command is being run, open a login shell.
 
