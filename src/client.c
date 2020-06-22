@@ -27,6 +27,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,15 +44,17 @@ static inline uint32_t conntoken_version(uint32_t header)
 static int check_conn_header(uint32_t header)
 {
 	if ((header >> 16) != WAYPIPE_PROTOCOL_VERSION) {
-		wp_error("Rejecting connection, protocol version (%u) does not match (%u).",
-				conntoken_version(header),
+		wp_error("Rejecting connection header %08" PRIx32
+			 ", protocol version (%u) does not match (%u).",
+				header, conntoken_version(header),
 				WAYPIPE_PROTOCOL_VERSION);
 		wp_error("Check that Waypipe has the correct version (>=0.7.0 on both sides; this is %s)",
 				WAYPIPE_VERSION);
-		return -1;
-	}
-	if ((header & CONN_FIXED_BIT) == 0) {
-		wp_error("Rejecting connection, server endianness does not match client");
+		if ((header & CONN_FIXED_BIT) == 0 &&
+				(header & CONN_UNSET_BIT) != 0) {
+			wp_error("It is also possible that server endianness does not match client");
+			return -1;
+		}
 		return -1;
 	}
 	return 0;

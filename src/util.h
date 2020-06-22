@@ -79,9 +79,11 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
 int connect_to_socket(const char *socket_path);
 
 #define WAYPIPE_PROTOCOL_VERSION 0x1u
-#define CONN_FIXED_BIT 0x1u
-#define CONN_RECONNECTABLE_BIT 0x2u
-#define CONN_UPDATE_BIT 0x4u
+/** If the byte order is wrong, the fixed set/unset bits are swapped */
+#define CONN_FIXED_BIT (0x1u << 7)
+#define CONN_UNSET_BIT (0x1u << 31)
+#define CONN_RECONNECTABLE_BIT (0x1u << 0)
+#define CONN_UPDATE_BIT (0x1u << 1)
 struct connection_token {
 	/** Indicate protocol version (top 16 bits), endianness, and
 	 * reconnection flags. The highest bit must stay clear. */

@@ -27,6 +27,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,6 +159,7 @@ static int run_single_server(int control_pipe, const char *socket_path,
 	memset(&token, 0, sizeof(token));
 	fill_random_key(&token);
 	token.header = conntoken_header(reconnectable, false);
+	wp_debug("Connection token header: %08" PRIx32, token.header);
 	if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
 		wp_error("Failed to write connection token to socket");
 		goto fail_cfd;
@@ -340,6 +342,7 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 	struct connection_token token;
 	memset(&token, 0, sizeof(token));
 	token.header = conntoken_header(control_pipe != -1, false);
+	wp_debug("Connection token header: %08" PRIx32, token.header);
 	while (!shutdown_flag) {
 		int status = -1;
 		if (wait_for_pid_and_clean(
