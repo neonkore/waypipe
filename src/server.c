@@ -535,6 +535,9 @@ int run_server(const char *socket_path, const char *wayland_display,
 	if (control_pipe != -1) {
 		unlink(control_path);
 	}
+	if (!oneshot) {
+		unlink(display_path);
+	}
 
 	// Wait for child processes to exit
 	wp_debug("Waiting for child handlers and program");
