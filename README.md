@@ -72,6 +72,9 @@ This is usable, but still somewhat unstable right now[0]. The main
 development location[1], command-line interface, and wire format may yet
 change completely. Bug reports and patches are always welcome.
 
+The wire format most recently changed with version 0.7.0, and is not
+compatible with earlier versions of Waypipe.
+
 Any of the following may make waypipe crash with an error message. If
 it segfaults, file a bug report!
 
