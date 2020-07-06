@@ -68,11 +68,13 @@ endif
 test_programs = [
 	['TEST_WESTON_SHM_PATH', 'weston-simple-shm'],
 	# ['TEST_WESTON_EGL_PATH', 'weston-simple-egl'],
-	['TEST_WESTON_DMA_PATH', 'weston-simple-dmabuf-drm'],
 	['TEST_WESTON_TERM_PATH', 'weston-terminal'],
 	['TEST_WESTON_PRES_PATH', 'weston-presentation-shm'],
 	['TEST_WESTON_SUBSURF_PATH', 'weston-subsurfaces'],
 ]
+if has_dmabuf
+	test_programs += [['TEST_WESTON_DMA_PATH', 'weston-simple-dmabuf-egl']]
+endif
 have_test_progs = false
 foreach t : test_programs
 	test_prog = find_program(t[1], required: false)

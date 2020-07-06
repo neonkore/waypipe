@@ -53,6 +53,9 @@ libgbm = dependency('gbm', required: get_option('with_dmabuf'))
 libdrm = dependency('libdrm', required: get_option('with_dmabuf'))
 if libgbm.found() and libdrm.found()
 	config_data.set('HAS_DMABUF', 1, description: 'Support DMABUF replication')
+	has_dmabuf = true
+else
+	has_dmabuf = false
 endif
 pthreads = dependency('threads')
 rt = cc.find_library('rt')
