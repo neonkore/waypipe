@@ -67,6 +67,12 @@ static inline size_t alignz(size_t v, size_t m)
 /* only valid for nonegative v and positive u */
 static inline int floordiv(int v, int u) { return v / u; }
 static inline int ceildiv(int v, int u) { return (v + u - 1) / u; }
+/* valid as long as nparts < 2**15, (hi - lo) < 2**31 */
+static inline int split_interval(int lo, int hi, int nparts, int index)
+{
+	return lo + index * ((hi - lo) / nparts) +
+	       (index * ((hi - lo) % nparts)) / nparts;
+}
 
 /** Make the file underlying this file descriptor nonblocking.
  * Silently return -1 on failure. */

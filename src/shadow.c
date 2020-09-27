@@ -834,10 +834,10 @@ static void queue_fill_transfers(struct thread_pool *threads,
 		task.sfd = sfd;
 		task.msg_queue = &transfers->async_recv_queue;
 
-		int range = (region_end - region_start);
-		task.zone_start = region_start + (range * i) / nshards;
-		task.zone_end = region_start + (range * (i + 1)) / nshards;
-
+		task.zone_start = split_interval(
+				region_start, region_end, nshards, i);
+		task.zone_end = split_interval(
+				region_start, region_end, nshards, i + 1);
 		threads->stack[threads->stack_count++] = task;
 	}
 	pthread_mutex_unlock(&threads->work_mutex);
@@ -908,9 +908,8 @@ static void queue_diff_transfers(struct thread_pool *threads,
 	int tot_blocks = net_damage / bs;
 	int ir = 0, iw = 0, acc_prev_blocks = 0;
 	for (int shard = 0; shard < nshards; shard++) {
-		int s_lower = (int)(shard * (int64_t)tot_blocks) / nshards;
-		int s_upper = (int)((shard + 1) * (int64_t)tot_blocks) /
-			      nshards;
+		int s_lower = split_interval(0, tot_blocks, nshards, shard);
+		int s_upper = split_interval(0, tot_blocks, nshards, shard + 1);
 
 		while (acc_prev_blocks < s_upper &&
 				ir < sfd->damage.ndamage_intvs) {

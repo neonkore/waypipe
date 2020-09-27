@@ -118,8 +118,10 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 		for (int s = 0; s < test.shards; s++) {
 
 			struct interval damage;
-			damage.start = (s * (int)test.size) / test.shards;
-			damage.end = ((s + 1) * (int)test.size) / test.shards;
+			damage.start = split_interval(
+					0, (int)test.size, test.shards, s);
+			damage.end = split_interval(
+					0, (int)test.size, test.shards, s + 1);
 			int alignment = 1 << alignment_bits;
 			damage.start = alignment * (damage.start / alignment);
 			damage.end = alignment * (damage.end / alignment);
