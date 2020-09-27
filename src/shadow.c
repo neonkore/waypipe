@@ -804,6 +804,11 @@ static void queue_fill_transfers(struct thread_pool *threads,
 
 	int region_start = (int)sfd->remote_bufsize;
 	int region_end = (int)sfd->buffer_size;
+	if (region_start > region_end) {
+		wp_error("Cannot queue fill transfers for a size reduction from %d to %d bytes",
+				region_start, region_end);
+		return;
+	}
 	if (region_start == region_end) {
 		return;
 	}
@@ -1096,7 +1101,9 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
 
+			sfd->remote_bufsize = 0;
 			queue_fill_transfers(threads, sfd, transfers);
+			sfd->remote_bufsize = sfd->buffer_size;
 		} else {
 			damage_everything(&sfd->damage);
 
@@ -1548,6 +1555,8 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return 0;
 		}
 		increase_buffer_sizes(sfd, threads, (size_t)header->file_size);
+		// the extension implies the remote buffer is at least as large
+		sfd->remote_bufsize = sfd->buffer_size;
 	} else if (type == WMSG_BUFFER_FILL) {
 		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
 			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
