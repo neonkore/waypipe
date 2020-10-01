@@ -23,6 +23,7 @@ protocols = [
 	'wlr-screencopy-unstable-v1.xml',
 	'wlr-export-dmabuf-unstable-v1.xml',
 	'wlr-data-control-unstable-v1.xml',
+	'wlr-gamma-control-unstable-v1.xml',
 	'wayland-drm.xml',
 ]
 
@@ -34,12 +35,14 @@ foreach xml : protocols
 		'@0@ code'.format(xml.underscorify()),
 		output: '@BASENAME@-data.c',
 		input: xml,
+		depend_files: fn_list,
 		command: [python3, symgen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 	protocols_headers += custom_target(
 		'@0@ client-header'.format(xml.underscorify()),
 		output: '@BASENAME@-defs.h',
 		input: xml,
+		depend_files: fn_list,
 		command: [python3, symgen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 endforeach

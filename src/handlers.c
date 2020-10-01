@@ -42,6 +42,7 @@
 #include <wayland-drm-defs.h>
 #include <wlr-data-control-unstable-v1-defs.h>
 #include <wlr-export-dmabuf-unstable-v1-defs.h>
+#include <wlr-gamma-control-unstable-v1-defs.h>
 #include <wlr-screencopy-unstable-v1-defs.h>
 #include <xdg-shell-defs.h>
 
@@ -1438,6 +1439,23 @@ void do_wl_data_source_evt_send(
 	(void)mime_type;
 }
 
+void do_zwlr_gamma_control_v1_req_set_gamma(struct context *ctx, int fd)
+{
+	size_t fdsz = 0;
+	enum fdcat fdtype = get_fd_type(fd, &fdsz);
+	if (fdtype != FDC_FILE) {
+		wp_error("gamma ramp fd %d was not file-like (type=%s)", fd,
+				fdcat_to_str(fdtype));
+		return;
+	}
+	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
+			fdtype, fdsz, NULL, false, false);
+	/* Mark the shadow structure as owned by the protocol, but do not
+	 * increase the protocol refcount, so that as soon as it gets
+	 * transferred it is destroyed */
+	sfd->has_owner = true;
+}
+
 /* Q: embed this section and what follows into 'symgen'? */
 static const struct evt_map_wl_display wl_display_event_handler = {
 		.error = call_wl_display_evt_error,
@@ -1522,6 +1540,8 @@ static const struct req_map_gtk_primary_selection_offer
 				.receive = call_gtk_primary_selection_offer_req_receive};
 static const struct req_map_wl_data_offer wl_data_offer_request_handler = {
 		.receive = call_wl_data_offer_req_receive};
+static const struct req_map_zwlr_gamma_control_v1 zwlr_gamma_control_request_handler =
+		{.set_gamma = call_zwlr_gamma_control_v1_req_set_gamma};
 
 const struct msg_handler handlers[] = {
 		{&intf_wl_display, &wl_display_event_handler,
@@ -1565,6 +1585,8 @@ const struct msg_handler handlers[] = {
 				NULL, false},
 		{&intf_wl_data_source, &wl_data_source_event_handler, NULL,
 				false},
+		{&intf_zwlr_gamma_control_v1, NULL,
+				&zwlr_gamma_control_request_handler, false},
 
 		/* List all other known global object interface types,
 		 * so that the parsing code can identify all fd usages
@@ -1597,8 +1619,10 @@ const struct msg_handler handlers[] = {
 				true},
 		// wlr-export-dmabuf
 		{&intf_zwlr_export_dmabuf_manager_v1, NULL, NULL, true},
-		// wlr-export-dmabuf
+		// wlr-data-control
 		{&intf_zwlr_data_control_manager_v1, NULL, NULL, true},
+		// wlr-gamma-control
+		{&intf_zwlr_gamma_control_manager_v1, NULL, NULL, true},
 
 		{NULL, NULL, NULL, false}};
 const struct wp_interface *the_display_interface = &intf_wl_display;
