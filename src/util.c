@@ -238,24 +238,26 @@ bool wait_for_pid_and_clean(pid_t *target_pid, int *status, int options,
 
 int buf_ensure_size(int count, size_t obj_size, int *space, void **data)
 {
-	if (count <= *space) {
+	int x = *space;
+	if (count <= x) {
 		return 0;
 	}
 	if (count >= INT32_MAX / 2 || count <= 0) {
 		return -1;
 	}
-	if (*space < 1) {
-		*space = 1;
+	if (x < 1) {
+		x = 1;
 	}
-	while (*space < count) {
-		*space *= 2;
+	while (x < count) {
+		x *= 2;
 	}
-	void *new_data = realloc(*data, (size_t)(*space) * obj_size);
-	if (new_data) {
-		*data = new_data;
-		return 0;
+	void *new_data = realloc(*data, (size_t)x * obj_size);
+	if (!new_data) {
+		return -1;
 	}
-	return -1;
+	*data = new_data;
+	*space = x;
+	return 0;
 }
 
 static const char *wmsg_types[] = {

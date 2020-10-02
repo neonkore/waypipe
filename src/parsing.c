@@ -123,7 +123,7 @@ int init_message_tracker(struct message_tracker *mt)
 		return -1;
 	}
 	if (listset_insert(NULL, &mt->objects, disp) == -1) {
-		wp_error("Failed to allocate space for new object");
+		wp_error("Failed to allocate space for display object");
 		return -1;
 	}
 	return 0;
@@ -228,6 +228,9 @@ static bool build_new_objects(const struct msg_data *data,
 			}
 			struct wp_object *new_obj = create_wp_object(
 					new_id, data->new_obj_types[k]);
+			if (!new_obj) {
+				return false;
+			}
 			if (listset_insert(map, &mt->objects, new_obj) == -1) {
 				wp_error("Failed to allocate space for new object id=%u type=%s",
 						new_id,
