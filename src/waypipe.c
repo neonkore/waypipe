@@ -56,7 +56,7 @@ log_handler_func_t log_funcs[2] = {NULL, NULL};
 static const char usage_string[] =
 		"Usage: waypipe [options] mode ...\n"
 		"A proxy for Wayland protocol applications.\n"
-		"Example: waypipe ssh -C user@place weston-terminal\n"
+		"Example: waypipe ssh user@server weston-terminal\n"
 		"\n"
 		"Modes:\n"
 		"  ssh [...]    Wrap an ssh invocation to run waypipe on both ends of the\n"
