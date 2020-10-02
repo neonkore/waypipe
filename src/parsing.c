@@ -37,21 +37,17 @@ static const char *get_type_name(struct wp_object *obj)
 	return obj->type ? obj->type->name : "<no type>";
 }
 
-void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
+int listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 		struct wp_object *obj)
 {
 	if (!lst->size) {
-		lst->size = 4;
+		lst->size = 0;
 		lst->nobj = 0;
-		lst->objs = calloc(4, sizeof(struct wp_object *));
+		lst->objs = NULL;
 	}
-	int isz = lst->size;
-	while (lst->nobj >= lst->size) {
-		lst->size *= 2;
-	}
-	if (isz != lst->size) {
-		lst->objs = realloc(lst->objs,
-				(size_t)lst->size * sizeof(struct wp_object *));
+	if (buf_ensure_size(lst->nobj + 1, sizeof(struct wp_object *),
+			    &lst->size, (void **)&lst->objs) == -1) {
+		return -1;
 	}
 	for (int i = 0; i < lst->nobj; i++) {
 		if (lst->objs[i]->obj_id == obj->obj_id) {
@@ -69,7 +65,7 @@ void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 			 * are replaced. */
 			destroy_wp_object(map, lst->objs[i]);
 			lst->objs[i] = obj;
-			return;
+			return 0;
 		}
 		if (lst->objs[i]->obj_id > obj->obj_id) {
 			memmove(lst->objs + i + 1, lst->objs + i,
@@ -77,10 +73,11 @@ void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 							sizeof(struct wp_object *));
 			lst->objs[i] = obj;
 			lst->nobj++;
-			return;
+			return 0;
 		}
 	}
 	lst->objs[lst->nobj++] = obj;
+	return 0;
 }
 void listset_remove(struct obj_list *lst, struct wp_object *obj)
 {
@@ -117,12 +114,19 @@ struct wp_object *get_object(struct message_tracker *mt, uint32_t id,
 	return listset_get(&mt->objects, id);
 }
 
-void init_message_tracker(struct message_tracker *mt)
+int init_message_tracker(struct message_tracker *mt)
 {
 	memset(mt, 0, sizeof(*mt));
 
-	listset_insert(NULL, &mt->objects,
-			create_wp_object(1, the_display_interface));
+	struct wp_object *disp = create_wp_object(1, the_display_interface);
+	if (!disp) {
+		return -1;
+	}
+	if (listset_insert(NULL, &mt->objects, disp) == -1) {
+		wp_error("Failed to allocate space for new object");
+		return -1;
+	}
+	return 0;
 }
 void cleanup_message_tracker(
 		struct fd_translation_map *map, struct message_tracker *mt)
@@ -224,7 +228,13 @@ static bool build_new_objects(const struct msg_data *data,
 			}
 			struct wp_object *new_obj = create_wp_object(
 					new_id, data->new_obj_types[k]);
-			listset_insert(map, &mt->objects, new_obj);
+			if (listset_insert(map, &mt->objects, new_obj) == -1) {
+				wp_error("Failed to allocate space for new object id=%u type=%s",
+						new_id,
+						data->new_obj_types[k]->name);
+				destroy_wp_object(map, new_obj);
+				return false;
+			}
 		}
 	}
 	return true;

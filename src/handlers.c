@@ -251,7 +251,8 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 
 	struct wp_object *new_obj = calloc(1, sz);
 	if (!new_obj) {
-		wp_error("Failed to allocate new wp_object");
+		wp_error("Failed to allocate new wp_object id=%d type=%s", id,
+				type->name);
 		return NULL;
 	}
 	new_obj->obj_id = id;
@@ -371,8 +372,10 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 				free(the_object);
 				the_object = create_wp_object(
 						obj_id, &intf_wp_presentation);
-				listset_insert(&ctx->g->map, ctx->obj_list,
-						the_object);
+				if (listset_insert(&ctx->g->map, ctx->obj_list,
+						    the_object) == -1) {
+					wp_error("Failed to allocate space to store new presentation object");
+				}
 			}
 			return;
 		}

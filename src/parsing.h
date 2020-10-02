@@ -82,13 +82,13 @@ struct context {
 };
 
 /** Add a protocol object to the list, replacing any preceding object with
- * the same id */
-void listset_insert(struct fd_translation_map *map, struct obj_list *lst,
+ * the same id. Returns -1 on allocation failure. */
+int listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 		struct wp_object *obj);
 void listset_remove(struct obj_list *lst, struct wp_object *obj);
 struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
-void init_message_tracker(struct message_tracker *mt);
+int init_message_tracker(struct message_tracker *mt);
 void cleanup_message_tracker(
 		struct fd_translation_map *map, struct message_tracker *mt);
 
