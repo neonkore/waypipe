@@ -235,7 +235,7 @@ struct shadow_fd {
 void setup_translation_map(struct fd_translation_map *map, bool display_side);
 void cleanup_translation_map(struct fd_translation_map *map);
 
-void setup_thread_pool(struct thread_pool *pool,
+int setup_thread_pool(struct thread_pool *pool,
 		enum compression_mode compression, int compression_level,
 		int n_threads);
 void cleanup_thread_pool(struct thread_pool *pool);

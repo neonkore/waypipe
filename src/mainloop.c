@@ -1175,6 +1175,13 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 
 	struct way_msg_state way_msg;
 	memset(&way_msg, 0, sizeof(way_msg));
+	struct chan_msg_state chan_msg;
+	memset(&chan_msg, 0, sizeof(chan_msg));
+	struct cross_state cross_data;
+	memset(&cross_data, 0, sizeof(cross_data));
+	struct globals g;
+	memset(&g, 0, sizeof(g));
+
 	way_msg.state = WM_WAITING_FOR_PROGRAM;
 	/* AFAIK, there is no documented upper bound for the size of a
 	 * Wayland protocol message, but libwayland (in wl_buffer_put)
@@ -1188,17 +1195,28 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	way_msg.proto_write.size = 2 * max_read_size;
 	way_msg.proto_write.data = malloc((size_t)way_msg.proto_write.size);
 	way_msg.max_iov = get_iov_max();
-	pthread_mutex_init(&way_msg.transfers.async_recv_queue.lock, NULL);
+	int mut_ret = pthread_mutex_init(
+			&way_msg.transfers.async_recv_queue.lock, NULL);
+	if (mut_ret) {
+		wp_error("Mutex creation failed: %s", strerror(mut_ret));
+		goto init_failure_cleanup;
+	}
 
-	struct chan_msg_state chan_msg;
-	memset(&chan_msg, 0, sizeof(chan_msg));
 	chan_msg.state = CM_WAITING_FOR_CHANNEL;
 	chan_msg.recv_size = 2 * RECV_GOAL_READ_SIZE;
 	chan_msg.recv_buffer = malloc((size_t)chan_msg.recv_size);
 	chan_msg.proto_write.size = max_read_size * 2;
 	chan_msg.proto_write.data = malloc((size_t)chan_msg.proto_write.size);
+	if (!chan_msg.proto_write.data || !chan_msg.recv_buffer ||
+			!way_msg.proto_write.data || !way_msg.fds.data ||
+			!way_msg.proto_read.data) {
+		wp_error("Failed to allocate a message scratch buffer");
+		goto init_failure_cleanup;
+	}
 
-	struct globals g;
+	/* The first packet received will be #1 */
+	way_msg.transfers.last_msgno = 1;
+
 	g.config = config;
 	g.render = (struct render_data){
 			.drm_node_path = config->drm_node,
@@ -1212,20 +1230,16 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			.av_vadisplay = NULL,
 			.av_copy_config = 0,
 	};
-	setup_thread_pool(&g.threads, config->compression,
-			config->compression_level, config->n_worker_threads);
+	if (setup_thread_pool(&g.threads, config->compression,
+			    config->compression_level,
+			    config->n_worker_threads) == -1) {
+		goto init_failure_cleanup;
+	}
 	setup_translation_map(&g.map, display_side);
-	init_message_tracker(&g.tracker);
+	if (init_message_tracker(&g.tracker) == -1) {
+		goto init_failure_cleanup;
+	}
 	setup_video_logging();
-
-	/* The first packet received will be #1 */
-	struct cross_state cross_data = {
-			.last_acked_msgno = 0,
-			.last_received_msgno = 0,
-			.newest_received_msgno = 0,
-			.last_confirmed_msgno = 0,
-	};
-	way_msg.transfers.last_msgno = 1;
 
 	struct int_window recon_fds = {
 			.data = NULL,
@@ -1437,9 +1451,12 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		// Periodic maintenance. It doesn't matter who does this
 		flush_writable_pipes(&g.map);
 	}
+	free(pfds);
+	free(recon_fds.data);
 	wp_debug("Exiting main loop (%d, %d, %d), attempting close message",
 			exit_code, way_msg.state, chan_msg.state);
 
+init_failure_cleanup:
 	/* It's possible, but very very unlikely, that waypipe gets closed
 	 * while Wayland protocol messages are being written to the program
 	 * and the most recent message was only partially written. */
@@ -1502,9 +1519,6 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	} else {
 		wp_debug("Channel closed, hence no close notification");
 	}
-
-	free(pfds);
-	free(recon_fds.data);
 
 	cleanup_thread_pool(&g.threads);
 	cleanup_message_tracker(&g.map, &g.tracker);

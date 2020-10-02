@@ -208,16 +208,22 @@ static void shutdown_threads(struct thread_pool *pool)
 	pthread_cond_broadcast(&pool->work_cond);
 	pthread_mutex_unlock(&pool->work_mutex);
 
-	for (int i = 1; i < pool->nthreads; i++) {
-		pthread_join(pool->threads[i].thread, NULL);
+	if (pool->threads) {
+		for (int i = 1; i < pool->nthreads; i++) {
+			if (pool->threads[i].thread) {
+				pthread_join(pool->threads[i].thread, NULL);
+			}
+		}
 	}
 	pool->stack = NULL;
 }
 
-void setup_thread_pool(struct thread_pool *pool,
+int setup_thread_pool(struct thread_pool *pool,
 		enum compression_mode compression, int comp_level,
 		int n_threads)
 {
+	memset(pool, 0, sizeof(struct thread_pool));
+
 	pool->diff_func = get_diff_function(
 			DIFF_FASTEST, &pool->diff_alignment_bits);
 
@@ -236,31 +242,39 @@ void setup_thread_pool(struct thread_pool *pool,
 	pool->tasks_in_progress = 0;
 	pool->do_work = true;
 
-	pthread_mutex_init(&pool->work_mutex, NULL);
-	pthread_cond_init(&pool->work_cond, NULL);
-
 	/* Thread #0 is the 'main' thread */
 	pool->threads = calloc(
 			(size_t)pool->nthreads, sizeof(struct thread_data));
-	bool had_failures = false;
+	if (!pool->threads) {
+		wp_error("Failed to allocate list of thread data");
+		return -1;
+	}
+
+	int ret;
+	ret = pthread_mutex_init(&pool->work_mutex, NULL);
+	if (ret) {
+		wp_error("Mutex creation failed: %s", strerror(ret));
+		return -1;
+	}
+	ret = pthread_cond_init(&pool->work_cond, NULL);
+	if (ret) {
+		wp_error("Condition variable creation failed: %s",
+				strerror(ret));
+		return -1;
+	}
+
 	pool->threads[0].pool = pool;
 	pool->threads[0].thread = pthread_self();
 	for (int i = 1; i < pool->nthreads; i++) {
 		pool->threads[i].pool = pool;
-		int ret = pthread_create(&pool->threads[i].thread, NULL,
+		ret = pthread_create(&pool->threads[i].thread, NULL,
 				worker_thread_main, &pool->threads[i]);
-		if (ret == -1) {
-			wp_error("Thread creation failed");
-			had_failures = true;
+		if (ret) {
+			wp_error("Thread creation failed: %s", strerror(ret));
+			// Stop making new threads, but keep what is there
+			pool->nthreads = i;
 			break;
 		}
-	}
-
-	if (had_failures) {
-		shutdown_threads(pool);
-		pool->threads = realloc(
-				pool->threads, sizeof(struct thread_data));
-		pool->nthreads = 1;
 	}
 
 	setup_thread_local(&pool->threads[0], compression, comp_level);
@@ -275,11 +289,14 @@ void setup_thread_pool(struct thread_pool *pool,
 		wp_error("Failed to make read end of pipe nonblocking: %s",
 				strerror(errno));
 	}
+	return 0;
 }
 void cleanup_thread_pool(struct thread_pool *pool)
 {
 	shutdown_threads(pool);
-	cleanup_thread_local(&pool->threads[0]);
+	if (pool->threads) {
+		cleanup_thread_local(&pool->threads[0]);
+	}
 
 	pthread_mutex_destroy(&pool->work_mutex);
 	pthread_cond_destroy(&pool->work_cond);
