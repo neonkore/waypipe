@@ -78,11 +78,6 @@ struct wp_buffer {
 	uint64_t dmabuf_modifiers[MAX_DMABUF_PLANES];
 };
 
-struct wp_keyboard {
-	struct wp_object base;
-	struct shadow_fd *owned_buffer;
-};
-
 struct damage_record {
 	int x, y, width, height;
 	bool buffer_coordinates;
@@ -186,11 +181,6 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 	} else if (object->type == &intf_wl_surface) {
 		struct wp_surface *r = (struct wp_surface *)object;
 		free(r->damage_list);
-	} else if (object->type == &intf_wl_keyboard) {
-		struct wp_keyboard *r = (struct wp_keyboard *)object;
-		if (r->owned_buffer) {
-			shadow_decref_protocol(map, r->owned_buffer);
-		}
 	} else if (object->type == &intf_zwlr_screencopy_frame_v1) {
 		struct wp_wlr_screencopy_frame *r =
 				(struct wp_wlr_screencopy_frame *)object;
@@ -245,8 +235,6 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 		sz = sizeof(struct wp_buffer);
 	} else if (type == &intf_wl_surface) {
 		sz = sizeof(struct wp_surface);
-	} else if (type == &intf_wl_keyboard) {
-		sz = sizeof(struct wp_keyboard);
 	} else if (type == &intf_zwlr_screencopy_frame_v1) {
 		sz = sizeof(struct wp_wlr_screencopy_frame);
 	} else if (type == &intf_wp_presentation) {
@@ -745,8 +733,10 @@ void do_wl_keyboard_evt_keymap(
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			fdtype, fdsz, NULL, false, false);
-	struct wp_keyboard *keyboard = (struct wp_keyboard *)ctx->obj;
-	keyboard->owned_buffer = shadow_incref_protocol(sfd);
+	/* The keyboard file descriptor is never changed after being sent.
+	 * Mark the shadow structure as owned by the protocol, so it can be
+	 * automatically deleted as soon as the fd has been transferred. */
+	sfd->has_owner = true;
 	(void)format;
 }
 
