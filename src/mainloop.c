@@ -916,15 +916,24 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	/* Acknowledge the other side's transfers as soon as possible */
 	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
 		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
+		if (!ackm) {
+			wp_error("Failed to allocate transfer acknowledgement message");
+			goto ackmsg_fail;
+		}
 		ackm->size_and_type = transfer_header(
 				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
-		ackm->messages_received = cxs->last_received_msgno;
-		cxs->last_acked_msgno = cxs->last_received_msgno;
+
 		/* To avoid infinite regress, receive acknowledgement
 		 * messages do not themselves increase the message counters. */
-
-		transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack), ackm,
-				true);
+		if (transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack),
+				    ackm, true) == -1) {
+			wp_error("Failed to allocate space for ack message transfer");
+			free(ackm);
+			goto ackmsg_fail;
+		}
+		ackm->messages_received = cxs->last_received_msgno;
+		cxs->last_acked_msgno = cxs->last_received_msgno;
+	ackmsg_fail:;
 	}
 
 	for (struct shadow_fd *cur = g->map.list, *nxt = NULL; cur; cur = nxt) {
