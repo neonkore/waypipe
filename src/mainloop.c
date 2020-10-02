@@ -956,6 +956,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 							  sizeof(int32_t) +
 					  sizeof(uint32_t);
 			uint32_t *msg = malloc(act_size);
+			if (!msg) {
+				// TODO: delay or raise error here?
+				wp_error("Failed to allocate file desc tx msg");
+				goto skip_proto;
+			}
 			msg[0] = transfer_header(act_size, WMSG_INJECT_RIDS);
 			int32_t *rbuffer = (int32_t *)(msg + 1);
 
@@ -985,6 +990,10 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 					act_size, WMSG_PROTOCOL);
 
 			uint8_t *copy_proto = malloc(alignz(act_size, 4));
+			if (!copy_proto) {
+				wp_error("Failed to allocate protocol tx msg");
+				goto skip_proto;
+			}
 			memcpy(copy_proto, &protoh, sizeof(uint32_t));
 			memcpy(copy_proto + sizeof(uint32_t),
 					wmsg->proto_write.data,
@@ -999,6 +1008,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			wmsg->trailing[wmsg->ntrailing].iov_base = copy_proto;
 			wmsg->ntrailing++;
 		}
+	skip_proto:;
 	}
 
 	int n_transfers = wmsg->transfers.end - wmsg->transfers.start;
