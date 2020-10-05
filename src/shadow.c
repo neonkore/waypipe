@@ -602,9 +602,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 			return sfd;
 		}
 		int mirror_size = 0;
-		pad_video_mirror_size((int)sfd->dmabuf_info.width,
-				(int)sfd->dmabuf_info.height,
-				(int)sfd->dmabuf_info.strides[0], NULL, NULL,
+		get_video_mirror_size(&sfd->dmabuf_info, NULL, NULL, NULL, NULL,
 				&mirror_size);
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
@@ -1376,9 +1374,7 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 
 		int mirror_size = 0;
-		pad_video_mirror_size((int)sfd->dmabuf_info.width,
-				(int)sfd->dmabuf_info.height,
-				(int)sfd->dmabuf_info.strides[0], NULL, NULL,
+		get_video_mirror_size(&sfd->dmabuf_info, NULL, NULL, NULL, NULL,
 				&mirror_size);
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),
@@ -1409,9 +1405,7 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 
 		int mirror_size = 0;
-		pad_video_mirror_size((int)sfd->dmabuf_info.width,
-				(int)sfd->dmabuf_info.height,
-				(int)sfd->dmabuf_info.strides[0], NULL, NULL,
+		get_video_mirror_size(&sfd->dmabuf_info, NULL, NULL, NULL, NULL,
 				&mirror_size);
 		sfd->mem_mirror = calloc(
 				(size_t)max((int)sfd->buffer_size, mirror_size),

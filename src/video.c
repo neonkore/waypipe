@@ -39,15 +39,32 @@ bool video_supports_shm_format(uint32_t format)
 	(void)format;
 	return false;
 }
-void pad_video_mirror_size(int width, int height, int stride, int *new_width,
-		int *new_height, int *new_min_size)
+
+void get_video_mirror_size(const struct dmabuf_slice_data *info, int *new_width,
+		int *new_height, int *new_strides, int *new_offsets,
+		int *new_min_size)
 {
-	(void)width;
-	(void)height;
-	(void)stride;
+	(void)info;
 	(void)new_width;
 	(void)new_height;
+	(void)new_strides;
+	(void)new_offsets;
 	(void)new_min_size;
+}
+
+void copy_onto_video_mirror(char *buffer, char *mirror,
+		const struct dmabuf_slice_data *info)
+{
+	(void)buffer;
+	(void)mirror;
+	(void)info;
+}
+void copy_from_video_mirror(char *buffer, char *mirror,
+		const struct dmabuf_slice_data *info)
+{
+	(void)buffer;
+	(void)mirror;
+	(void)info;
 }
 int init_hwcontext(struct render_data *rd)
 {
@@ -466,8 +483,9 @@ void destroy_video_data(struct shadow_fd *sfd)
 /* see AVFrame::video documentation; needed due to overreads with SIMD  */
 #define VIDEO_MIRROR_EXTRA_BYTES 16
 
-void pad_video_mirror_size(int width, int height, int stride, int *new_width,
-		int *new_height, int *new_min_size)
+void get_video_mirror_size(const struct dmabuf_slice_data *info, int *new_width,
+		int *new_height, int *new_strides, int *new_offsets,
+		int *new_min_size)
 {
 	/* Encoding video with YUV420P is significantly faster than encoding
 	 * video with the YUV444P format. However, when using YUV420P, x264
@@ -476,30 +494,94 @@ void pad_video_mirror_size(int width, int height, int stride, int *new_width,
 	 * a 2x2 field. Furthermore, if the image sizes for sws_scale disagree,
 	 * then the function becomes significantly more expensive.
 	 *
-	 * A solution that avoids this scaling is to pretend that the user
-	 * buffers actually have slightly larger sizes, which are correctly
-	 * aligned. This will produce border artifacts when the left/right
-	 * sides of an image disagree, but the video encoding wasn't meant to
-	 * be efficient anyway.
+	 * This isn't the only constraint; with recent ffmpeg, YUV->RGB
+	 * conversions crash if the strides of the output are not divisible
+	 * by 16.
 	 *
-	 * Hopefully libswscale doesn't add sanity checks for stride vs.
-	 * width...
+	 * One solution for this problem is to copy the buffer onto a temporary
+	 * space (which is necessary anyway, because scaling may overread by
+	 * e.g. 16 bytes; it is not safe to overshoot the end of a mapped
+	 * dmabuf). Since we're already copying the data, we may as well shift
+	 * the image lines slightly to ensure good alignment. This probably is
+	 * not more more expensive than memcpy as we may still be bandwidth
+	 * limited.
 	 **/
-	int m = 2;
-	int nwidth = align(width, m);
-	int nheight = align(height, m);
+	int nwidth = align((int)info->width, 2);
+	int nheight = align((int)info->height, 2);
 	if (new_width) {
 		*new_width = nwidth;
 	}
 	if (new_height) {
 		*new_height = nheight;
 	}
+	int base_offset = 0;
+	for (int i = 0; i < info->num_planes; i++) {
+		int nstride = align((int)info->strides[i], 16);
+		if (new_strides) {
+			new_strides[i] = nstride;
+		}
+		if (new_offsets) {
+			new_offsets[i] = base_offset;
+		}
+
+		// TODO: handle subsampled planes efficiently, switch by format
+		base_offset += nstride * nheight;
+	}
 	if (new_min_size) {
-		/* the extra +8 * (m - 1) are because the width may have
-		 * increased by up to (m-1), making libswscale overread each
-		 * line. */
-		*new_min_size = nheight * stride + VIDEO_MIRROR_EXTRA_BYTES +
-				8 * (m - 1);
+		*new_min_size = base_offset;
+	}
+}
+
+void copy_onto_video_mirror(char *buffer, char *mirror,
+		const struct dmabuf_slice_data *info)
+{
+	int new_strides[4], new_offsets[4], new_min_size, new_width, new_height;
+	get_video_mirror_size(info, &new_width, &new_height, new_strides,
+			new_offsets, &new_min_size);
+	for (int i = 0; i < info->num_planes; i++) {
+		if (new_strides[i] == (int)info->strides[i] &&
+				new_height == (int)info->height) {
+			/* Fast case: no structural changes */
+			memcpy(mirror + (size_t)new_offsets[i],
+					buffer + (size_t)info->offsets[i],
+					(size_t)(new_strides[i] * new_height));
+		} else {
+			for (size_t r = 0; r < (size_t)new_height; r++) {
+				memcpy(mirror + new_offsets[i] +
+								(size_t)new_strides[i] *
+										r,
+						buffer + (size_t)info->offsets[i] +
+								(size_t)info->strides[i] *
+										r,
+						(size_t)info->strides[i]);
+			}
+		}
+	}
+}
+void copy_from_video_mirror(char *buffer, char *mirror,
+		const struct dmabuf_slice_data *info)
+{
+	int new_strides[4], new_offsets[4], new_min_size, new_width, new_height;
+	get_video_mirror_size(info, &new_width, &new_height, new_strides,
+			new_offsets, &new_min_size);
+	for (int i = 0; i < info->num_planes; i++) {
+		if (new_strides[i] == (int)info->strides[i] &&
+				new_height == (int)info->height) {
+			/* Fast case: no structural changes */
+			memcpy(buffer + (size_t)info->offsets[i],
+					mirror + (size_t)new_offsets[i],
+					(size_t)(new_strides[i] * new_height));
+		} else {
+			for (size_t r = 0; r < (size_t)new_height; r++) {
+				memcpy(buffer + (size_t)info->offsets[i] +
+								(size_t)info->strides[i] *
+										r,
+						mirror + (size_t)new_offsets[i] +
+								(size_t)new_strides[i] *
+										r,
+						(size_t)info->strides[i]);
+			}
+		}
 	}
 }
 
@@ -813,6 +895,10 @@ fail_alignment:
 static void setup_avframe_entries(struct AVFrame *frame,
 		struct dmabuf_slice_data *info, uint8_t *buffer)
 {
+	int new_strides[4], new_offsets[4], new_min_size, new_width, new_height;
+	get_video_mirror_size(info, &new_width, &new_height, new_strides,
+			new_offsets, &new_min_size);
+
 	bool vu_flip = needs_vu_flip(info->format);
 	for (int i = 0; i < (int)info->num_planes; i++) {
 		int j = i;
@@ -820,8 +906,8 @@ static void setup_avframe_entries(struct AVFrame *frame,
 			j = 2;
 		if (vu_flip && i == 2)
 			j = 1;
-		frame->linesize[i] = (int)info->strides[j];
-		frame->data[i] = buffer + info->offsets[j];
+		frame->linesize[i] = new_strides[j];
+		frame->data[i] = buffer + new_offsets[j];
 	}
 	for (int i = (int)info->num_planes; i < AV_NUM_DATA_POINTERS; i++) {
 		frame->data[i] = NULL;
@@ -865,10 +951,8 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 
 	struct AVPacket *pkt = av_packet_alloc();
 
-	pad_video_mirror_size((int)sfd->dmabuf_info.width,
-			(int)sfd->dmabuf_info.height,
-			(int)sfd->dmabuf_info.strides[0], &ctx->width,
-			&ctx->height, NULL);
+	get_video_mirror_size(&sfd->dmabuf_info, &ctx->width, &ctx->height,
+			NULL, NULL, NULL);
 	ctx->pix_fmt = videofmt;
 	configure_low_latency_enc_context(ctx, true);
 
@@ -984,10 +1068,8 @@ int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	} else {
 		ctx->pix_fmt = videofmt;
 		/* set context dimensions */
-		pad_video_mirror_size((int)sfd->dmabuf_info.width,
-				(int)sfd->dmabuf_info.height,
-				(int)sfd->dmabuf_info.strides[0], &ctx->width,
-				&ctx->height, NULL);
+		get_video_mirror_size(&sfd->dmabuf_info, &ctx->width,
+				&ctx->height, NULL, NULL, NULL);
 	}
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
@@ -1034,7 +1116,8 @@ void collect_video_from_mirror(
 		if (!data) {
 			return;
 		}
-		memcpy(sfd->mem_mirror, data, sfd->buffer_size);
+		copy_onto_video_mirror(
+				data, sfd->mem_mirror, &sfd->dmabuf_info);
 		unmap_dmabuf(sfd->dmabuf_bo, handle);
 
 		if (sws_scale(sfd->video_color_context,
@@ -1200,7 +1283,8 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 			if (!data) {
 				return;
 			}
-			memcpy(data, sfd->mem_mirror, sfd->buffer_size);
+			copy_from_video_mirror(data, sfd->mem_mirror,
+					&sfd->dmabuf_info);
 			unmap_dmabuf(sfd->dmabuf_bo, handle);
 		} else {
 			if (recvstat != AVERROR(EAGAIN)) {
