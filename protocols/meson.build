@@ -14,6 +14,7 @@ protocols = [
 	'linux-dmabuf-unstable-v1.xml',
 	'gtk-primary-selection.xml',
 	'input-method-unstable-v2.xml',
+	'primary-selection-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1.xml',
 	'wlr-screencopy-unstable-v1.xml',
 	'wlr-export-dmabuf-unstable-v1.xml',

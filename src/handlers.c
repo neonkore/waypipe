@@ -37,6 +37,7 @@
 #include <input-method-unstable-v2-defs.h>
 #include <linux-dmabuf-unstable-v1-defs.h>
 #include <presentation-time-defs.h>
+#include <primary-selection-unstable-v1-defs.h>
 #include <virtual-keyboard-unstable-v1-defs.h>
 #include <wayland-defs.h>
 #include <wayland-drm-defs.h>
@@ -1407,6 +1408,18 @@ void do_gtk_primary_selection_source_evt_send(
 	translate_data_transfer_fd(ctx, fd);
 	(void)mime_type;
 }
+void do_zwp_primary_selection_offer_v1_req_receive(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
+	(void)mime_type;
+}
+void do_zwp_primary_selection_source_v1_evt_send(
+		struct context *ctx, const char *mime_type, int fd)
+{
+	translate_data_transfer_fd(ctx, fd);
+	(void)mime_type;
+}
 void do_zwlr_data_control_offer_v1_req_receive(
 		struct context *ctx, const char *mime_type, int fd)
 {
@@ -1523,6 +1536,9 @@ static const struct evt_map_zwlr_data_control_source_v1
 static const struct evt_map_gtk_primary_selection_source
 		gtk_primary_selection_source_event_handler = {
 				.send = call_gtk_primary_selection_source_evt_send};
+static const struct evt_map_zwp_primary_selection_source_v1
+		intf_zwp_primary_selection_source_v1_event_handler = {
+				.send = call_zwp_primary_selection_source_v1_evt_send};
 static const struct evt_map_wl_data_source wl_data_source_event_handler = {
 		.send = call_wl_data_source_evt_send};
 static const struct req_map_zwlr_data_control_offer_v1
@@ -1531,6 +1547,9 @@ static const struct req_map_zwlr_data_control_offer_v1
 static const struct req_map_gtk_primary_selection_offer
 		gtk_primary_selection_offer_request_handler = {
 				.receive = call_gtk_primary_selection_offer_req_receive};
+static const struct req_map_zwp_primary_selection_offer_v1
+		zwp_primary_selection_offer_v1_request_handler = {
+				.receive = call_zwp_primary_selection_offer_v1_req_receive};
 static const struct req_map_wl_data_offer wl_data_offer_request_handler = {
 		.receive = call_wl_data_offer_req_receive};
 static const struct req_map_zwlr_gamma_control_v1 zwlr_gamma_control_request_handler =
@@ -1559,6 +1578,8 @@ const struct msg_handler handlers[] = {
 		{&intf_zwlr_export_dmabuf_frame_v1,
 				&zwlr_export_dmabuf_frame_v1_event_handler,
 				NULL, false},
+		{&intf_zwlr_gamma_control_v1, NULL,
+				&zwlr_gamma_control_request_handler, false},
 
 		/* Copy-paste protocol handlers, handled near identically */
 		{&intf_zwlr_data_control_offer_v1, NULL,
@@ -1566,6 +1587,9 @@ const struct msg_handler handlers[] = {
 				false},
 		{&intf_gtk_primary_selection_offer, NULL,
 				&gtk_primary_selection_offer_request_handler,
+				false},
+		{&intf_zwp_primary_selection_offer_v1, NULL,
+				&zwp_primary_selection_offer_v1_request_handler,
 				false},
 		{&intf_wl_data_offer, NULL, &wl_data_offer_request_handler,
 				false},
@@ -1576,10 +1600,11 @@ const struct msg_handler handlers[] = {
 		{&intf_gtk_primary_selection_source,
 				&gtk_primary_selection_source_event_handler,
 				NULL, false},
+		{&intf_zwp_primary_selection_source_v1,
+				&intf_zwp_primary_selection_source_v1_event_handler,
+				NULL, false},
 		{&intf_wl_data_source, &wl_data_source_event_handler, NULL,
 				false},
-		{&intf_zwlr_gamma_control_v1, NULL,
-				&zwlr_gamma_control_request_handler, false},
 
 		/* List all other known global object interface types,
 		 * so that the parsing code can identify all fd usages
@@ -1598,6 +1623,9 @@ const struct msg_handler handlers[] = {
 				&wp_presentation_request_handler, true},
 		// gtk-primary-selection
 		{&intf_gtk_primary_selection_device_manager, NULL, NULL, true},
+		// primary-selection
+		{&intf_zwp_primary_selection_device_manager_v1, NULL, NULL,
+				true},
 		// virtual-keyboard
 		{&intf_zwp_virtual_keyboard_manager_v1, NULL, NULL, true},
 		// input-method
