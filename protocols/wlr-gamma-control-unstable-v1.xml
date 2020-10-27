@@ -72,7 +72,7 @@
       tables. At any time the compositor can send a failed event indicating that
       this object is no longer valid.
 
-      There must always be at most one gamma control object per output, which
+      There can only be at most one gamma control object per output, which
       has exclusive access to this particular output. When the gamma control
       object is destroyed, the gamma table is restored to its original value.
     </description>

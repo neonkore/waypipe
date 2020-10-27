@@ -43,7 +43,7 @@
 
     <request name="capture_output">
       <description summary="capture a frame from an output">
-        Capture the next frame of a an entire output.
+        Capture the next frame of an entire output.
       </description>
       <arg name="frame" type="new_id" interface="zwlr_export_dmabuf_frame_v1"/>
       <arg name="overlay_cursor" type="int"
@@ -136,7 +136,7 @@
       <arg name="stride" type="uint"
            summary="line size in bytes"/>
       <arg name="plane_index" type="uint"
-           summary="index of the the plane the data in the object applies to"/>
+           summary="index of the plane the data in the object applies to"/>
     </event>
 
     <event name="ready">
