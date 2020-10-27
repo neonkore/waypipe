@@ -47,8 +47,7 @@ Build with meson[0]. A typical incantation is
 Core build requirements:
 
 * meson (build, >= 0.47. with dependencies `ninja`, `pkg-config`, `python3`)
-* wayland (build, >= 1.10 for the `wl_surface::damage_buffer` request)
-* wayland-protocols (build, >= 1.12, for the xdg-shell protocol, and others)
+* C compiler
 
 Optional dependencies:
 
