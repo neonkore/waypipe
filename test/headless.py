@@ -3,12 +3,8 @@
 if __name__ != "__main__":
     quit(1)
 
-import os, subprocess, time, signal, sys
-
-if sys.version_info.minor < 4 or sys.version_info.major < 3:
-    print("Python version is too old")
-    quit(0)
-import asyncio
+import os, subprocess, time, signal
+import multiprocessing
 
 
 def try_unlink(path):
@@ -196,9 +192,9 @@ def cleanup_multi(client, server, child):
     return client.returncode, server.returncode
 
 
-@asyncio.coroutine
-def run_sub_test(sub_test_name, command):
-    global nontrivial_failures
+def run_sub_test(args):
+    sub_test_name, command = args
+    nontrivial_failures = False
 
     ocontrol_path = os.path.join(xdg_runtime_dir, sub_test_name + "_octrl")
     mcontrol_path = os.path.join(xdg_runtime_dir, sub_test_name + "_mctrl")
@@ -230,7 +226,9 @@ def run_sub_test(sub_test_name, command):
     )
 
     print("Launched", sub_test_name)
-    yield from asyncio.sleep(1)
+
+    time.sleep(1)
+
     # Verify that replacing the control pipe (albeit with itself) doesn't break anything
     # (Since the connection is a unix domain socket, almost no packets will be in flight,
     # so the test isn't that comprehensive)
@@ -239,7 +237,9 @@ def run_sub_test(sub_test_name, command):
     open(mcontrol_path, "w").write(mwp_socket_path)
     try_unlink(ocontrol_path)
     try_unlink(mcontrol_path)
-    yield from asyncio.sleep(1)
+
+    time.sleep(1)
+
     print("Closing", sub_test_name)
 
     # Beware sudden PID reuse...
@@ -280,6 +280,7 @@ def run_sub_test(sub_test_name, command):
                 )
             )
             nontrivial_failures = True
+    return nontrivial_failures
 
 
 os.makedirs(xdg_runtime_dir, mode=0o700, exist_ok=True)
@@ -304,17 +305,14 @@ if not wait_until_exists(abs_socket_path):
         "weston failed to create expected display socket path, " + abs_socket_path
     )
 
-loop = asyncio.get_event_loop()
-tasks = []
-for k, v in sub_tests.items():
-    tasks.append(asyncio.get_event_loop().create_task(run_sub_test(k, v)))
-loop.run_until_complete(asyncio.gather(*tasks))
+with multiprocessing.Pool(3) as pool:
+    nontriv_failures = pool.map(run_sub_test, [(k, v) for k, v in sub_tests.items()])
 
 safe_cleanup(weston_proc)
 weston_out.close()
 if weston_proc.returncode != 0:
     print("Running headless weston failed. See logfile at ", weston_log_path)
 
-if nontrivial_failures:
+if any(nontriv_failures):
     quit(1)
 quit(0)
