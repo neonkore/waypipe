@@ -1,22 +1,17 @@
 
-# todo: make function list dependency explicit
-
 symgen_path = join_paths(meson.current_source_dir(), 'symgen.py')
 fn_list = join_paths(meson.current_source_dir(), 'function_list.txt')
 
-wayland_protos = dependency('wayland-protocols', version: '>=1.12') # xdg-shell
-wayland_dep = dependency('wayland-client', required: false)
-if not wayland_dep.found()
-	wayland_dep = dependency('wayland-server', required: true)
-endif
-wayland_dir = wayland_dep.get_pkgconfig_variable('pkgdatadir')
-wl_protocol_dir = wayland_protos.get_pkgconfig_variable('pkgdatadir')
-
+# Include a copy of these protocols in the repository, rather than looking
+# for packages containing them, to:
+# a) avoid versioning problems as new protocols/methods are introduced
+# b) keep the minimum build complexity for waypipe low
+# c) be able to relay through newer protocols than are default on a system
 protocols = [
-	wayland_dir + '/wayland.xml',
-	wl_protocol_dir + '/stable/xdg-shell/xdg-shell.xml',
-	wl_protocol_dir + '/stable/presentation-time/presentation-time.xml',
-	wl_protocol_dir + '/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
+	'wayland.xml',
+	'xdg-shell.xml',
+	'presentation-time.xml',
+	'linux-dmabuf-unstable-v1.xml',
 	'gtk-primary-selection.xml',
 	'input-method-unstable-v2.xml',
 	'virtual-keyboard-unstable-v1.xml',
