@@ -558,8 +558,9 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		// modifies it
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (!sfd->mem_local) {
-			wp_error("Mmap failed!");
+		if (sfd->mem_local == MAP_FAILED) {
+			wp_error("Mmap failed when creating shadow RID=%d: %s",
+					sfd->remote_id, strerror(errno));
 			return sfd;
 		}
 		// This will be created at the first transfer
@@ -1456,8 +1457,9 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 	sfd->buffer_size = new_size;
 	sfd->mem_local = mmap(NULL, sfd->buffer_size, PROT_READ | PROT_WRITE,
 			MAP_SHARED, sfd->fd_local, 0);
-	if (!sfd->mem_local) {
-		wp_error("Mmap failed!");
+	if (sfd->mem_local == MAP_FAILED) {
+		wp_error("Mmap failed to remap increased buffer for RID=%d: %s",
+				sfd->remote_id, strerror(errno));
 		return;
 	}
 	// todo: handle allocation failures
