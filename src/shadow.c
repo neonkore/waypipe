@@ -553,11 +553,23 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 			return sfd;
 		}
 		sfd->buffer_size = file_sz;
-		// both r/w permissions, because the size the allocates
-		// the memory does not always have to be the size that
-		// modifies it
+		sfd->file_readonly = false;
+		// both r/w permissions, because the side which allocates the
+		// memory does not always have to be the side that modifies it
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (sfd->mem_local == MAP_FAILED && errno == EPERM) {
+			wp_debug("Initial mmap for RID=%d failed, trying private+readonly",
+					sfd->remote_id);
+			// Some files are memfds that are sealed
+			// to be read-only
+			sfd->mem_local = mmap(NULL, sfd->buffer_size, PROT_READ,
+					MAP_PRIVATE, fd, 0);
+			if (sfd->mem_local != MAP_FAILED) {
+				sfd->file_readonly = true;
+			}
+		}
+
 		if (sfd->mem_local == MAP_FAILED) {
 			wp_error("Mmap failed when creating shadow RID=%d: %s",
 					sfd->remote_id, strerror(errno));
@@ -1580,6 +1592,12 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					remote_id, msg->size);
 			return ERR_FATAL;
 		}
+		if (sfd->type == FDC_FILE && sfd->file_readonly) {
+			wp_debug("Ignoring a fill update to readonly file at RID=%d",
+					remote_id);
+			return 0;
+		}
+
 		const struct wmsg_buffer_fill *header =
 				(const struct wmsg_buffer_fill *)msg->data;
 
@@ -1643,6 +1661,11 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			wp_error("Buffer diff message size to RID=%d is too small (%zu) to contain header",
 					remote_id, msg->size);
 			return ERR_FATAL;
+		}
+		if (sfd->type == FDC_FILE && sfd->file_readonly) {
+			wp_debug("Ignoring a diff update to readonly file at RID=%d",
+					remote_id);
+			return 0;
 		}
 		const struct wmsg_buffer_diff *header =
 				(const struct wmsg_buffer_diff *)msg->data;
