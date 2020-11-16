@@ -77,6 +77,8 @@ struct wp_buffer {
 	uint32_t dmabuf_offsets[MAX_DMABUF_PLANES];
 	uint32_t dmabuf_strides[MAX_DMABUF_PLANES];
 	uint64_t dmabuf_modifiers[MAX_DMABUF_PLANES];
+
+	uint64_t unique_id;
 };
 
 struct damage_record {
@@ -84,14 +86,23 @@ struct damage_record {
 	bool buffer_coordinates;
 };
 
+struct damage_list {
+	struct damage_record *list;
+	int len;
+	int size;
+};
+
+#define SURFACE_DAMAGE_BACKLOG 7
 struct wp_surface {
 	struct wp_object base;
 
-	struct damage_record *damage_list;
-	int damage_list_len;
-	int damage_list_size;
+	/* The zeroth list is the "current" one, 1st was damage provided at last
+	 * commit, etc. */
+	struct damage_list damage_lists[SURFACE_DAMAGE_BACKLOG];
+	/* Unique buffer identifiers to which the above damage lists apply */
+	uint64_t attached_buffer_uids[SURFACE_DAMAGE_BACKLOG];
 
-	uint32_t attached_buffer_id;
+	uint32_t attached_buffer_id; /* protocol object id */
 	int32_t scale;
 	int32_t transform;
 };
@@ -181,7 +192,9 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 		}
 	} else if (object->type == &intf_wl_surface) {
 		struct wp_surface *r = (struct wp_surface *)object;
-		free(r->damage_list);
+		for (int i = 0; i < SURFACE_DAMAGE_BACKLOG; i++) {
+			free(r->damage_lists[i].list);
+		}
 	} else if (object->type == &intf_zwlr_screencopy_frame_v1) {
 		struct wp_wlr_screencopy_frame *r =
 				(struct wp_wlr_screencopy_frame *)object;
@@ -468,20 +481,10 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 		return -1;
 	}
 }
-static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
+static void compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 		int *yhigh, const struct damage_record *rec, int buf_width,
 		int buf_height, int transform, int scale)
 {
-	if (scale <= 0) {
-		wp_error("Not applying damage due to invalid buffer scale (%d)",
-				scale);
-		return -1;
-	}
-	if (transform < 0 || transform >= 8) {
-		wp_error("Not applying damage due to invalid buffer transform (%d)",
-				transform);
-		return -1;
-	}
 	if (rec->buffer_coordinates) {
 		*xlow = rec->x;
 		*xhigh = rec->x + rec->width;
@@ -528,7 +531,6 @@ static int compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 			*yhigh = yh;
 		}
 	}
-	return 0;
 }
 void do_wl_surface_req_attach(struct context *ctx, struct wp_object *buffer,
 		int32_t x, int32_t y)
@@ -549,6 +551,18 @@ void do_wl_surface_req_attach(struct context *ctx, struct wp_object *buffer,
 	}
 	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
 	surface->attached_buffer_id = bufobj->obj_id;
+}
+static void rotate_damage_lists(struct wp_surface *surface)
+{
+	free(surface->damage_lists[SURFACE_DAMAGE_BACKLOG - 1].list);
+	memmove(surface->damage_lists + 1, surface->damage_lists,
+			(SURFACE_DAMAGE_BACKLOG - 1) *
+					sizeof(struct damage_list));
+	memset(surface->damage_lists, 0, sizeof(struct damage_list));
+	memmove(surface->attached_buffer_uids + 1,
+			surface->attached_buffer_uids,
+			(SURFACE_DAMAGE_BACKLOG - 1) * sizeof(uint64_t));
+	surface->attached_buffer_uids[0] = 0;
 }
 void do_wl_surface_req_commit(struct context *ctx)
 {
@@ -576,16 +590,10 @@ void do_wl_surface_req_commit(struct context *ctx)
 		wp_error("Buffer to commit has the wrong type, and may have been recycled");
 		return;
 	}
-	if (surface->damage_list_len == 0) {
-		// No damage to report
-		return;
-	}
 	struct wp_buffer *buf = (struct wp_buffer *)obj;
+	surface->attached_buffer_uids[0] = buf->unique_id;
 	if (buf->type == BUF_DMA) {
-		free(surface->damage_list);
-		surface->damage_list = NULL;
-		surface->damage_list_len = 0;
-		surface->damage_list_size = 0;
+		rotate_damage_lists(surface);
 
 		for (int i = 0; i < buf->dmabuf_nplanes; i++) {
 			struct shadow_fd *sfd = buf->dmabuf_buffers[i];
@@ -610,6 +618,7 @@ void do_wl_surface_req_commit(struct context *ctx)
 		wp_error("wp_buffer is backed neither by DMA nor SHM, not yet supported");
 		return;
 	}
+
 	struct shadow_fd *sfd = buf->shm_buffer;
 	if (!sfd) {
 		wp_error("wp_buffer to be committed has no fd");
@@ -622,32 +631,58 @@ void do_wl_surface_req_commit(struct context *ctx)
 	sfd->is_dirty = true;
 	int bpp = get_shm_bytes_per_pixel(buf->shm_format);
 	if (bpp == -1) {
-		damage_everything(&sfd->damage);
-		free(surface->damage_list);
-		surface->damage_list = NULL;
-		surface->damage_list_len = 0;
-		surface->damage_list_size = 0;
-		return;
+		goto backup;
+	}
+	if (surface->scale <= 0) {
+		wp_error("Invalid buffer scale during commit (%d), assuming everything damaged",
+				surface->scale);
+		goto backup;
+	}
+	if (surface->transform < 0 || surface->transform >= 8) {
+		wp_error("Invalid buffer transform during commit (%d), assuming everything damaged",
+				surface->transform);
+		goto backup;
 	}
 
-	struct ext_interval *damage_array =
-			malloc(sizeof(struct ext_interval) *
-					(size_t)surface->damage_list_len);
+	/* The damage specified as of wl_surface commit indicates which region
+	 * of the surface has changed between the last commit and the current
+	 * one. However, the last time the attached buffer was used may have
+	 * been several commits ago, so we need to replay all the damage up
+	 * to the current point. */
+	int age = -1;
+	int n_damaged_rects = surface->damage_lists[0].len;
+	for (int j = 1; j < SURFACE_DAMAGE_BACKLOG; j++) {
+		if (surface->attached_buffer_uids[0] ==
+				surface->attached_buffer_uids[j]) {
+			age = j;
+			break;
+		}
+		n_damaged_rects += surface->damage_lists[j].len;
+	}
+	if (age == -1) {
+		/* cannot find last time buffer+surface combo was used */
+		goto backup;
+	}
+
+	struct ext_interval *damage_array = malloc(
+			sizeof(struct ext_interval) * (size_t)n_damaged_rects);
 	if (!damage_array) {
 		wp_error("Failed to allocate damage array");
-		damage_everything(&sfd->damage);
-		return;
+		goto backup;
 	}
 	int i = 0;
 
 	// Translate damage stack into damage records for the fd buffer
-	for (int j = 0; j < surface->damage_list_len; j++) {
-		int xlow, xhigh, ylow, yhigh;
-		int r = compute_damage_coordinates(&xlow, &xhigh, &ylow, &yhigh,
-				&surface->damage_list[j], buf->shm_width,
-				buf->shm_height, surface->transform,
-				surface->scale);
-		if (r != -1) {
+	for (int k = 0; k < age; k++) {
+		const struct damage_list *frame_damage =
+				&surface->damage_lists[k];
+		for (int j = 0; j < frame_damage->len; j++) {
+			int xlow, xhigh, ylow, yhigh;
+			compute_damage_coordinates(&xlow, &xhigh, &ylow, &yhigh,
+					&frame_damage->list[j], buf->shm_width,
+					buf->shm_height, surface->transform,
+					surface->scale);
+
 			/* Clip the damage rectangle to the containing
 			 * buffer. */
 			xlow = clamp(xlow, 0, buf->shm_width);
@@ -668,27 +703,26 @@ void do_wl_surface_req_commit(struct context *ctx)
 	merge_damage_records(&sfd->damage, i, damage_array,
 			ctx->g->threads.diff_alignment_bits);
 	free(damage_array);
-	free(surface->damage_list);
-	surface->damage_list = NULL;
-	surface->damage_list_len = 0;
-	surface->damage_list_size = 0;
+	rotate_damage_lists(surface);
+backup:
+	damage_everything(&sfd->damage);
+	rotate_damage_lists(surface);
+	return;
 }
 static void append_damage_record(struct wp_surface *surface, int32_t x,
 		int32_t y, int32_t width, int32_t height,
 		bool in_buffer_coordinates)
 {
-	if (buf_ensure_size(surface->damage_list_len + 1,
-			    sizeof(struct damage_record),
-			    &surface->damage_list_size,
-			    (void **)&surface->damage_list) == -1) {
+	struct damage_list *current = &surface->damage_lists[0];
+	if (buf_ensure_size(current->len + 1, sizeof(struct damage_record),
+			    &current->size, (void **)&current->list) == -1) {
 		wp_error("Failed to allocate space for damage list, dropping damage record");
 		return;
 	}
 
 	// A rectangle of the buffer was damaged, hence backing buffers
 	// may be updated.
-	struct damage_record *damage =
-			&surface->damage_list[surface->damage_list_len++];
+	struct damage_record *damage = &current->list[current->len++];
 	damage->buffer_coordinates = in_buffer_coordinates;
 	damage->x = x;
 	damage->y = y;
@@ -819,6 +853,7 @@ void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
 	the_buffer->shm_height = height;
 	the_buffer->shm_stride = stride;
 	the_buffer->shm_format = format;
+	the_buffer->unique_id = ctx->g->tracker.buffer_seqno++;
 }
 
 void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
@@ -1033,6 +1068,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 	// handling multiple offsets (?)
 	buf->dmabuf_offsets[0] = (uint32_t)offset0;
 	buf->dmabuf_strides[0] = (uint32_t)stride0;
+	buf->unique_id = ctx->g->tracker.buffer_seqno++;
 }
 
 void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
@@ -1070,6 +1106,7 @@ void do_zwp_linux_buffer_params_v1_evt_created(
 	buf->dmabuf_width = params->create_width;
 	buf->dmabuf_height = params->create_height;
 	buf->dmabuf_format = params->create_format;
+	buf->unique_id = ctx->g->tracker.buffer_seqno++;
 }
 void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 		uint32_t plane_idx, uint32_t offset, uint32_t stride,

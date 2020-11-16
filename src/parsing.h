@@ -60,6 +60,9 @@ struct message_tracker {
 	// creating a new type <-> binding it in the 'interface' list, via
 	// registry. each type produces 'callbacks'
 	struct obj_list objects;
+	/* sequence number to discriminate between wl_buffer objects; object ids
+	 * and pointers are not guaranteed to be unique */
+	uint64_t buffer_seqno;
 };
 /** Context object, to be passed to the protocol handler functions */
 struct context {
