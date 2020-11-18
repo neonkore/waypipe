@@ -342,8 +342,6 @@ void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 	}
 
 	bool unsupported = false;
-	// deprecated, and waypipe doesn't have logic for it anyway
-	unsupported |= !strcmp(interface, "wl_shell");
 	// requires novel fd translation, not yet supported
 	unsupported |= !strcmp(
 			interface, "zwp_linux_explicit_synchronization_v1");
