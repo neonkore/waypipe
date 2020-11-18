@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -59,11 +60,17 @@ int create_anon_file(void)
 #elif defined(SHM_ANON)
 	new_fileno = shm_open(SHM_ANON, O_RDWR, 0600);
 #else
-	/* WARNING: this can be rather file-system
-	 * intensive */
-	char template[256] = "/tmp/waypipe_XXXXXX";
-	new_fileno = mkstemp(template);
-	unlink(template);
+	// Fallback code. Should not be used from multiple threads
+	static int counter = 0;
+	int pid = getpid();
+	counter++;
+	char tmp_name[64];
+	sprintf(tmp_name, "/waypipe%d-data_%d", pid, counter);
+	new_fileno = shm_open(tmp_name, O_EXCL | O_RDWR | O_CREAT, 0644);
+	if (new_fileno == -1) {
+		return -1;
+	}
+	(void)shm_unlink(tmp_name);
 #endif
 	return new_fileno;
 }

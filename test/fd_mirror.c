@@ -393,15 +393,12 @@ int main(int argc, char **argv)
 			c++) {
 		for (int gt = 1; gt <= 5; gt++) {
 			for (int rt = 1; rt <= 5; rt++) {
-				int file_fd = shm_open("/waypipe-fd_mirror",
-						O_RDWR | O_CREAT | O_TRUNC,
-						0644);
+				int file_fd = create_anon_file();
 				if (file_fd == -1) {
 					wp_error("Failed to create test file: %s",
 							strerror(errno));
 					continue;
 				}
-				shm_unlink("/waypipe-fd_mirror");
 				if (write(file_fd, test_pattern, test_size) !=
 						(ssize_t)test_size) {
 					wp_error("Failed to write to test file: %s",

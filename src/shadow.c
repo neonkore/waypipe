@@ -1279,27 +1279,15 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->mem_mirror = aligned_alloc(
 				alignment, alignz(sfd->buffer_size, alignment));
 
-		// The PID should be unique during the lifetime of the
-		// program
-		char file_shm_buf_name[256];
-		sprintf(file_shm_buf_name, "/waypipe%d-data_%d", getpid(),
-				sfd->remote_id);
-
-		sfd->fd_local = shm_open(file_shm_buf_name,
-				O_RDWR | O_CREAT | O_TRUNC, 0644);
+		sfd->fd_local = create_anon_file();
 		if (sfd->fd_local == -1) {
-			wp_error("Failed to create shm file for object %d: %s",
+			wp_error("Failed to create anon file for object %d: %s",
 					sfd->remote_id, strerror(errno));
 			return 0;
 		}
-		if (shm_unlink(file_shm_buf_name) == -1) {
-			wp_error("Failed to unlink new shm file for object %d: %s",
-					sfd->remote_id, strerror(errno));
-		}
 		if (ftruncate(sfd->fd_local, (off_t)sfd->buffer_size) == -1) {
-			wp_error("Failed to resize shm file %s to size %zu for reason: %s",
-					file_shm_buf_name, sfd->buffer_size,
-					strerror(errno));
+			wp_error("Failed to resize anon file to size %zu for reason: %s",
+					sfd->buffer_size, strerror(errno));
 			return 0;
 		}
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
