@@ -250,7 +250,11 @@ const char *fdcat_to_str(enum fdcat cat);
  * produce matching global id, and register it into the translation map if
  * not already done. The function can also be provided with optional extra
  * information (*info). If `read_modifier` is true, then the modifier for
- * a DMABUF should be automatically detected. */
+ * a DMABUF should be automatically detected.
+ *
+ * This may return NULL on allocation failure; other failures will in general
+ * warn and disable replication features.
+ **/
 struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		struct render_data *render, int fd, enum fdcat type, size_t sz,
 		const struct dmabuf_slice_data *info, bool read_modifier,

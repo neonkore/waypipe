@@ -134,7 +134,7 @@ static ssize_t iovec_write(int conn, const char *buf, size_t buflen,
 	return ret;
 }
 
-static void translate_fds(struct fd_translation_map *map,
+static int translate_fds(struct fd_translation_map *map,
 		struct render_data *render, int nfds, const int fds[],
 		int ids[])
 {
@@ -145,7 +145,11 @@ static void translate_fds(struct fd_translation_map *map,
 		ids[i] = translate_fd(map, render, fds[i], fdtype, fdsz, NULL,
 				false, false)
 					 ->remote_id;
+		if (!ids[i]) {
+			return -1;
+		}
 	}
+	return 0;
 }
 /** Given a list of global ids, and an up-to-date translation map, produce local
  * file descriptors */
@@ -966,8 +970,11 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			int32_t *rbuffer = (int32_t *)(msg + 1);
 
 			/* Translate and adjust refcounts */
-			translate_fds(&g->map, &g->render, wmsg->fds.zone_start,
-					wmsg->fds.data, rbuffer);
+			if (translate_fds(&g->map, &g->render,
+					    wmsg->fds.zone_start,
+					    wmsg->fds.data, rbuffer) == -1) {
+				return ERR_FATAL;
+			}
 			decref_transferred_rids(
 					&g->map, wmsg->fds.zone_start, rbuffer);
 			memmove(wmsg->fds.data,

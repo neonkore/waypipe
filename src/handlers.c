@@ -772,6 +772,10 @@ void do_wl_keyboard_evt_keymap(
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			fdtype, fdsz, NULL, false, false);
+	if (!sfd) {
+		wp_error("Failed to create shadow for keymap fd=%d", fd);
+		return;
+	}
 	/* The keyboard file descriptor is never changed after being sent.
 	 * Mark the shadow structure as owned by the protocol, so it can be
 	 * automatically deleted as soon as the fd has been transferred. */
@@ -805,6 +809,9 @@ void do_wl_shm_req_create_pool(
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			fdtype, fdsz, NULL, false, false);
+	if (!sfd) {
+		return;
+	}
 	the_shm_pool->owned_buffer = shadow_incref_protocol(sfd);
 }
 
@@ -1057,6 +1064,9 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render,
 			name, FDC_DMABUF, 0, &info, true, false);
+	if (!sfd) {
+		return;
+	}
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = 1;
 	buf->dmabuf_buffers[0] = shadow_incref_protocol(sfd);
@@ -1294,6 +1304,9 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		struct shadow_fd *sfd = translate_fd(&ctx->g->map,
 				&ctx->g->render, params->add[i].fd, res_type, 0,
 				&info, false, false);
+		if (!sfd) {
+			continue;
+		}
 		/* increment for each extra time this fd will be sent */
 		if (sfd->has_owner) {
 			shadow_incref_transfer(sfd);
@@ -1392,6 +1405,9 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			FDC_DMABUF, 0, &info, false, false);
+	if (!sfd) {
+		return;
+	}
 	if (sfd->buffer_size < size) {
 		wp_error("Frame object %u has a dmabuf with less (%u) than the advertised (%u) size",
 				index, (uint32_t)sfd->buffer_size, size);
@@ -1431,8 +1447,8 @@ static void translate_data_transfer_fd(struct context *context, int32_t fd)
 	 * socketpair, with additional properties. The fd being sent
 	 * around should be, according to the protocol, only written into and
 	 * closed */
-	translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE, 0,
-			NULL, false, true);
+	(void)translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE,
+			0, NULL, false, true);
 }
 void do_gtk_primary_selection_offer_req_receive(
 		struct context *ctx, const char *mime_type, int fd)
@@ -1494,6 +1510,9 @@ void do_zwlr_gamma_control_v1_req_set_gamma(struct context *ctx, int fd)
 	}
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			fdtype, fdsz, NULL, false, false);
+	if (!sfd) {
+		return;
+	}
 	/* Mark the shadow structure as owned by the protocol, but do not
 	 * increase the protocol refcount, so that as soon as it gets
 	 * transferred it is destroyed */

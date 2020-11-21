@@ -523,6 +523,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 
 	// Create a new translation map.
 	sfd = calloc(1, sizeof(struct shadow_fd));
+	if (!sfd) {
+		wp_error("Failed to allocate shadow_fd structure");
+		return NULL;
+	}
 	sfd->next = map->list;
 	map->list = sfd;
 	sfd->fd_local = fd;
