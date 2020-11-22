@@ -273,7 +273,7 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 
 	cls_shadow->pipe.readable = cls_shadow->pipe.can_read;
 	cls_shadow->pipe.writable = cls_shadow->pipe.can_write;
-	close(cls_fd);
+	checked_close(cls_fd);
 
 	if (shadow_sync(close_src ? &src_map : &dst_map,
 			    close_src ? &dst_map : &src_map) == -1) {
@@ -298,8 +298,8 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 
 	printf("Test: %s\n", success ? "pass" : "FAIL");
 cleanup:
-	close(opp_end);
-	close(anti_end);
+	checked_close(opp_end);
+	checked_close(anti_end);
 	cleanup_translation_map(&src_map);
 	cleanup_translation_map(&dst_map);
 

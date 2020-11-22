@@ -403,7 +403,7 @@ int main(int argc, char **argv)
 						(ssize_t)test_size) {
 					wp_error("Failed to write to test file: %s",
 							strerror(errno));
-					close(file_fd);
+					checked_close(file_fd);
 					continue;
 				}
 

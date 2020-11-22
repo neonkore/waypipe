@@ -140,7 +140,7 @@ int init_render_data(struct render_data *data)
 	struct gbm_device *dev = gbm_create_device(drm_fd);
 	if (!dev) {
 		data->disabled = true;
-		close(drm_fd);
+		checked_close(drm_fd);
 		wp_error("Failed to create gbm device from drm_fd");
 		return -1;
 	}
@@ -158,7 +158,7 @@ void cleanup_render_data(struct render_data *data)
 {
 	if (data->drm_fd != -1) {
 		gbm_device_destroy(data->dev);
-		close(data->drm_fd);
+		checked_close(data->drm_fd);
 		data->dev = NULL;
 		data->drm_fd = -1;
 	}
@@ -344,7 +344,7 @@ retry:
 		}
 		int tfd = gbm_bo_get_fd(bo);
 		ssize_t csize = get_dmabuf_fd_size(tfd);
-		close(tfd);
+		checked_close(tfd);
 		if (csize != (ssize_t)size) {
 			wp_error("Created DMABUF size (%zd disagrees with original size (%zu), giving up");
 			gbm_bo_destroy(bo);
@@ -383,7 +383,7 @@ retry:
 		}
 		int tfd = gbm_bo_get_fd(bo);
 		ssize_t csize = get_dmabuf_fd_size(tfd);
-		close(tfd);
+		checked_close(tfd);
 		if (csize != (ssize_t)size) {
 			wp_error("Created DMABUF size (%zd disagrees with original size (%zu), %s",
 					csize, size,
@@ -410,7 +410,7 @@ retry:
 				}
 				int nfd = gbm_bo_get_fd(bo);
 				ssize_t nsize = get_dmabuf_fd_size(nfd);
-				close(nfd);
+				checked_close(nfd);
 				if (nsize < (ssize_t)size) {
 					wp_error("Trying to fudge dmabuf height to reach target size of %zu bytes; failed, got %zd",
 							size, nsize);

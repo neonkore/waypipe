@@ -183,16 +183,16 @@ static int run_single_client_reconnector(
 				if (send_one_fd(linkfd, newclient) == -1) {
 					wp_error("Failed to get connection id");
 					retcode = EXIT_FAILURE;
-					close(newclient);
+					checked_close(newclient);
 					break;
 				}
 			done:
-				close(newclient);
+				checked_close(newclient);
 			}
 		}
 	}
-	close(channelsock);
-	close(linkfd);
+	checked_close(channelsock);
+	checked_close(linkfd);
 	return retcode;
 }
 
@@ -262,7 +262,7 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 			break;
 		fail_cc:
 			retcode = EXIT_FAILURE;
-			close(chanclient);
+			checked_close(chanclient);
 			chanclient = -1;
 			break;
 		}
@@ -282,28 +282,28 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 		if (socketpair(AF_UNIX, SOCK_STREAM, 0, linkfds) == -1) {
 			wp_error("Failed to create socketpair: %s",
 					strerror(errno));
-			close(chanclient);
+			checked_close(chanclient);
 			return EXIT_FAILURE;
 		}
 
 		pid_t reco_pid = fork();
 		if (reco_pid == -1) {
 			wp_debug("Fork failure");
-			close(chanclient);
+			checked_close(chanclient);
 			return EXIT_FAILURE;
 		} else if (reco_pid == 0) {
 			if (linkfds[0] != -1) {
-				close(linkfds[0]);
+				checked_close(linkfds[0]);
 			}
-			close(chanclient);
-			close(disp_fd);
+			checked_close(chanclient);
+			checked_close(disp_fd);
 			int rc = run_single_client_reconnector(
 					channelsock, linkfds[1], conn_id);
 			exit(rc);
 		}
-		close(linkfds[1]);
+		checked_close(linkfds[1]);
 	}
-	close(channelsock);
+	checked_close(channelsock);
 
 	return main_interface_loop(
 			chanclient, disp_fd, linkfds[0], config, true);
@@ -353,14 +353,14 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 		// state being the new channel socket
 		for (int i = 0; i < n_other_fds; i++) {
 			if (other_fds[i].fd != chanclient) {
-				close(other_fds[i].fd);
+				checked_close(other_fds[i].fd);
 			}
 		}
 		if (reconnectable) {
-			close(linkfds[0]);
+			checked_close(linkfds[0]);
 		}
 		for (int i = 0; i < connmap->count; i++) {
-			close(connmap->data[i].linkfd);
+			checked_close(connmap->data[i].linkfd);
 		}
 
 		int dfd = connect_to_socket(disp_path);
@@ -369,7 +369,7 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 		}
 		// ignore retcode ?
 		main_interface_loop(chanclient, dfd, linkfds[1], config, true);
-		close(dfd);
+		checked_close(dfd);
 
 		exit(EXIT_SUCCESS);
 	} else if (npid == -1) {
@@ -379,7 +379,7 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 	// Remove connection from this process
 
 	if (reconnectable) {
-		close(linkfds[1]);
+		checked_close(linkfds[1]);
 		connmap->data[connmap->count++] =
 				(struct conn_addr){.linkfd = linkfds[0],
 						.token = *conn_id,
@@ -388,9 +388,9 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 
 	return;
 fail_ps:
-	close(linkfds[0]);
+	checked_close(linkfds[0]);
 fail_cc:
-	close(chanclient);
+	checked_close(chanclient);
 	return;
 }
 #define NUM_INCOMPLETE_CONNECTIONS 63
@@ -399,7 +399,7 @@ static void drop_incoming_connection(struct pollfd *fds,
 		struct connection_token *tokens, uint8_t *bytes_read, int index,
 		int incomplete)
 {
-	close(fds[index].fd);
+	checked_close(fds[index].fd);
 	if (index != incomplete - 1) {
 		size_t shift = (size_t)(incomplete - 1 - index);
 		memmove(fds + index, fds + index + 1,
@@ -535,7 +535,7 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 				if (set_nonblocking(chanclient) == -1) {
 					wp_error("Error making new connection nonblocking: %s",
 							strerror(errno));
-					close(chanclient);
+					checked_close(chanclient);
 					continue;
 				}
 
@@ -558,14 +558,14 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 		}
 	}
 	for (int i = 0; i < incomplete; i++) {
-		close(fds[i + 1].fd);
+		checked_close(fds[i + 1].fd);
 	}
 
 	for (int i = 0; i < connmap.count; i++) {
-		close(connmap.data[i].linkfd);
+		checked_close(connmap.data[i].linkfd);
 	}
 	free(connmap.data);
-	close(channelsock);
+	checked_close(channelsock);
 	return retcode;
 }
 
@@ -608,7 +608,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 			}
 			return EXIT_FAILURE;
 		}
-		close(test_conn);
+		checked_close(test_conn);
 	}
 	wp_debug("A wayland compositor is available. Proceeding.");
 
@@ -620,7 +620,7 @@ int run_client(const char *socket_path, const struct main_config *config,
 			waitpid(eol_pid, NULL, 0);
 		}
 		if (dispfd != -1) {
-			close(dispfd);
+			checked_close(dispfd);
 		}
 		return EXIT_FAILURE;
 	}

@@ -210,11 +210,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 			}
 			// Sometimes multiple entries point to the same buffer
 			if (r->add[i].fd != -1) {
-				if (close(r->add[i].fd) == -1) {
-					wp_error("Incorrect close(%d): %s",
-							r->add[i].fd,
-							strerror(errno));
-				}
+				checked_close(r->add[i].fd);
 
 				for (int k = 0; k < MAX_DMABUF_PLANES; k++) {
 					if (r->add[i].fd == r->add[k].fd) {
@@ -1230,11 +1226,7 @@ static void deduplicate_dmabuf_fds(
 		}
 		if (lowest != i &&
 				params->add[i].fd != params->add[lowest].fd) {
-			if (close(params->add[i].fd) == -1) {
-				wp_error("Incorrect close(%d): %s",
-						params->add[i].fd,
-						strerror(errno));
-			}
+			checked_close(params->add[i].fd);
 		}
 		params->add[i].fd = params->add[lowest].fd;
 	}

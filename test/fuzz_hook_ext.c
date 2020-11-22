@@ -78,7 +78,7 @@ int main(int argc, char **argv)
 	}
 	int64_t len = (int64_t)lseek(fd, 0, SEEK_END);
 	if (len == 0) {
-		close(fd);
+		checked_close(fd);
 		return EXIT_SUCCESS;
 	}
 	lseek(fd, 0, SEEK_SET);
@@ -86,7 +86,7 @@ int main(int argc, char **argv)
 	if (read(fd, buf, (size_t)len) == -1) {
 		return EXIT_FAILURE;
 	}
-	close(fd);
+	checked_close(fd);
 	printf("Loaded %" PRId64 " bytes\n", len);
 
 	int srv_fds[2], cli_fds[2], conn_fds[2];
@@ -152,7 +152,7 @@ int main(int argc, char **argv)
 				new_fileno = create_anon_file();
 				if (ftruncate(new_fileno, (off_t)fsize) == -1) {
 					wp_error("Failed to resize tempfile");
-					close(new_fileno);
+					checked_close(new_fileno);
 					break;
 				}
 			}
@@ -181,7 +181,7 @@ int main(int argc, char **argv)
 		nw = poll(&write_pfd, 1, max_write_delay_ms);
 		if (nw == -1) {
 			if (new_fileno != -1) {
-				close(new_fileno);
+				checked_close(new_fileno);
 			}
 
 			if (errno == EINTR) {
@@ -231,7 +231,7 @@ int main(int argc, char **argv)
 			wp_error("Failed to send message before timeout");
 		}
 		if (new_fileno != -1) {
-			close(new_fileno);
+			checked_close(new_fileno);
 		}
 
 		/* Wait up to max_delay for a response. Almost all packets
@@ -276,8 +276,8 @@ int main(int argc, char **argv)
 
 		cursor += packet_size;
 	}
-	close(srv_fds[0]);
-	close(cli_fds[0]);
+	checked_close(srv_fds[0]);
+	checked_close(cli_fds[0]);
 
 	pthread_join(thread_a, NULL);
 	pthread_join(thread_b, NULL);

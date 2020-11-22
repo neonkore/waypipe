@@ -1064,7 +1064,7 @@ static int read_new_chanfd(int linkfd, struct int_window *recon_fds)
 		return -1;
 	}
 	for (int i = 0; i < recon_fds->zone_end - 1; i++) {
-		close(recon_fds->data[i]);
+		checked_close(recon_fds->data[i]);
 	}
 	int ret_fd = -1;
 	if (recon_fds->zone_end > 0) {
@@ -1172,10 +1172,10 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	if (set_connections_nonblocking(chanfd, progfd, linkfd, display_side) ==
 			-1) {
 		if (linkfd != -1) {
-			close(linkfd);
+			checked_close(linkfd);
 		}
-		close(chanfd);
-		close(progfd);
+		checked_close(chanfd);
+		checked_close(progfd);
 		return EXIT_FAILURE;
 	}
 	const char *progdesc = display_side ? "compositor" : "application";
@@ -1344,7 +1344,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			int new_fd = read_new_chanfd(linkfd, &recon_fds);
 			if (new_fd >= 0) {
 				if (chanfd != -1) {
-					close(chanfd);
+					checked_close(chanfd);
 				}
 				chanfd = new_fd;
 				reset_connection(&cross_data, &chan_msg,
@@ -1352,7 +1352,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				needs_new_channel = false;
 			} else if (new_fd == -2) {
 				wp_error("Link to root process hang-up detected");
-				close(linkfd);
+				checked_close(linkfd);
 				linkfd = -1;
 			}
 		}
@@ -1367,7 +1367,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				/* Actually handle the reconnection/reset state
 				 */
 				if (chanfd != -1) {
-					close(chanfd);
+					checked_close(chanfd);
 				}
 				chanfd = new_fd;
 				reset_connection(&cross_data, &chan_msg,
@@ -1401,7 +1401,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				/* Channel connection has at least
 				 * partially been shut down, so close it
 				 * fully. */
-				close(chanfd);
+				checked_close(chanfd);
 				chanfd = -1;
 				if (linkfd == -1) {
 					wp_error("Channel hang up detected, no reconnection link, fatal");
@@ -1414,11 +1414,11 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 					/* Stop returned while writing: Wayland
 					 * connection has at least partially
 					 * shut down, so close it fully. */
-					close(progfd);
+					checked_close(progfd);
 					progfd = -1;
 				} else {
 					/* Stop returned while reading */
-					close(progfd);
+					checked_close(progfd);
 					progfd = -1;
 					if (way_msg.state ==
 							WM_WAITING_FOR_PROGRAM) {
@@ -1545,13 +1545,13 @@ init_failure_cleanup:
 	free(chan_msg.proto_write.data);
 
 	if (chanfd != -1) {
-		close(chanfd);
+		checked_close(chanfd);
 	}
 	if (progfd != -1) {
-		close(progfd);
+		checked_close(progfd);
 	}
 	if (linkfd != -1) {
-		close(linkfd);
+		checked_close(linkfd);
 	}
 	return EXIT_SUCCESS;
 }

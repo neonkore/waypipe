@@ -291,12 +291,11 @@ static int run_recon(const char *control_path, const char *recon_path)
 		return EXIT_FAILURE;
 	}
 	ssize_t written = write(cfd, recon_path, len + 1);
+	close(cfd);
 	if ((size_t)written != len + 1) {
-		close(cfd);
 		fprintf(stderr, "Failed to write to control pipe\n");
 		return EXIT_FAILURE;
 	}
-	close(cfd);
 	return EXIT_SUCCESS;
 }
 

@@ -65,7 +65,7 @@ static void *read_file_into_mem(const char *path, size_t *len)
 	}
 	*len = (size_t)lseek(fd, 0, SEEK_END);
 	if (*len == 0) {
-		close(fd);
+		checked_close(fd);
 		return EXIT_SUCCESS;
 	}
 	lseek(fd, 0, SEEK_SET);
@@ -73,7 +73,7 @@ static void *read_file_into_mem(const char *path, size_t *len)
 	if (read(fd, buf, *len) == -1) {
 		return NULL;
 	}
-	close(fd);
+	checked_close(fd);
 	return buf;
 }
 
@@ -160,7 +160,7 @@ int main(int argc, char **argv)
 				new_fileno = create_anon_file();
 				if (ftruncate(new_fileno, (off_t)fsize) == -1) {
 					wp_error("Failed to resize tempfile");
-					close(new_fileno);
+					checked_close(new_fileno);
 					break;
 				}
 			}
@@ -189,7 +189,7 @@ int main(int argc, char **argv)
 		nw = poll(&write_pfd, 1, max_write_delay_ms);
 		if (nw == -1) {
 			if (new_fileno != -1) {
-				close(new_fileno);
+				checked_close(new_fileno);
 			}
 
 			if (errno == EINTR) {
@@ -245,7 +245,7 @@ int main(int argc, char **argv)
 			wp_error("Failed to send message before timeout");
 		}
 		if (new_fileno != -1) {
-			close(new_fileno);
+			checked_close(new_fileno);
 		}
 
 		/* Wait up to max_delay for a response. Almost all packets
@@ -290,8 +290,8 @@ int main(int argc, char **argv)
 
 		cursor += packet_size;
 	}
-	close(conn_fds[0]);
-	close(way_fds[0]);
+	checked_close(conn_fds[0]);
+	checked_close(way_fds[0]);
 
 	pthread_join(thread, NULL);
 

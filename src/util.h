@@ -83,6 +83,11 @@ int setup_nb_socket(const char *socket_path, int nmaxclients);
 /** Connect to the socket at the given path, returning created fd if
  * successful, else -1.*/
 int connect_to_socket(const char *socket_path);
+/** Call close(fd), logging error when fd is invalid */
+#define checked_close(fd)                                                      \
+	if (close(fd) == -1) {                                                 \
+		wp_error("close(%d) failed: %s", fd, strerror(errno));         \
+	}
 
 #define WAYPIPE_PROTOCOL_VERSION 0x1u
 /** If the byte order is wrong, the fixed set/unset bits are swapped */

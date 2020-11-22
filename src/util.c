@@ -87,19 +87,19 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 	if (set_nonblocking(sock) == -1) {
 		wp_error("Error making socket nonblocking: %s",
 				strerror(errno));
-		close(sock);
+		checked_close(sock);
 		return -1;
 	}
 	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
 		wp_error("Error binding socket at %s: %s", socket_path,
 				strerror(errno));
-		close(sock);
+		checked_close(sock);
 		return -1;
 	}
 	if (listen(sock, nmaxclients) == -1) {
 		wp_error("Error listening to socket at %s: %s", socket_path,
 				strerror(errno));
-		close(sock);
+		checked_close(sock);
 		unlink(socket_path);
 		return -1;
 	}
@@ -128,7 +128,7 @@ int connect_to_socket(const char *socket_path)
 	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
 		wp_error("Error connecting to socket (%s): %s", socket_path,
 				strerror(errno));
-		close(chanfd);
+		checked_close(chanfd);
 		return -1;
 	}
 	return chanfd;
@@ -222,7 +222,7 @@ bool wait_for_pid_and_clean(pid_t *target_pid, int *status, int options,
 				if (map->data[ir].pid != r) {
 					iw++;
 				} else {
-					close(map->data[ir].linkfd);
+					checked_close(map->data[ir].linkfd);
 				}
 			}
 			map->count = iw;

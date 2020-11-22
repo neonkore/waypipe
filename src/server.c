@@ -65,7 +65,7 @@ static void fill_random_key(struct connection_token *token)
 	if (devrand != -1) {
 		errno = 0;
 		(void)read(devrand, token->key, sizeof(token->key));
-		close(devrand);
+		checked_close(devrand);
 	}
 }
 
@@ -124,7 +124,7 @@ static int run_single_server_reconnector(int control_pipe, int linkfd,
 						sizeof(*flagged_token)) {
 					wp_error("Failed to write to new connection: %s",
 							strerror(errno));
-					close(new_conn);
+					checked_close(new_conn);
 					continue;
 				}
 
@@ -132,12 +132,12 @@ static int run_single_server_reconnector(int control_pipe, int linkfd,
 					wp_error("Failed to send new connection to subprocess: %s",
 							strerror(errno));
 				}
-				close(new_conn);
+				checked_close(new_conn);
 			}
 		}
 	}
-	close(control_pipe);
-	close(linkfd);
+	checked_close(control_pipe);
+	checked_close(linkfd);
 	return retcode;
 }
 
@@ -176,13 +176,13 @@ static int run_single_server(int control_pipe, const char *socket_path,
 		pid_t reco_pid = fork();
 		if (reco_pid == -1) {
 			wp_debug("Fork failure");
-			close(linkfds[0]);
-			close(linkfds[1]);
+			checked_close(linkfds[0]);
+			checked_close(linkfds[1]);
 			goto fail_cfd;
 		} else if (reco_pid == 0) {
-			close(chanfd);
-			close(linkfds[0]);
-			close(server_link);
+			checked_close(chanfd);
+			checked_close(linkfds[0]);
+			checked_close(server_link);
 
 			/* Further uses of the token will be to reconnect */
 			token.header |= CONN_UPDATE_BIT;
@@ -190,8 +190,8 @@ static int run_single_server(int control_pipe, const char *socket_path,
 					control_pipe, linkfds[1], &token);
 			exit(rc);
 		}
-		close(control_pipe);
-		close(linkfds[1]);
+		checked_close(control_pipe);
+		checked_close(linkfds[1]);
 	}
 
 	int ret = main_interface_loop(
@@ -199,9 +199,9 @@ static int run_single_server(int control_pipe, const char *socket_path,
 	return ret;
 
 fail_cfd:
-	close(chanfd);
+	checked_close(chanfd);
 fail_srv:
-	close(server_link);
+	checked_close(server_link);
 	return EXIT_FAILURE;
 }
 
@@ -243,14 +243,14 @@ static int handle_new_server_connection(const char *current_sockpath,
 	if (npid == 0) {
 		// Run forked process, with the only shared state being the
 		// new channel socket
-		close(wdisplay_socket);
+		checked_close(wdisplay_socket);
 		if (reconnectable) {
-			close(control_pipe);
-			close(linksocks[0]);
+			checked_close(control_pipe);
+			checked_close(linksocks[0]);
 		}
 		for (int i = 0; i < connmap->count; i++) {
 			if (connmap->data[i].linkfd != -1) {
-				close(connmap->data[i].linkfd);
+				checked_close(connmap->data[i].linkfd);
 			}
 		}
 		int rc = main_interface_loop(
@@ -259,17 +259,17 @@ static int handle_new_server_connection(const char *current_sockpath,
 	} else if (npid == -1) {
 		wp_debug("Fork failure");
 		if (reconnectable) {
-			close(linksocks[0]);
-			close(linksocks[1]);
+			checked_close(linksocks[0]);
+			checked_close(linksocks[1]);
 		}
 		goto fail_chanfd;
 	}
 
 	// This process no longer needs the application connection
-	close(chanfd);
-	close(appfd);
+	checked_close(chanfd);
+	checked_close(appfd);
 	if (reconnectable) {
-		close(linksocks[1]);
+		checked_close(linksocks[1]);
 
 		connmap->data[connmap->count++] = (struct conn_addr){
 				.token = *new_token,
@@ -280,9 +280,9 @@ static int handle_new_server_connection(const char *current_sockpath,
 
 	return 0;
 fail_chanfd:
-	close(chanfd);
+	checked_close(chanfd);
 fail_appfd:
-	close(appfd);
+	checked_close(appfd);
 	return -1;
 }
 
@@ -303,13 +303,13 @@ static int update_connections(char current_sockpath[static 110],
 				sizeof(flagged_token)) {
 			wp_error("Failed to write token to replacement connection: %s",
 					strerror(errno));
-			close(chanfd);
+			checked_close(chanfd);
 			return -1;
 		}
 
 		if (send_one_fd(connmap->data[i].linkfd, chanfd) == -1) {
 			// TODO: what happens if data has changed?
-			close(chanfd);
+			checked_close(chanfd);
 			return -1;
 		}
 	}
@@ -411,10 +411,10 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 	if (unlink_at_end) {
 		unlink(current_sockpath);
 	}
-	close(wdisplay_socket);
+	checked_close(wdisplay_socket);
 
 	for (int i = 0; i < connmap.count; i++) {
-		close(connmap.data[i].linkfd);
+		checked_close(connmap.data[i].linkfd);
 	}
 	free(connmap.data);
 	return retcode;
@@ -523,13 +523,13 @@ int run_server(const char *socket_path, const char *wayland_display,
 			// application
 			unsetenv("WAYLAND_DISPLAY");
 			setenv("WAYLAND_SOCKET", bufs2, 1);
-			close(server_link);
+			checked_close(server_link);
 		} else {
 			// Since Wayland 1.15, absolute paths are supported in
 			// WAYLAND_DISPLAY
 			unsetenv("WAYLAND_SOCKET");
 			setenv("WAYLAND_DISPLAY", wayland_display, 1);
-			close(wdisplay_socket);
+			checked_close(wdisplay_socket);
 		}
 
 		const char *application = app_argv[0];
@@ -550,7 +550,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 	}
 	if (oneshot) {
 		// We no longer need to see this side
-		close(wayland_socket);
+		checked_close(wayland_socket);
 	}
 
 	int control_pipe = -1;

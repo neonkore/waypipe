@@ -85,16 +85,13 @@ static void destroy_unlinked_sfd(
 		free(sfd->mem_mirror);
 	} else if (sfd->type == FDC_PIPE) {
 		if (sfd->pipe.fd != sfd->fd_local && sfd->pipe.fd != -1) {
-			close(sfd->pipe.fd);
+			checked_close(sfd->pipe.fd);
 		}
 		free(sfd->pipe.recv.data);
 		free(sfd->pipe.send.data);
 	}
 	if (sfd->fd_local != -1) {
-		if (close(sfd->fd_local) == -1) {
-			wp_error("Incorrect close(%d): %s", sfd->fd_local,
-					strerror(errno));
-		}
+		checked_close(sfd->fd_local);
 	}
 	free(sfd);
 	(void)map;
@@ -303,8 +300,8 @@ void cleanup_thread_pool(struct thread_pool *pool)
 	free(pool->threads);
 	free(pool->stack);
 
-	close(pool->selfpipe_r);
-	close(pool->selfpipe_w);
+	checked_close(pool->selfpipe_r);
+	checked_close(pool->selfpipe_w);
 }
 
 const char *fdcat_to_str(enum fdcat cat)
@@ -1489,7 +1486,7 @@ static void pipe_close_write(struct shadow_fd *sfd)
 		 */
 		shutdown(sfd->pipe.fd, SHUT_WR);
 	} else {
-		close(sfd->pipe.fd);
+		checked_close(sfd->pipe.fd);
 		if (sfd->fd_local == sfd->pipe.fd) {
 			sfd->fd_local = -1;
 		}
@@ -1509,7 +1506,7 @@ static void pipe_close_read(struct shadow_fd *sfd)
 		 */
 		shutdown(sfd->pipe.fd, SHUT_RD);
 	} else {
-		close(sfd->pipe.fd);
+		checked_close(sfd->pipe.fd);
 		if (sfd->fd_local == sfd->pipe.fd) {
 			sfd->fd_local = -1;
 		}
@@ -1809,7 +1806,7 @@ bool shadow_decref_transfer(
 		 * it and make it match pipe.fd, just as on the side where
 		 * the original pipe was introduced */
 		if (sfd->pipe.fd != sfd->fd_local) {
-			close(sfd->fd_local);
+			checked_close(sfd->fd_local);
 			sfd->fd_local = sfd->pipe.fd;
 		}
 	}
