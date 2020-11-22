@@ -633,6 +633,7 @@ int main(int argc, char **argv)
 		rbytes[8] = 0;
 
 		char clientsock[110];
+		memset(clientsock, 0, sizeof(clientsock));
 		sprintf(clientsock, "%s-client-%s.sock", socketpath, rbytes);
 
 		bool allocates_pty = false;

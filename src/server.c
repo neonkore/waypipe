@@ -470,6 +470,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 		return EXIT_FAILURE;
 	}
 	char display_path[256];
+	memset(display_path, 0, sizeof(display_path));
 	if (!oneshot) {
 		if (wayland_display[0] == '/') {
 			snprintf(display_path, 256, "%s", wayland_display);

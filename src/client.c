@@ -577,6 +577,8 @@ int run_client(const char *socket_path, const struct main_config *config,
 	 * and older Wayland versions have edge cases */
 	int dispfd = -1;
 	char disp_path[MAX_SOCKETPATH_LEN];
+	memset(disp_path, 0, sizeof(disp_path));
+
 	if (via_socket) {
 		dispfd = get_inherited_socket();
 		if (dispfd == -1) {
