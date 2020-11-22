@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -132,6 +133,37 @@ int connect_to_socket(const char *socket_path)
 		return -1;
 	}
 	return chanfd;
+}
+void check_unclosed_fds()
+{
+	/* Verify that all file descriptors have been closed. Since most
+	 * instances have <<200 file descriptors open at a given time, it is
+	 * safe to only check up to that level */
+	struct pollfd checklist[200];
+	for (int i = 0; i < 200; i++) {
+		checklist[i].fd = i;
+		checklist[i].events = 0;
+		checklist[i].revents = 0;
+	}
+	if (poll(checklist, 200, 0) == -1) {
+		wp_error("fd-checking poll failed: %s", strerror(errno));
+		return;
+	}
+	for (int i = 0; i < 200; i++) {
+		if (checklist[i].fd == STDIN_FILENO ||
+				checklist[i].fd == STDOUT_FILENO ||
+				checklist[i].fd == STDERR_FILENO) {
+			if (checklist[i].revents & POLLNVAL) {
+				wp_error("Unexpected closed fd %d",
+						checklist[i].fd);
+			}
+		} else {
+			if (!(checklist[i].revents & POLLNVAL)) {
+				wp_error("Unexpected open fd %d",
+						checklist[i].fd);
+			}
+		}
+	}
 }
 
 int send_one_fd(int socket, int fd)

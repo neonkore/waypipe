@@ -255,6 +255,7 @@ static int handle_new_server_connection(const char *current_sockpath,
 		}
 		int rc = main_interface_loop(
 				chanfd, appfd, linksocks[1], config, false);
+		check_unclosed_fds();
 		exit(rc);
 	} else if (npid == -1) {
 		wp_debug("Fork failure");

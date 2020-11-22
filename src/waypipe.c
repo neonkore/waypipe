@@ -581,6 +581,7 @@ int main(int argc, char **argv)
 		oneshot = true;
 	}
 
+	int ret;
 	if (mode == MODE_RECON) {
 		return run_recon(argv[0], argv[1]);
 	} else if (mode == MODE_BENCH) {
@@ -596,7 +597,7 @@ int main(int argc, char **argv)
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";
 		}
-		return run_client(socketpath, &config, oneshot, via_socket, 0);
+		ret = run_client(socketpath, &config, oneshot, via_socket, 0);
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
 		if (!socketpath) {
@@ -610,7 +611,7 @@ int main(int argc, char **argv)
 			sprintf(display_path, "wayland-%s", rbytes);
 			wayland_display = display_path;
 		}
-		return run_server(socketpath, wayland_display, control_path,
+		ret = run_server(socketpath, wayland_display, control_path,
 				&config, oneshot, unlink_at_end, app_argv,
 				login_shell);
 	} else {
@@ -747,8 +748,10 @@ int main(int argc, char **argv)
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
-			return run_client(clientsock, &config, oneshot,
+			ret = run_client(clientsock, &config, oneshot,
 					via_socket, conn_pid);
 		}
 	}
+	check_unclosed_fds();
+	return ret;
 }

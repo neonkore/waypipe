@@ -367,10 +367,10 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 		if (dfd == -1) {
 			exit(EXIT_FAILURE);
 		}
-		// ignore retcode ?
-		main_interface_loop(chanclient, dfd, linkfds[1], config, true);
-
-		exit(EXIT_SUCCESS);
+		int rc = main_interface_loop(
+				chanclient, dfd, linkfds[1], config, true);
+		check_unclosed_fds();
+		exit(rc);
 	} else if (npid == -1) {
 		wp_debug("Fork failure");
 		goto fail_ps;
