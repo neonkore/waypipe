@@ -678,17 +678,8 @@ int main(int argc, char **argv)
 		fill_rand_token(rbytes);
 		rbytes[8] = 0;
 
-		char linkage[256];
-		char serversock[110];
 		char clientsock[110];
-		char remote_display[20];
-		sprintf(serversock, "%s-server-%s.sock", socketpath, rbytes);
 		sprintf(clientsock, "%s-client-%s.sock", socketpath, rbytes);
-		sprintf(linkage, "%s:%s", serversock, clientsock);
-		sprintf(remote_display, "wayland-%s", rbytes);
-		if (!wayland_display) {
-			wayland_display = remote_display;
-		}
 
 		bool allocates_pty = false;
 		int dstidx = locate_openssh_cmd_hostname(
@@ -708,6 +699,17 @@ int main(int argc, char **argv)
 			wp_error("Fork failure");
 			return EXIT_FAILURE;
 		} else if (conn_pid == 0) {
+			char linkage[256];
+			char serversock[110];
+			char remote_display[20];
+			sprintf(serversock, "%s-server-%s.sock", socketpath,
+					rbytes);
+			sprintf(linkage, "%s:%s", serversock, clientsock);
+			sprintf(remote_display, "wayland-%s", rbytes);
+			if (!wayland_display) {
+				wayland_display = remote_display;
+			}
+
 			int nextra = 12 + debug + oneshot +
 				     2 * (remote_drm_node != NULL) +
 				     2 * (control_path != NULL) +
