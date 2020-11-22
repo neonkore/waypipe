@@ -163,6 +163,38 @@ static void log_handler(const char *file, int line, enum log_level level,
 	(void)write(STDERR_FILENO, msg, (size_t)nwri);
 }
 
+static void handle_noop(int sig) { (void)sig; }
+
+/* Configure signal handling policies */
+static int setup_sighandlers()
+{
+	struct sigaction ia; // SIGINT: abort operations, and set a flag
+	ia.sa_handler = handle_sigint;
+	sigemptyset(&ia.sa_mask);
+	ia.sa_flags = 0;
+	struct sigaction ca; // SIGCHLD: restart operations, but EINTR on poll
+	ca.sa_handler = handle_noop;
+	sigemptyset(&ca.sa_mask);
+	ca.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	struct sigaction pa;
+	pa.sa_handler = SIG_IGN;
+	sigemptyset(&pa.sa_mask);
+	pa.sa_flags = 0;
+	if (sigaction(SIGINT, &ia, NULL) == -1) {
+		wp_error("Failed to set signal action for SIGINT");
+		return -1;
+	}
+	if (sigaction(SIGCHLD, &ca, NULL) == -1) {
+		wp_error("Failed to set signal action for SIGCHLD");
+		return -1;
+	}
+	if (sigaction(SIGPIPE, &pa, NULL) == -1) {
+		wp_error("Failed to set signal action for SIGPIPE");
+		return -1;
+	}
+	return 0;
+}
+
 /* produces a random token with a low accidental collision probability */
 static void fill_rand_token(char tok[static 8])
 {
@@ -303,8 +335,6 @@ static int run_recon(const char *control_path, const char *recon_path)
 	close(cfd);
 	return EXIT_SUCCESS;
 }
-
-void handle_noop(int sig) { (void)sig; }
 
 #define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
@@ -579,30 +609,8 @@ int main(int argc, char **argv)
 	log_anti_staircase = false;
 	log_to_tty = isatty(STDERR_FILENO);
 
-	// Setup signals
-	struct sigaction ia; // SIGINT: abort operations, and set a flag
-	ia.sa_handler = handle_sigint;
-	sigemptyset(&ia.sa_mask);
-	ia.sa_flags = 0;
-	struct sigaction ca; // SIGCHLD: restart operations, but EINTR on poll
-	ca.sa_handler = handle_noop;
-	sigemptyset(&ca.sa_mask);
-	ca.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-	struct sigaction pa;
-	pa.sa_handler = SIG_IGN;
-	sigemptyset(&pa.sa_mask);
-	pa.sa_flags = 0;
-	if (sigaction(SIGINT, &ia, NULL) == -1) {
-		wp_error("Failed to set signal action for SIGINT");
+	if (setup_sighandlers() == -1) {
 		return EXIT_FAILURE;
-	}
-	if (sigaction(SIGCHLD, &ca, NULL) == -1) {
-		wp_error("Failed to set signal action for SIGCHLD");
-		return EXIT_FAILURE;
-	}
-	if (sigaction(SIGPIPE, &pa, NULL) == -1) {
-		wp_error("Failed to set signal action for SIGPIPE");
-		return EXIT_SUCCESS;
 	}
 
 	bool via_socket = getenv("WAYLAND_SOCKET") != NULL;
