@@ -309,42 +309,28 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 			chanclient, disp_fd, linkfds[0], config, true);
 }
 
-static void handle_new_client_connection(int channelsock, int chanclient,
-		struct conn_map *connmap, const struct main_config *config,
-		const char disp_path[static MAX_SOCKETPATH_LEN])
+void send_new_connection_fd(
+		struct conn_map *connmap, uint32_t key[static 3], int new_fd)
 {
-
-	struct connection_token conn_id;
-	if (read(chanclient, &conn_id.header, sizeof(conn_id.header)) !=
-			sizeof(conn_id.header)) {
-		wp_error("Failed to get connection id header");
-		goto fail_cc;
-	}
-	if (check_conn_header(conn_id.header) < 0) {
-		goto fail_cc;
-	}
-	if (read(chanclient, &conn_id.key, sizeof(conn_id.key)) !=
-			sizeof(conn_id.key)) {
-		wp_error("Failed to get connection id key");
-		goto fail_cc;
-	}
-	if (conn_id.header & CONN_UPDATE_BIT) {
-		for (int i = 0; i < connmap->count; i++) {
-			if (key_match(connmap->data[i].token.key,
-					    conn_id.key)) {
-				if (send_one_fd(connmap->data[i].linkfd,
-						    chanclient) == -1) {
-					wp_error("Failed to send new connection fd to subprocess: %s",
-							strerror(errno));
-					goto fail_cc;
-				}
-				break;
+	for (int i = 0; i < connmap->count; i++) {
+		if (key_match(connmap->data[i].token.key, key)) {
+			if (send_one_fd(connmap->data[i].linkfd, new_fd) ==
+					-1) {
+				wp_error("Failed to send new connection fd to subprocess: %s",
+						strerror(errno));
 			}
+			break;
 		}
-		close(chanclient);
-		return;
 	}
-	bool reconnectable = conn_id.header & CONN_RECONNECTABLE_BIT;
+}
+
+static void handle_new_client_connection(struct pollfd *other_fds,
+		int n_other_fds, int chanclient, struct conn_map *connmap,
+		const struct main_config *config,
+		const char disp_path[static MAX_SOCKETPATH_LEN],
+		const struct connection_token *conn_id)
+{
+	bool reconnectable = conn_id->header & CONN_RECONNECTABLE_BIT;
 
 	if (reconnectable && buf_ensure_size(connmap->count + 1,
 					     sizeof(struct conn_addr),
@@ -365,7 +351,11 @@ static void handle_new_client_connection(int channelsock, int chanclient,
 	if (npid == 0) {
 		// Run forked process, with the only shared
 		// state being the new channel socket
-		close(channelsock);
+		for (int i = 0; i < n_other_fds; i++) {
+			if (other_fds[i].fd != chanclient) {
+				close(other_fds[i].fd);
+			}
+		}
 		if (reconnectable) {
 			close(linkfds[0]);
 		}
@@ -388,12 +378,11 @@ static void handle_new_client_connection(int channelsock, int chanclient,
 	}
 	// Remove connection from this process
 
-	close(chanclient);
 	if (reconnectable) {
 		close(linkfds[1]);
 		connmap->data[connmap->count++] =
 				(struct conn_addr){.linkfd = linkfds[0],
-						.token = conn_id,
+						.token = *conn_id,
 						.pid = npid};
 	}
 
@@ -404,6 +393,26 @@ fail_cc:
 	close(chanclient);
 	return;
 }
+#define NUM_INCOMPLETE_CONNECTIONS 63
+
+static void drop_incoming_connection(struct pollfd *fds,
+		struct connection_token *tokens, uint8_t *bytes_read, int index,
+		int incomplete)
+{
+	close(fds[index].fd);
+	if (index != incomplete - 1) {
+		size_t shift = (size_t)(incomplete - 1 - index);
+		memmove(fds + index, fds + index + 1,
+				sizeof(struct pollfd) * shift);
+		memmove(tokens + index, tokens + index + 1,
+				sizeof(struct connection_token) * shift);
+		memmove(bytes_read + index, bytes_read + index + 1,
+				sizeof(uint8_t) * shift);
+	}
+	memset(&fds[incomplete - 1], 0, sizeof(struct pollfd));
+	memset(&tokens[incomplete - 1], 0, sizeof(struct connection_token));
+	bytes_read[incomplete - 1] = 0;
+}
 
 static int run_multi_client(int channelsock, pid_t *eol_pid,
 		const struct main_config *config,
@@ -411,10 +420,20 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 {
 	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
 
-	struct pollfd cs;
-	cs.fd = channelsock;
-	cs.events = POLLIN;
-	cs.revents = 0;
+	/* Keep track of the main socket, and all connections which have not
+	 * yet fully provided their connection token. If we run out of space,
+	 * the oldest incomplete connection gets dropped */
+	struct pollfd fds[NUM_INCOMPLETE_CONNECTIONS + 1];
+	struct connection_token tokens[NUM_INCOMPLETE_CONNECTIONS];
+	uint8_t bytes_read[NUM_INCOMPLETE_CONNECTIONS];
+	int incomplete = 0;
+	memset(fds, 0, sizeof(fds));
+	memset(tokens, 0, sizeof(tokens));
+	memset(bytes_read, 0, sizeof(bytes_read));
+	fds[0].fd = channelsock;
+	fds[0].events = POLLIN;
+	fds[0].revents = 0;
+
 	int retcode = EXIT_SUCCESS;
 	while (!shutdown_flag) {
 		int status = -1;
@@ -426,7 +445,7 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 			break;
 		}
 
-		int r = poll(&cs, 1, -1);
+		int r = poll(fds, 1 + (nfds_t)incomplete, -1);
 		if (r == -1) {
 			if (errno == EINTR) {
 				// If SIGCHLD, we will check the child.
@@ -440,21 +459,106 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 			continue;
 		}
 
-		int chanclient = accept(channelsock, NULL, NULL);
-		if (chanclient == -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				// The wakeup may have been spurious
+		for (int i = 0; i < incomplete; i++) {
+			if (!(fds[i + 1].revents & POLLIN)) {
 				continue;
 			}
-			wp_error("Connection failure: %s", strerror(errno));
-			retcode = EXIT_FAILURE;
-			break;
-		} else {
-			/* Failures here are logged, but should not affect this
-			 * process' ability to e.g. handle reconnections. */
-			handle_new_client_connection(channelsock, chanclient,
-					&connmap, config, disp_path);
+			int cur_fd = fds[i + 1].fd;
+			char *dest = ((char *)&tokens[i]) + bytes_read[i];
+			ssize_t s = read(cur_fd, dest, 16 - bytes_read[i]);
+			if (s == -1) {
+				wp_error("Failed to read from connection: %s",
+						strerror(errno));
+				drop_incoming_connection(fds + 1, tokens,
+						bytes_read, i, incomplete);
+				incomplete--;
+				continue;
+			} else if (s == 0) {
+				/* connection closed */
+				wp_error("Connection closed early");
+				drop_incoming_connection(fds + 1, tokens,
+						bytes_read, i, incomplete);
+				incomplete--;
+				continue;
+			}
+			bytes_read[i] += (uint8_t)s;
+			if (bytes_read[i] - (uint8_t)s < 4 &&
+					bytes_read[i] >= 4) {
+				/* Validate connection token header */
+				if (check_conn_header(tokens[i].header) < 0) {
+					drop_incoming_connection(fds + 1,
+							tokens, bytes_read, i,
+							incomplete);
+					incomplete--;
+					continue;
+				}
+			}
+			if (bytes_read[i] < 16) {
+				continue;
+			}
+			/* Validate connection token key */
+			if (tokens[i].header & CONN_UPDATE_BIT) {
+				send_new_connection_fd(&connmap, tokens[i].key,
+						cur_fd);
+				drop_incoming_connection(fds + 1, tokens,
+						bytes_read, i, incomplete);
+				incomplete--;
+				continue;
+			}
+
+			/* Failures here are logged, but should not
+			 * affect this process' ability to e.g. handle
+			 * reconnections. */
+			handle_new_client_connection(fds, 1 + incomplete,
+					cur_fd, &connmap, config, disp_path,
+					&tokens[i]);
+			drop_incoming_connection(fds + 1, tokens, bytes_read, i,
+					incomplete);
+			incomplete--;
 		}
+
+		/* Process new connections second, to give incomplete
+		 * connections a chance to clear first */
+		if (fds[0].revents & POLLIN) {
+			int chanclient = accept(channelsock, NULL, NULL);
+			if (chanclient == -1) {
+				if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					// The wakeup may have been spurious
+					continue;
+				}
+				// should errors like econnaborted exit?
+				wp_error("Connection failure: %s",
+						strerror(errno));
+				retcode = EXIT_FAILURE;
+				break;
+			} else {
+				if (set_nonblocking(chanclient) == -1) {
+					wp_error("Error making new connection nonblocking: %s",
+							strerror(errno));
+					close(chanclient);
+					continue;
+				}
+
+				if (incomplete == NUM_INCOMPLETE_CONNECTIONS) {
+					wp_error("Dropping oldest incomplete connection (out of %d)",
+							NUM_INCOMPLETE_CONNECTIONS);
+					drop_incoming_connection(fds + 1,
+							tokens, bytes_read, 0,
+							incomplete);
+					incomplete--;
+				}
+				fds[1 + incomplete].fd = chanclient;
+				fds[1 + incomplete].events = POLLIN;
+				fds[1 + incomplete].revents = 0;
+				memset(&tokens[incomplete], 0,
+						sizeof(struct connection_token));
+				bytes_read[incomplete] = 0;
+				incomplete++;
+			}
+		}
+	}
+	for (int i = 0; i < incomplete; i++) {
+		close(fds[i + 1].fd);
 	}
 
 	for (int i = 0; i < connmap.count; i++) {
