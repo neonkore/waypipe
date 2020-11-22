@@ -273,42 +273,6 @@ static int locate_openssh_cmd_hostname(
 	return dstidx;
 }
 
-/* requires >=256 byte shell/shellname buffers */
-static void setup_login_shell_command(char shell[static 256],
-		char shellname[static 256], bool login_shell)
-{
-	strcpy(shellname, "-sh");
-	strcpy(shell, "/bin/sh");
-
-	// Select the preferred shell on the system
-	char *shell_env = getenv("SHELL");
-	if (!shell_env) {
-		return;
-	}
-	int len = (int)strlen(shell_env);
-	if (len >= 254) {
-		fprintf(stderr, "Environment variable $SHELL is too long at %d bytes, falling back to %s\n",
-				len, shell);
-		return;
-	}
-	strcpy(shell, shell_env);
-	if (login_shell) {
-		/* Create a login shell. The convention for this is to prefix
-		 * the name of the shell with a single hyphen */
-		int start = len;
-		for (; start-- > 0;) {
-			if (shell[start] == '/') {
-				start++;
-				break;
-			}
-		}
-		shellname[0] = '-';
-		strcpy(shellname + 1, shell + start);
-	} else {
-		strcpy(shellname, shell);
-	}
-}
-
 /* Send the socket at 'recon_path' to the control socket at 'control_path'.
  * Because connections are made by address, the waypipe server root process
  * must be able to connect to the `recon path`. */
@@ -636,16 +600,6 @@ int main(int argc, char **argv)
 		return run_client(socketpath, &config, oneshot, via_socket, 0);
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
-		const char *application = app_argv[0];
-		char shell[256];
-		char shellname[256];
-		char *shellcmd[2] = {shellname, NULL};
-		if (argc == 0) {
-			setup_login_shell_command(
-					shell, shellname, login_shell);
-			application = shell;
-			app_argv = shellcmd;
-		}
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-server.sock";
 		}
@@ -658,8 +612,8 @@ int main(int argc, char **argv)
 			wayland_display = display_path;
 		}
 		return run_server(socketpath, wayland_display, control_path,
-				&config, oneshot, unlink_at_end, application,
-				app_argv);
+				&config, oneshot, unlink_at_end, app_argv,
+				login_shell);
 	} else {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe";

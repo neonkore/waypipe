@@ -420,10 +420,46 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 	return retcode;
 }
 
+/* requires >=256 byte shell/shellname buffers */
+static void setup_login_shell_command(char shell[static 256],
+		char shellname[static 256], bool login_shell)
+{
+	strcpy(shellname, "-sh");
+	strcpy(shell, "/bin/sh");
+
+	// Select the preferred shell on the system
+	char *shell_env = getenv("SHELL");
+	if (!shell_env) {
+		return;
+	}
+	int len = (int)strlen(shell_env);
+	if (len >= 254) {
+		wp_error("Environment variable $SHELL is too long at %d bytes, falling back to %s",
+				len, shell);
+		return;
+	}
+	strcpy(shell, shell_env);
+	if (login_shell) {
+		/* Create a login shell. The convention for this is to prefix
+		 * the name of the shell with a single hyphen */
+		int start = len;
+		for (; start-- > 0;) {
+			if (shell[start] == '/') {
+				start++;
+				break;
+			}
+		}
+		shellname[0] = '-';
+		strcpy(shellname + 1, shell + start);
+	} else {
+		strcpy(shellname, shell);
+	}
+}
+
 int run_server(const char *socket_path, const char *wayland_display,
 		const char *control_path, const struct main_config *config,
-		bool oneshot, bool unlink_at_end, const char *application,
-		char *const app_argv[])
+		bool oneshot, bool unlink_at_end, char *const app_argv[],
+		bool login_shell_if_backup)
 {
 	wp_debug("I'm a server on %s, running: %s", socket_path, app_argv[0]);
 
@@ -493,6 +529,17 @@ int run_server(const char *socket_path, const char *wayland_display,
 			unsetenv("WAYLAND_SOCKET");
 			setenv("WAYLAND_DISPLAY", wayland_display, 1);
 			close(wdisplay_socket);
+		}
+
+		const char *application = app_argv[0];
+		char shell[256];
+		char shellname[256];
+		char *shellcmd[2] = {shellname, NULL};
+		if (!application) {
+			setup_login_shell_command(shell, shellname,
+					login_shell_if_backup);
+			application = shell;
+			app_argv = shellcmd;
 		}
 
 		execvp(application, app_argv);
