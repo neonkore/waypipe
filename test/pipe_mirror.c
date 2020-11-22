@@ -263,7 +263,13 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 	// TODO: test partial shutdowns as well, all 2^4 cases for a single
 	// cycle; and test epipe closing by queuing additional data
 	struct shadow_fd *cls_shadow = close_src ? src_shadow : dst_shadow;
-	int cls_fd = close_src ? opp_end : anti_end;
+	if (close_src) {
+		checked_close(opp_end);
+		opp_end = -1;
+	} else {
+		checked_close(anti_end);
+		anti_end = -1;
+	}
 
 	bool shutdown_deletes = (cls_shadow->pipe.can_read &&
 				 !cls_shadow->pipe.can_write);
@@ -273,7 +279,6 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 
 	cls_shadow->pipe.readable = cls_shadow->pipe.can_read;
 	cls_shadow->pipe.writable = cls_shadow->pipe.can_write;
-	checked_close(cls_fd);
 
 	if (shadow_sync(close_src ? &src_map : &dst_map,
 			    close_src ? &dst_map : &src_map) == -1) {
@@ -298,8 +303,12 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 
 	printf("Test: %s\n", success ? "pass" : "FAIL");
 cleanup:
-	checked_close(opp_end);
-	checked_close(anti_end);
+	if (anti_end != -1) {
+		checked_close(anti_end);
+	}
+	if (opp_end != -1) {
+		checked_close(opp_end);
+	}
 	cleanup_translation_map(&src_map);
 	cleanup_translation_map(&dst_map);
 

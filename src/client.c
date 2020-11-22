@@ -369,7 +369,6 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 		}
 		// ignore retcode ?
 		main_interface_loop(chanclient, dfd, linkfds[1], config, true);
-		checked_close(dfd);
 
 		exit(EXIT_SUCCESS);
 	} else if (npid == -1) {
