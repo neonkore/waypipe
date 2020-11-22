@@ -31,14 +31,14 @@ foreach xml : protocols
 		'@0@ code'.format(xml.underscorify()),
 		output: '@BASENAME@-data.c',
 		input: xml,
-		depend_files: fn_list,
+		depend_files: [fn_list, symgen_path],
 		command: [python3, symgen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 	protocols_headers += custom_target(
 		'@0@ client-header'.format(xml.underscorify()),
 		output: '@BASENAME@-defs.h',
 		input: xml,
-		depend_files: fn_list,
+		depend_files: [fn_list, symgen_path],
 		command: [python3, symgen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 endforeach

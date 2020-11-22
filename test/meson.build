@@ -35,12 +35,14 @@ testproto_src = custom_target(
 	'test-proto code',
 	output: '@BASENAME@-data.c',
 	input: 'test-proto.xml',
+	depend_files: [test_fnlist, symgen_path],
 	command: [python3, symgen_path, 'data', test_fnlist, '@INPUT@', '@OUTPUT@'],
 )
 testproto_header = custom_target(
 	'test-proto client-header',
 	output: '@BASENAME@-defs.h',
 	input: 'test-proto.xml',
+	depend_files: [test_fnlist, symgen_path],
 	command: [python3, symgen_path, 'header', test_fnlist, '@INPUT@', '@OUTPUT@'],
 )
 test_parse = executable(

@@ -238,6 +238,10 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
             msg_data_args.append("0")
             msg_data_args.append("NULL")
             msg_data_args.append("NULL")
+        if "type" in func.attrib and func.attrib["type"] == "destructor":
+            msg_data_args.append("true")
+        else:
+            msg_data_args.append("false")
 
     return (is_request, func_name, func.attrib["name"], msg_data_args)
 

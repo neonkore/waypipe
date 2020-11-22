@@ -353,7 +353,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 
 	fds_used += msg->n_fds;
 
-	if (objh->obj_id >= 0xff000000 && !strcmp(msg->name, "destroy")) {
+	if (objh->obj_id >= 0xff000000 && msg->is_destructor) {
 		/* Unfortunately, the wayland server library does not explicitly
 		 * acknowledge the client requested deletion of objects that the
 		 * wayland server has created; the client assumes success,
