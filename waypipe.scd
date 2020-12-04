@@ -149,7 +149,7 @@ One can obtain similar behavior by explicitly running waypipe and ssh:
 	kill %1
 ```
 
-Waypipe may be run locally without an ssh connection by specifying matching
+Waypipe may be run locally without an SSH connection by specifying matching
 socket paths. For example:
 
 ```
@@ -157,6 +157,34 @@ socket paths. For example:
 	waypipe --socket /tmp/waypipe.sock server weston-simple-dmabuf-egl
 	kill %1
 	rm /tmp/waypipe.sock
+```
+
+Using transports other than SSH is a bit more complicated. A recipe with ncat
+to connect to _remote_ from computer _local_:
+
+```
+    $ waypipe --socket /tmp/waypipe-remote.sock client &
+    $ ncat --ssl -lk 12345 --sh-exec 'ncat -U /tmp/waypipe-remote.sock' &
+    $ ssh user@remote
+
+    > ncat -lkU /tmp/waypipe-local.sock --sh-exec 'ncat --ssl local 12345' &
+    > waypipe --display wayland-local \\
+                --socket /tmp/waypipe-local.sock server -- sleep inf &
+    > WAYLAND_DISPLAY=wayland-local application
+```
+
+Given a certificate file, socat can also provide an encrypted connection
+(remove 'verify=0' to check certificates):
+
+```
+    $ waypipe --socket /tmp/waypipe-remote.sock client &
+    $ socat openssl-listen:12345,reuseaddr,cert=certificate.pem,verify=0,fork \\
+        unix-connect:/tmp/waypipe-remote.sock
+    $ ssh user@remote
+
+    > socat unix-listen:/tmp/waypipe-local.sock,reuseaddr,fork \\
+        openssl-connect:local:12345,verify=0 &
+    > waypipe --socket /tmp/waypipe-local.sock server -- application
 ```
 
 Many applications require specific environment variables to use Wayland instead
@@ -214,4 +242,4 @@ with return code 1 if there has been an error.
 
 # SEE ALSO
 
-*weston*(1), *ssh*(1)
+*weston*(1), *ssh*(1), *socat(1)*, *ncat(1)*
