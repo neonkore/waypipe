@@ -164,6 +164,10 @@ void cleanup_render_data(struct render_data *data)
 	}
 }
 
+/**
+ * Estimate the mappable size of a DMABUF. This may be an overestimate,
+ * and should only be used if there is no other information about the DMABUF.
+ */
 static ssize_t get_dmabuf_fd_size(int fd)
 {
 	ssize_t endp = lseek(fd, 0, SEEK_END);
@@ -183,15 +187,15 @@ static ssize_t get_dmabuf_fd_size(int fd)
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		struct dmabuf_slice_data *info, bool read_modifier)
 {
-	ssize_t endp = get_dmabuf_fd_size(fd);
-	if (endp == -1) {
-		return NULL;
-	}
-	*size = (size_t)endp;
 
 	struct gbm_bo *bo;
 	if (!info) {
 		/* No protocol info, so guess the dimensions */
+		ssize_t endp = get_dmabuf_fd_size(fd);
+		if (endp == -1) {
+			return NULL;
+		}
+
 		struct gbm_import_fd_data data;
 		data.fd = fd;
 		data.width = 256;
@@ -238,7 +242,6 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		data.width = info->width;
 		data.height = info->height;
 		data.format = simple_format;
-
 		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER, &data,
 				GBM_BO_USE_RENDERING);
 	}
@@ -255,6 +258,9 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 			info->modifier = 0;
 		}
 	}
+
+	/* todo: find out how to correctly map multiplanar formats */
+	*size = gbm_bo_get_stride(bo) * gbm_bo_get_height(bo);
 
 	return bo;
 }
@@ -342,14 +348,6 @@ retry:
 			gbm_bo_destroy(bo);
 			return NULL;
 		}
-		int tfd = gbm_bo_get_fd(bo);
-		ssize_t csize = get_dmabuf_fd_size(tfd);
-		checked_close(tfd);
-		if (csize != (ssize_t)size) {
-			wp_error("Created DMABUF size (%zd disagrees with original size (%zu), giving up");
-			gbm_bo_destroy(bo);
-			return NULL;
-		}
 	} else {
 		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
 		uint32_t simple_format = dmabuf_get_simple_format_for_plane(
@@ -380,42 +378,6 @@ retry:
 			wp_error("Failed to make dmabuf (with modifier %lx): %s",
 					info->modifier, strerror(errno));
 			return NULL;
-		}
-		int tfd = gbm_bo_get_fd(bo);
-		ssize_t csize = get_dmabuf_fd_size(tfd);
-		checked_close(tfd);
-		if (csize != (ssize_t)size) {
-			wp_error("Created DMABUF size (%zd disagrees with original size (%zu), %s",
-					csize, size,
-					(csize > (ssize_t)size)
-							? "keeping anyway"
-							: "attempting taller");
-			if (csize < (ssize_t)size) {
-				// Retry, with height increased to hopefully
-				// contain enough bytes
-				uint32_t nheight =
-						((uint32_t)size +
-								info->strides[0] -
-								1) /
-						info->strides[0];
-				gbm_bo_destroy(bo);
-				bo = gbm_bo_create_with_modifiers(rd->dev,
-						info->width, nheight,
-						simple_format, modifiers, 2);
-				if (!bo) {
-					wp_error("Failed to make extra-sized dmabuf (with modifier %lx): %s",
-							info->modifier,
-							strerror(errno));
-					return NULL;
-				}
-				int nfd = gbm_bo_get_fd(bo);
-				ssize_t nsize = get_dmabuf_fd_size(nfd);
-				checked_close(nfd);
-				if (nsize < (ssize_t)size) {
-					wp_error("Trying to fudge dmabuf height to reach target size of %zu bytes; failed, got %zd",
-							size, nsize);
-				}
-			}
 		}
 	}
 	return bo;
