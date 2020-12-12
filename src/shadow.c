@@ -615,13 +615,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
-		int mirror_size = 0;
-		get_video_mirror_size(&sfd->dmabuf_info, NULL, NULL, NULL, NULL,
-				&mirror_size);
-		sfd->mem_mirror = calloc(
-				(size_t)max((int)sfd->buffer_size, mirror_size),
-				1);
-		(void)setup_video_encode(sfd, render);
+		if (setup_video_encode(sfd, render) == -1) {
+			wp_error("Video encoding setup failed for RID=%d",
+					sfd->remote_id);
+		}
 	} else if (sfd->type == FDC_DMAVID_IW) {
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
@@ -633,7 +630,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		if (!sfd->dmabuf_bo) {
 			return sfd;
 		}
-		(void)setup_video_decode(sfd, render);
+		if (setup_video_decode(sfd, render) == -1) {
+			wp_error("Video decoding setup failed for RID=%d",
+					sfd->remote_id);
+		}
 	} else if (sfd->type == FDC_DMABUF) {
 		sfd->buffer_size = 0;
 
@@ -1358,7 +1358,7 @@ static int create_from_update(struct fd_translation_map *map,
 
 		sfd->buffer_size = header.file_size;
 
-		if (init_render_data(render) == 1) {
+		if (init_render_data(render) == -1) {
 			sfd->fd_local = -1;
 			return 0;
 		}
@@ -1375,13 +1375,10 @@ static int create_from_update(struct fd_translation_map *map,
 		}
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 
-		int mirror_size = 0;
-		get_video_mirror_size(&sfd->dmabuf_info, NULL, NULL, NULL, NULL,
-				&mirror_size);
-		sfd->mem_mirror = calloc(
-				(size_t)max((int)sfd->buffer_size, mirror_size),
-				1);
-		(void)setup_video_decode(sfd, render);
+		if (setup_video_decode(sfd, render) == -1) {
+			wp_error("Video decoding setup failed for RID=%d",
+					sfd->remote_id);
+		}
 	} else if (type == WMSG_OPEN_DMAVID_SRC) {
 		/* remote writes data, this side reads data */
 		sfd->type = FDC_DMAVID_IR;
@@ -1406,13 +1403,10 @@ static int create_from_update(struct fd_translation_map *map,
 		}
 		sfd->fd_local = export_dmabuf(sfd->dmabuf_bo);
 
-		int mirror_size = 0;
-		get_video_mirror_size(&sfd->dmabuf_info, NULL, NULL, NULL, NULL,
-				&mirror_size);
-		sfd->mem_mirror = calloc(
-				(size_t)max((int)sfd->buffer_size, mirror_size),
-				1);
-		(void)setup_video_encode(sfd, render);
+		if (setup_video_encode(sfd, render) == -1) {
+			wp_error("Video encoding setup failed for RID=%d",
+					sfd->remote_id);
+		}
 	} else if (type == WMSG_OPEN_DMABUF) {
 		sfd->type = FDC_DMABUF;
 		const struct wmsg_open_dmabuf header =

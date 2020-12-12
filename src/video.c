@@ -40,18 +40,6 @@ bool video_supports_shm_format(uint32_t format)
 	return false;
 }
 
-void get_video_mirror_size(const struct dmabuf_slice_data *info, int *new_width,
-		int *new_height, int *new_strides, int *new_offsets,
-		int *new_min_size)
-{
-	(void)info;
-	(void)new_width;
-	(void)new_height;
-	(void)new_strides;
-	(void)new_offsets;
-	(void)new_min_size;
-}
-
 void copy_onto_video_mirror(char *buffer, char *mirror,
 		const struct dmabuf_slice_data *info)
 {
@@ -473,6 +461,9 @@ void destroy_video_data(struct shadow_fd *sfd)
 		if (sfd->video_yuv_frame_data) {
 			av_freep(sfd->video_yuv_frame_data);
 		}
+		if (sfd->video_local_frame_data) {
+			av_freep(sfd->video_local_frame_data);
+		}
 		av_frame_free(&sfd->video_local_frame);
 		av_frame_free(&sfd->video_tmp_frame);
 		av_frame_free(&sfd->video_yuv_frame);
@@ -480,107 +471,37 @@ void destroy_video_data(struct shadow_fd *sfd)
 	}
 }
 
-/* see AVFrame::video documentation; needed due to overreads with SIMD  */
-#define VIDEO_MIRROR_EXTRA_BYTES 16
-
-void get_video_mirror_size(const struct dmabuf_slice_data *info, int *new_width,
-		int *new_height, int *new_strides, int *new_offsets,
-		int *new_min_size)
-{
-	/* Encoding video with YUV420P is significantly faster than encoding
-	 * video with the YUV444P format. However, when using YUV420P, x264
-	 * imposes an additional condition, that the image width and height
-	 * be divisible by 2, so that there are no UV entries covering less than
-	 * a 2x2 field. Furthermore, if the image sizes for sws_scale disagree,
-	 * then the function becomes significantly more expensive.
-	 *
-	 * This isn't the only constraint; with recent ffmpeg, YUV->RGB
-	 * conversions crash if the strides of the output are not divisible
-	 * by 16.
-	 *
-	 * One solution for this problem is to copy the buffer onto a temporary
-	 * space (which is necessary anyway, because scaling may overread by
-	 * e.g. 16 bytes; it is not safe to overshoot the end of a mapped
-	 * dmabuf). Since we're already copying the data, we may as well shift
-	 * the image lines slightly to ensure good alignment. This probably is
-	 * not more more expensive than memcpy as we may still be bandwidth
-	 * limited.
-	 **/
-	int nwidth = align((int)info->width, 2);
-	int nheight = align((int)info->height, 2);
-	if (new_width) {
-		*new_width = nwidth;
-	}
-	if (new_height) {
-		*new_height = nheight;
-	}
-	int base_offset = 0;
-	for (int i = 0; i < info->num_planes; i++) {
-		int nstride = align((int)info->strides[i], 16);
-		if (new_strides) {
-			new_strides[i] = nstride;
-		}
-		if (new_offsets) {
-			new_offsets[i] = base_offset;
-		}
-
-		// TODO: handle subsampled planes efficiently, switch by format
-		base_offset += nstride * nheight;
-	}
-	if (new_min_size) {
-		*new_min_size = base_offset;
-	}
-}
-
-void copy_onto_video_mirror(char *buffer, char *mirror,
+static void copy_onto_video_mirror(const char *buffer, AVFrame *frame,
 		const struct dmabuf_slice_data *info)
 {
-	int new_strides[4], new_offsets[4], new_min_size, new_width, new_height;
-	get_video_mirror_size(info, &new_width, &new_height, new_strides,
-			new_offsets, &new_min_size);
 	for (int i = 0; i < info->num_planes; i++) {
-		if (new_strides[i] == (int)info->strides[i] &&
-				new_height == (int)info->height) {
-			/* Fast case: no structural changes */
-			memcpy(mirror + (size_t)new_offsets[i],
-					buffer + (size_t)info->offsets[i],
-					(size_t)(new_strides[i] * new_height));
-		} else {
-			for (size_t r = 0; r < (size_t)new_height; r++) {
-				memcpy(mirror + new_offsets[i] +
-								(size_t)new_strides[i] *
-										r,
-						buffer + (size_t)info->offsets[i] +
-								(size_t)info->strides[i] *
-										r,
-						(size_t)info->strides[i]);
-			}
+		int j = i;
+		if (needs_vu_flip(info->format) && (i == 1 || i == 2)) {
+			j = 3 - i;
+		}
+		for (size_t r = 0; r < info->height; r++) {
+			uint8_t *dst = frame->data[j] +
+				       frame->linesize[j] * (int)r;
+			const char *src = buffer + (size_t)info->offsets[i] +
+					  (size_t)info->strides[i] * r;
+			memcpy(dst, src, (size_t)info->strides[i]);
 		}
 	}
 }
-void copy_from_video_mirror(char *buffer, char *mirror,
+static void copy_from_video_mirror(char *buffer, const AVFrame *frame,
 		const struct dmabuf_slice_data *info)
 {
-	int new_strides[4], new_offsets[4], new_min_size, new_width, new_height;
-	get_video_mirror_size(info, &new_width, &new_height, new_strides,
-			new_offsets, &new_min_size);
 	for (int i = 0; i < info->num_planes; i++) {
-		if (new_strides[i] == (int)info->strides[i] &&
-				new_height == (int)info->height) {
-			/* Fast case: no structural changes */
-			memcpy(buffer + (size_t)info->offsets[i],
-					mirror + (size_t)new_offsets[i],
-					(size_t)(new_strides[i] * new_height));
-		} else {
-			for (size_t r = 0; r < (size_t)new_height; r++) {
-				memcpy(buffer + (size_t)info->offsets[i] +
-								(size_t)info->strides[i] *
-										r,
-						mirror + (size_t)new_offsets[i] +
-								(size_t)new_strides[i] *
-										r,
-						(size_t)info->strides[i]);
-			}
+		int j = i;
+		if (needs_vu_flip(info->format) && (i == 1 || i == 2)) {
+			j = 3 - i;
+		}
+		for (size_t r = 0; r < info->height; r++) {
+			const uint8_t *src = frame->data[j] +
+					     frame->linesize[j] * (int)r;
+			char *dst = buffer + (size_t)info->offsets[i] +
+				    (size_t)info->strides[i] * r;
+			memcpy(dst, src, (size_t)info->strides[i]);
 		}
 	}
 }
@@ -892,28 +813,6 @@ fail_alignment:
 	return -1;
 }
 
-static void setup_avframe_entries(struct AVFrame *frame,
-		struct dmabuf_slice_data *info, uint8_t *buffer)
-{
-	int new_strides[4], new_offsets[4], new_min_size, new_width, new_height;
-	get_video_mirror_size(info, &new_width, &new_height, new_strides,
-			new_offsets, &new_min_size);
-
-	bool vu_flip = needs_vu_flip(info->format);
-	for (int i = 0; i < (int)info->num_planes; i++) {
-		int j = i;
-		if (vu_flip && i == 1)
-			j = 2;
-		if (vu_flip && i == 2)
-			j = 1;
-		frame->linesize[i] = new_strides[j];
-		frame->data[i] = buffer + new_offsets[j];
-	}
-	for (int i = (int)info->num_planes; i < AV_NUM_DATA_POINTERS; i++) {
-		frame->data[i] = NULL;
-	}
-}
-
 int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 {
 	bool has_hw = init_hwcontext(rd) == 0;
@@ -948,30 +847,38 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
-
-	struct AVPacket *pkt = av_packet_alloc();
-
-	get_video_mirror_size(&sfd->dmabuf_info, &ctx->width, &ctx->height,
-			NULL, NULL, NULL);
 	ctx->pix_fmt = videofmt;
 	configure_low_latency_enc_context(ctx, true);
+
+	/* Increase image sizes as needed to ensure codec can run */
+	ctx->width = (int)sfd->dmabuf_info.width;
+	ctx->height = (int)sfd->dmabuf_info.height;
+	int linesize_align[AV_NUM_DATA_POINTERS];
+	avcodec_align_dimensions2(
+			ctx, &ctx->width, &ctx->height, linesize_align);
+
+	struct AVPacket *pkt = av_packet_alloc();
 
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
 		return -1;
 	}
 
-	struct AVFrame *frame = av_frame_alloc();
-	if (!frame) {
+	struct AVFrame *local_frame = av_frame_alloc();
+	if (!local_frame) {
 		wp_error("Could not allocate video frame");
 		return -1;
 	}
-	setup_avframe_entries(
-			frame, &sfd->dmabuf_info, (uint8_t *)sfd->mem_mirror);
-	frame->format = avpixfmt;
+	local_frame->format = avpixfmt;
 	/* adopt padded sizes */
-	frame->width = ctx->width;
-	frame->height = ctx->height;
+	local_frame->width = ctx->width;
+	local_frame->height = ctx->height;
+	if (av_image_alloc(local_frame->data, local_frame->linesize,
+			    local_frame->width, local_frame->height, avpixfmt,
+			    64) < 0) {
+		wp_error("Failed to allocate temp image");
+		return -1;
+	}
 
 	struct AVFrame *yuv_frame = av_frame_alloc();
 	yuv_frame->width = ctx->width;
@@ -983,9 +890,10 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 		wp_error("Failed to allocate temp image");
 		return -1;
 	}
-	struct SwsContext *sws = sws_getContext(frame->width, frame->height,
-			avpixfmt, yuv_frame->width, yuv_frame->height, videofmt,
-			SWS_BILINEAR, NULL, NULL, NULL);
+	struct SwsContext *sws = sws_getContext(local_frame->width,
+			local_frame->height, avpixfmt, yuv_frame->width,
+			yuv_frame->height, videofmt, SWS_BILINEAR, NULL, NULL,
+			NULL);
 	if (!sws) {
 		wp_error("Could not create software color conversion context");
 		return -1;
@@ -994,7 +902,8 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 	sfd->video_yuv_frame = yuv_frame;
 	/* recorded pointer to be freed to match av_image_alloc */
 	sfd->video_yuv_frame_data = &yuv_frame->data[0];
-	sfd->video_local_frame = frame;
+	sfd->video_local_frame = local_frame;
+	sfd->video_local_frame_data = &local_frame->data[0];
 	sfd->video_packet = pkt;
 	sfd->video_context = ctx;
 	sfd->video_color_context = sws;
@@ -1067,9 +976,13 @@ int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 		ctx->get_format = get_decode_format;
 	} else {
 		ctx->pix_fmt = videofmt;
-		/* set context dimensions */
-		get_video_mirror_size(&sfd->dmabuf_info, &ctx->width,
-				&ctx->height, NULL, NULL, NULL);
+		/* set context dimensions, and allocate buffer to write into */
+
+		ctx->width = (int)sfd->dmabuf_info.width;
+		ctx->height = (int)sfd->dmabuf_info.height;
+		int linesize_align[AV_NUM_DATA_POINTERS];
+		avcodec_align_dimensions2(
+				ctx, &ctx->width, &ctx->height, linesize_align);
 	}
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
 		wp_error("Failed to open codec");
@@ -1116,8 +1029,8 @@ void collect_video_from_mirror(
 		if (!data) {
 			return;
 		}
-		copy_onto_video_mirror(
-				data, sfd->mem_mirror, &sfd->dmabuf_info);
+		copy_onto_video_mirror(data, sfd->video_local_frame,
+				&sfd->dmabuf_info);
 		unmap_dmabuf(sfd->dmabuf_bo, handle);
 
 		if (sws_scale(sfd->video_color_context,
@@ -1174,29 +1087,36 @@ static int setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 
 	enum AVPixelFormat avpixfmt = drm_to_av(sfd->dmabuf_info.format);
 
-	struct AVFrame *frame = av_frame_alloc();
-	if (!frame) {
+	struct AVFrame *local_frame = av_frame_alloc();
+	if (!local_frame) {
 		wp_error("Could not allocate video frame");
 		return -1;
 	}
-	frame->format = avpixfmt;
+	local_frame->format = avpixfmt;
 	/* adopt padded sizes */
-	frame->width = ctx->width;
-	frame->height = ctx->height;
-	setup_avframe_entries(
-			frame, &sfd->dmabuf_info, (uint8_t *)sfd->mem_mirror);
-
-	struct SwsContext *sws = sws_getContext(cpu_frame->width,
-			cpu_frame->height, cpu_frame->format, frame->width,
-			frame->height, avpixfmt, SWS_BILINEAR, NULL, NULL,
-			NULL);
-	if (!sws) {
-		wp_error("Could not create software color conversion context");
-		av_frame_free(&frame);
+	local_frame->width = ctx->width;
+	local_frame->height = ctx->height;
+	if (av_image_alloc(local_frame->data, local_frame->linesize,
+			    local_frame->width, local_frame->height, avpixfmt,
+			    64) < 0) {
+		wp_error("Failed to allocate local image");
+		av_frame_free(&local_frame);
 		return -1;
 	}
 
-	sfd->video_local_frame = frame;
+	struct SwsContext *sws = sws_getContext(cpu_frame->width,
+			cpu_frame->height, cpu_frame->format,
+			local_frame->width, local_frame->height, avpixfmt,
+			SWS_BILINEAR, NULL, NULL, NULL);
+	if (!sws) {
+		wp_error("Could not create software color conversion context");
+		av_freep(&local_frame->data[0]);
+		av_frame_free(&local_frame);
+		return -1;
+	}
+
+	sfd->video_local_frame = local_frame;
+	sfd->video_local_frame_data = &local_frame->data[0];
 	sfd->video_color_context = sws;
 	return 0;
 }
@@ -1204,7 +1124,6 @@ static int setup_color_conv(struct shadow_fd *sfd, struct AVFrame *cpu_frame)
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 		const struct bytebuf *msg)
 {
-	// padding, requires zerod overflow for read
 	sfd->video_packet->data = (uint8_t *)msg->data;
 	sfd->video_packet->size = (int)msg->size;
 
@@ -1283,7 +1202,7 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 			if (!data) {
 				return;
 			}
-			copy_from_video_mirror(data, sfd->mem_mirror,
+			copy_from_video_mirror(data, sfd->video_local_frame,
 					&sfd->dmabuf_info);
 			unmap_dmabuf(sfd->dmabuf_bo, handle);
 		} else {

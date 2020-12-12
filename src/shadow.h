@@ -224,6 +224,7 @@ struct shadow_fd {
 	struct AVFrame *video_tmp_frame;   /* To hold intermediate copies */
 	struct AVFrame *video_yuv_frame;   /* In enc/dec preferred format */
 	void *video_yuv_frame_data;
+	void *video_local_frame_data;
 	struct AVPacket *video_packet;
 	struct SwsContext *video_color_context;
 	int64_t video_frameno;
@@ -354,22 +355,5 @@ void collect_video_from_mirror(
 /** Decompress a video packet and apply the new frame onto the shadow_fd  */
 void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 		const struct bytebuf *data);
-
-/**
- * Video encoding generally has stronger shape constraints than
- * dmabufs do; for example, width/height need to be divisible by 2, and
- * strides divisible by e.g. 16 in some cases.
- */
-void get_video_mirror_size(const struct dmabuf_slice_data *info, int *new_width,
-		int *new_height, int *new_strides, int *new_offsets,
-		int *new_min_size);
-/**
- * Copy the buffer data onto the mirror, slightly shifting lines of the
- * image to match video encoding shape constraints.
- */
-void copy_onto_video_mirror(char *buffer, char *mirror,
-		const struct dmabuf_slice_data *info);
-void copy_from_video_mirror(char *buffer, char *mirror,
-		const struct dmabuf_slice_data *info);
 
 #endif // WAYPIPE_SHADOW_H
