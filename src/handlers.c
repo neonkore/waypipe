@@ -1080,10 +1080,12 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 {
 
 	(void)format;
-	uint64_t modifier = modifier_hi * 0x100000000uL * modifier_lo;
+	uint64_t modifier = modifier_hi * 0x100000000uLL * modifier_lo;
 	// Prevent all advertisements for dmabufs with modifiers
-	if (modifier && ctx->g->config->only_linear_dmabuf) {
-		ctx->drop_this_msg = true;
+	if (ctx->g->config->only_linear_dmabuf) {
+		if (modifier != 0 && modifier != ((1uLL << 56) - 1)) {
+			ctx->drop_this_msg = true;
+		}
 	}
 }
 void do_zwp_linux_buffer_params_v1_evt_created(
@@ -1132,7 +1134,7 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 	params->add[plane_idx].offset = offset;
 	params->add[plane_idx].stride = stride;
 	params->add[plane_idx].modifier =
-			modifier_lo + modifier_hi * 0x100000000uL;
+			modifier_lo + modifier_hi * 0x100000000uLL;
 	// Only perform rearrangement on the client side, for now
 	if (!ctx->on_display_side) {
 		params->add[plane_idx].msg =
@@ -1339,7 +1341,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_frame(struct context *ctx,
 	(void)flags;
 	(void)buffer_flags;
 	frame->format = format;
-	frame->modifier = mod_high * 0x100000000uL + mod_low;
+	frame->modifier = mod_high * 0x100000000uLL + mod_low;
 	frame->nobjects = num_objects;
 	if (frame->nobjects > MAX_DMABUF_PLANES) {
 		wp_error("Too many (%u) frame objects required",
