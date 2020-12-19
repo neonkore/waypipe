@@ -41,6 +41,7 @@ struct render_data {
 	/* video hardware context */
 	bool av_disabled;
 	int av_bpf;
+	int av_video_fmt;
 	struct AVBufferRef *av_hwdevice_ref;
 	struct AVBufferRef *av_drmdevice_ref;
 	VADisplay av_vadisplay;

@@ -339,6 +339,10 @@ bool request_work_task(struct thread_pool *pool, struct task_data *task,
 void run_task(struct task_data *task, struct thread_data *local);
 
 // video.c
+enum video_coding_fmt {
+	VIDEO_H264,
+	VIDEO_VP9,
+};
 void cleanup_hwcontext(struct render_data *rd);
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
 bool video_supports_shm_format(uint32_t format);

@@ -108,9 +108,13 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 /* these are equivalent to the GBM formats */
 #include <libdrm/drm_fourcc.h>
 
-#define VIDEO_HW_ENCODER "h264_vaapi"
-#define VIDEO_SW_ENCODER "libx264"
-#define VIDEO_DECODER "h264"
+#define VIDEO_H264_HW_ENCODER "h264_vaapi"
+#define VIDEO_H264_SW_ENCODER "libx264"
+#define VIDEO_H264_DECODER "h264"
+
+#define VIDEO_VP9_HW_ENCODER "vp9_vaapi"
+#define VIDEO_VP9_SW_ENCODER "libvpx-vp9"
+#define VIDEO_VP9_DECODER "vp9"
 
 static enum AVPixelFormat drm_to_av(uint32_t format)
 {
@@ -611,8 +615,8 @@ void cleanup_hwcontext(struct render_data *rd)
 	}
 }
 
-static void configure_low_latency_enc_context(
-		struct AVCodecContext *ctx, bool sw, int bpf)
+static void configure_low_latency_enc_context(struct AVCodecContext *ctx,
+		bool sw, enum video_coding_fmt fmt, int bpf)
 {
 	// "time" is only meaningful in terms of the frames provided
 	int nom_fps = 25;
@@ -630,21 +634,41 @@ static void configure_low_latency_enc_context(
 
 	if (sw) {
 		ctx->bit_rate = bpf * nom_fps;
-		if (av_opt_set(ctx->priv_data, "preset", "ultrafast", 0) != 0) {
-			wp_error("Failed to set x264 encode ultrafast preset");
-		}
-		if (av_opt_set(ctx->priv_data, "tune", "zerolatency", 0) != 0) {
-			wp_error("Failed to set x264 encode zerolatency");
+		if (fmt == VIDEO_H264) {
+			if (av_opt_set(ctx->priv_data, "preset", "ultrafast",
+					    0) != 0) {
+				wp_error("Failed to set x264 encode ultrafast preset");
+			}
+			if (av_opt_set(ctx->priv_data, "tune", "zerolatency",
+					    0) != 0) {
+				wp_error("Failed to set x264 encode zerolatency");
+			}
+		} else if (fmt == VIDEO_VP9) {
+			if (av_opt_set(ctx->priv_data, "lag-in-frames", "0",
+					    0) != 0) {
+				wp_error("Failed to set vp9 encode lag");
+			}
+			if (av_opt_set(ctx->priv_data, "quality", "realtime",
+					    0) != 0) {
+				wp_error("Failed to set vp9 quality");
+			}
+			if (av_opt_set(ctx->priv_data, "speed", "8", 0) != 0) {
+				wp_error("Failed to set vp9 speed");
+			}
 		}
 	} else {
-		/* with i965/gen8, hardware encoding is faster but has
-		 * significantly worse quality per bitrate than x264 */
 		ctx->bit_rate = bpf * nom_fps;
-		if (av_opt_set(ctx->priv_data, "quality", "7", 0) != 0) {
-			wp_error("Failed to set h264 encode quality");
-		}
-		if (av_opt_set(ctx->priv_data, "profile", "main", 0) != 0) {
-			wp_error("Failed to set h264 encode main profile");
+		if (fmt == VIDEO_H264) {
+			/* with i965/gen8, hardware encoding is faster but has
+			 * significantly worse quality per bitrate than x264 */
+			if (av_opt_set(ctx->priv_data, "quality", "7", 0) !=
+					0) {
+				wp_error("Failed to set h264 encode quality");
+			}
+			if (av_opt_set(ctx->priv_data, "profile", "main", 0) !=
+					0) {
+				wp_error("Failed to set h264 encode main profile");
+			}
 		}
 	}
 }
@@ -655,13 +679,17 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	 * intel-vaapi-driver/src/i965_drv_video.c . Packed formats like
 	 * YUV420P typically don't work. */
 	const enum AVPixelFormat videofmt = AV_PIX_FMT_NV12;
-	struct AVCodec *codec = avcodec_find_encoder_by_name(VIDEO_HW_ENCODER);
+	const char *hw_encoder = rd->av_video_fmt == VIDEO_H264
+						 ? VIDEO_H264_HW_ENCODER
+						 : VIDEO_VP9_HW_ENCODER;
+	struct AVCodec *codec = avcodec_find_encoder_by_name(hw_encoder);
 	if (!codec) {
-		wp_error("Failed to find encoder \"" VIDEO_HW_ENCODER "\"");
+		wp_error("Failed to find encoder \"%s\"", hw_encoder);
 		return -1;
 	}
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
-	configure_low_latency_enc_context(ctx, false, rd->av_bpf);
+	configure_low_latency_enc_context(
+			ctx, false, rd->av_video_fmt, rd->av_bpf);
 	if (!pad_hardware_size((int)sfd->dmabuf_info.width,
 			    (int)sfd->dmabuf_info.height, &ctx->width,
 			    &ctx->height)) {
@@ -840,16 +868,19 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 				av_get_pix_fmt_name(videofmt));
 		return -1;
 	}
-
-	struct AVCodec *codec = avcodec_find_encoder_by_name(VIDEO_SW_ENCODER);
+	const char *sw_encoder = rd->av_video_fmt == VIDEO_H264
+						 ? VIDEO_H264_SW_ENCODER
+						 : VIDEO_VP9_SW_ENCODER;
+	struct AVCodec *codec = avcodec_find_encoder_by_name(sw_encoder);
 	if (!codec) {
-		wp_error("Failed to find encoder for h264");
+		wp_error("Failed to find encoder \"%s\"", sw_encoder);
 		return -1;
 	}
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	ctx->pix_fmt = videofmt;
-	configure_low_latency_enc_context(ctx, true, rd->av_bpf);
+	configure_low_latency_enc_context(
+			ctx, true, rd->av_video_fmt, rd->av_bpf);
 
 	/* Increase image sizes as needed to ensure codec can run */
 	ctx->width = (int)sfd->dmabuf_info.width;
@@ -948,9 +979,12 @@ int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 		return -1;
 	}
 
-	struct AVCodec *codec = avcodec_find_decoder_by_name(VIDEO_DECODER);
+	const char *decoder = rd->av_video_fmt == VIDEO_H264
+					      ? VIDEO_H264_DECODER
+					      : VIDEO_VP9_DECODER;
+	struct AVCodec *codec = avcodec_find_decoder_by_name(decoder);
 	if (!codec) {
-		wp_error("Failed to find decoder \"" VIDEO_DECODER "\"");
+		wp_error("Failed to find decoder \"%s\"", decoder);
 		return -1;
 	}
 

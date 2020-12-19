@@ -312,7 +312,9 @@ static int parse_video_string(const char *str, struct main_config *config)
 	char *part = strtok(tmp, ",");
 	while (part) {
 		if (!strcmp(part, "h264")) {
-			/* todo: add vp9 support */
+			config->video_fmt = VIDEO_H264;
+		} else if (!strcmp(part, "vp9")) {
+			config->video_fmt = VIDEO_VP9;
 		} else if (!strcmp(part, "hw")) {
 			config->prefer_hwvideo = true;
 		} else if (!strcmp(part, "sw")) {
@@ -418,6 +420,7 @@ int main(int argc, char **argv)
 			.only_linear_dmabuf = true,
 			.video_if_possible = false,
 			.video_bpf = 0,
+			.video_fmt = VIDEO_H264,
 			.prefer_hwvideo = false};
 
 	/* We do not parse any getopt arguments happening after the mode choice
@@ -759,7 +762,10 @@ int main(int argc, char **argv)
 			if (config.video_if_possible) {
 				if (video_nondefault) {
 					sprintf(video_str,
-							"--video=h264,%s,bpf=%d",
+							"--video=%s,%s,bpf=%d",
+							config.video_fmt == VIDEO_H264
+									? "h264"
+									: "vp9",
 							config.prefer_hwvideo
 									? "hw"
 									: "sw",

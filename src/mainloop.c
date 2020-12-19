@@ -1233,6 +1233,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 			.av_disabled = config->no_gpu ||
 				       !config->prefer_hwvideo,
 			.av_bpf = config->video_bpf,
+			.av_video_fmt = (int)config->video_fmt,
 			.av_hwdevice_ref = NULL,
 			.av_drmdevice_ref = NULL,
 			.av_vadisplay = NULL,

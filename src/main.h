@@ -38,6 +38,7 @@ struct main_config {
 	bool only_linear_dmabuf;
 	bool video_if_possible;
 	int video_bpf;
+	enum video_coding_fmt video_fmt;
 	bool prefer_hwvideo;
 };
 struct globals {
