@@ -40,6 +40,7 @@ struct render_data {
 	bool supports_modifiers;
 	/* video hardware context */
 	bool av_disabled;
+	int av_bpf;
 	struct AVBufferRef *av_hwdevice_ref;
 	struct AVBufferRef *av_drmdevice_ref;
 	VADisplay av_vadisplay;

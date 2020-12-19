@@ -612,11 +612,12 @@ void cleanup_hwcontext(struct render_data *rd)
 }
 
 static void configure_low_latency_enc_context(
-		struct AVCodecContext *ctx, bool sw)
+		struct AVCodecContext *ctx, bool sw, int bpf)
 {
 	// "time" is only meaningful in terms of the frames provided
-	ctx->time_base = (AVRational){1, 25};
-	ctx->framerate = (AVRational){25, 1};
+	int nom_fps = 25;
+	ctx->time_base = (AVRational){1, nom_fps};
+	ctx->framerate = (AVRational){nom_fps, 1};
 
 	/* B-frames are directly tied to latency, since each one
 	 * is predicted using its preceding and following
@@ -628,7 +629,7 @@ static void configure_low_latency_enc_context(
 	ctx->thread_count = 1;
 
 	if (sw) {
-		ctx->bit_rate = 3000000;
+		ctx->bit_rate = bpf * nom_fps;
 		if (av_opt_set(ctx->priv_data, "preset", "ultrafast", 0) != 0) {
 			wp_error("Failed to set x264 encode ultrafast preset");
 		}
@@ -638,7 +639,7 @@ static void configure_low_latency_enc_context(
 	} else {
 		/* with i965/gen8, hardware encoding is faster but has
 		 * significantly worse quality per bitrate than x264 */
-		ctx->bit_rate = 9000000;
+		ctx->bit_rate = bpf * nom_fps;
 		if (av_opt_set(ctx->priv_data, "quality", "7", 0) != 0) {
 			wp_error("Failed to set h264 encode quality");
 		}
@@ -660,7 +661,7 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 		return -1;
 	}
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
-	configure_low_latency_enc_context(ctx, false);
+	configure_low_latency_enc_context(ctx, false, rd->av_bpf);
 	if (!pad_hardware_size((int)sfd->dmabuf_info.width,
 			    (int)sfd->dmabuf_info.height, &ctx->width,
 			    &ctx->height)) {
@@ -848,7 +849,7 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	ctx->pix_fmt = videofmt;
-	configure_low_latency_enc_context(ctx, true);
+	configure_low_latency_enc_context(ctx, true, rd->av_bpf);
 
 	/* Increase image sizes as needed to ensure codec can run */
 	ctx->width = (int)sfd->dmabuf_info.width;

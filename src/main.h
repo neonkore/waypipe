@@ -37,6 +37,7 @@ struct main_config {
 	bool no_gpu;
 	bool only_linear_dmabuf;
 	bool video_if_possible;
+	int video_bpf;
 	bool prefer_hwvideo;
 };
 struct globals {

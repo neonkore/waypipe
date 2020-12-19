@@ -299,6 +299,40 @@ static int run_recon(const char *control_path, const char *recon_path)
 	return EXIT_SUCCESS;
 }
 
+static int parse_video_string(const char *str, struct main_config *config)
+{
+
+	char tmp[128];
+	size_t l = strlen(str);
+	if (l >= 127) {
+		return -1;
+	}
+	memcpy(tmp, str, l + 1);
+
+	char *part = strtok(tmp, ",");
+	while (part) {
+		if (!strcmp(part, "h264")) {
+			/* todo: add vp9 support */
+		} else if (!strcmp(part, "hw")) {
+			config->prefer_hwvideo = true;
+		} else if (!strcmp(part, "sw")) {
+			config->prefer_hwvideo = false;
+		} else if (!strncmp(part, "bpf=", 4)) {
+			char *ep;
+			double bpf = strtod(part + 4, &ep);
+			if (*ep == 0 && bpf <= 1e9 && bpf >= 1.0) {
+				config->video_bpf = (int)bpf;
+			} else {
+				return -1;
+			}
+		} else {
+			return -1;
+		}
+		part = strtok(NULL, ",");
+	}
+	return 0;
+}
+
 #define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
 #define ARG_ALLOW_TILED 1003
@@ -325,7 +359,7 @@ static const struct option options[] = {
 		{"remote-node", required_argument, NULL, ARG_REMOTENODE},
 		{"remote-bin", required_argument, NULL, ARG_WAYPIPE_BINARY},
 		{"login-shell", no_argument, NULL, ARG_LOGIN_SHELL},
-		{"video", no_argument, NULL, ARG_VIDEO},
+		{"video", optional_argument, NULL, ARG_VIDEO},
 		{"hwvideo", no_argument, NULL, ARG_HWVIDEO},
 		{"threads", required_argument, NULL, ARG_THREADS},
 		{"display", required_argument, NULL, ARG_DISPLAY},
@@ -373,6 +407,7 @@ int main(int argc, char **argv)
 	char *wayland_display = NULL;
 	char *waypipe_binary = "waypipe";
 	char *control_path = NULL;
+	bool video_nondefault = false;
 	const char *socketpath = NULL;
 
 	struct main_config config = {.n_worker_threads = 0,
@@ -382,6 +417,7 @@ int main(int argc, char **argv)
 			.no_gpu = false,
 			.only_linear_dmabuf = true,
 			.video_if_possible = false,
+			.video_bpf = 0,
 			.prefer_hwvideo = false};
 
 	/* We do not parse any getopt arguments happening after the mode choice
@@ -511,6 +547,13 @@ int main(int argc, char **argv)
 			break;
 		case ARG_VIDEO:
 			config.video_if_possible = true;
+			if (optarg) {
+				if (parse_video_string(optarg, &config) == -1) {
+					fail = true;
+				}
+				video_nondefault = true;
+			}
+			// video_bpf
 			break;
 		case ARG_HWVIDEO:
 			config.video_if_possible = true;
@@ -562,6 +605,10 @@ int main(int argc, char **argv)
 	if (argc > 0 && !strcmp(argv[0], "--")) {
 		argv++;
 		argc--;
+	}
+
+	if (config.video_bpf == 0) {
+		config.video_bpf = config.prefer_hwvideo ? 360000 : 120000;
 	}
 
 	if (debug) {
@@ -657,6 +704,7 @@ int main(int argc, char **argv)
 			char linkage[256];
 			char serversock[110];
 			char remote_display[20];
+			char video_str[140];
 			sprintf(serversock, "%s-server-%s.sock", socketpath,
 					rbytes);
 			sprintf(linkage, "%s:%s", serversock, clientsock);
@@ -709,10 +757,21 @@ int main(int argc, char **argv)
 						"--login-shell";
 			}
 			if (config.video_if_possible) {
-				arglist[dstidx + 1 + offset++] =
-						config.prefer_hwvideo
-								? "--hwvideo"
-								: "--video";
+				if (video_nondefault) {
+					sprintf(video_str,
+							"--video=h264,%s,bpf=%d",
+							config.prefer_hwvideo
+									? "hw"
+									: "sw",
+							config.video_bpf);
+					arglist[dstidx + 1 + offset++] =
+							video_str;
+				} else {
+					arglist[dstidx + 1 + offset++] =
+							config.prefer_hwvideo
+									? "--hwvideo"
+									: "--video";
+				}
 			}
 			if (!config.only_linear_dmabuf) {
 				arglist[dstidx + 1 + offset++] =
