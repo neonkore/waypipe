@@ -240,6 +240,10 @@ of their initialization, and will not work correctly with this flag.
 *waypipe ssh* will exit with the exit status code from the remote command, or
 with return code 1 if there has been an error.
 
+# BUGS
+
+File bug reports at: https://gitlab.freedesktop.org/mstoeckl/waypipe/
+
 # SEE ALSO
 
 *weston*(1), *ssh*(1), *socat(1)*, *ncat(1)*
