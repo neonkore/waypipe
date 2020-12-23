@@ -4,3 +4,4 @@ option('with_dmabuf', type : 'feature', value : 'auto', description : 'Support D
 option('with_lz4', type : 'feature', value : 'auto', description : 'Support LZ4 as a compression mechanism')
 option('with_zstd', type : 'feature', value : 'auto', description : 'Support ZStandard as a compression mechanism')
 option('with_vaapi', type : 'feature', value : 'auto', description : 'Link with libva and use VAAPI to perform hardware video output color space conversions on GPU')
+option('with_systemtap', type: 'boolean', value: true, description: 'Enable tracing using sdt and provide static tracepoints for profiling')
