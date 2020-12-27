@@ -42,6 +42,7 @@
 #include <unistd.h>
 
 bool shutdown_flag = false;
+uint64_t inherited_fds[4] = {0, 0, 0, 0};
 void handle_sigint(int sig)
 {
 	(void)sig;
@@ -134,25 +135,45 @@ int connect_to_socket(const char *socket_path)
 	}
 	return chanfd;
 }
-void check_unclosed_fds(void)
+
+void set_initial_fds(void)
 {
-	/* Verify that all file descriptors have been closed. Since most
-	 * instances have <<200 file descriptors open at a given time, it is
-	 * safe to only check up to that level */
-	struct pollfd checklist[200];
-	for (int i = 0; i < 200; i++) {
+	struct pollfd checklist[256];
+	for (int i = 0; i < 256; i++) {
 		checklist[i].fd = i;
 		checklist[i].events = 0;
 		checklist[i].revents = 0;
 	}
-	if (poll(checklist, 200, 0) == -1) {
+	if (poll(checklist, 256, 0) == -1) {
 		wp_error("fd-checking poll failed: %s", strerror(errno));
 		return;
 	}
-	for (int i = 0; i < 200; i++) {
-		if (checklist[i].fd == STDIN_FILENO ||
-				checklist[i].fd == STDOUT_FILENO ||
-				checklist[i].fd == STDERR_FILENO) {
+	for (int i = 0; i < 256; i++) {
+		if (!(checklist[i].revents & POLLNVAL)) {
+			inherited_fds[i / 64] |= (1uLL << (i % 64));
+		}
+	}
+}
+
+void check_unclosed_fds(void)
+{
+	/* Verify that all file descriptors have been closed. Since most
+	 * instances have <<256 file descriptors open at a given time, it is
+	 * safe to only check up to that level */
+	struct pollfd checklist[256];
+	for (int i = 0; i < 256; i++) {
+		checklist[i].fd = i;
+		checklist[i].events = 0;
+		checklist[i].revents = 0;
+	}
+	if (poll(checklist, 256, 0) == -1) {
+		wp_error("fd-checking poll failed: %s", strerror(errno));
+		return;
+	}
+	for (int i = 0; i < 256; i++) {
+		bool initial_fd = (inherited_fds[i / 64] &
+						  (1uLL << (i % 64))) != 0;
+		if (initial_fd) {
 			if (checklist[i].revents & POLLNVAL) {
 				wp_error("Unexpected closed fd %d",
 						checklist[i].fd);

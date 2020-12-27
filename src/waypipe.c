@@ -626,6 +626,8 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	set_initial_fds();
+
 	bool via_socket = getenv("WAYLAND_SOCKET") != NULL;
 	if (via_socket) {
 		oneshot = true;

@@ -586,6 +586,10 @@ int run_client(const char *socket_path, const struct main_config *config,
 			}
 			return EXIT_FAILURE;
 		}
+		/* This socket is inherited and meant to be closed by Waypipe */
+		if (dispfd >= 0 && dispfd < 256) {
+			inherited_fds[dispfd / 64] &= ~(1uLL << (dispfd % 64));
+		}
 	} else {
 		if (get_display_path(disp_path) == -1) {
 			if (eol_pid) {

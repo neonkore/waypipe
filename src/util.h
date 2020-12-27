@@ -47,6 +47,7 @@
 
 // On SIGINT, this is set to true. The main program should then cleanup ASAP
 extern bool shutdown_flag;
+extern uint64_t inherited_fds[4];
 
 void handle_sigint(int sig);
 
@@ -88,7 +89,9 @@ int connect_to_socket(const char *socket_path);
 	if (close(fd) == -1) {                                                 \
 		wp_error("close(%d) failed: %s", fd, strerror(errno));         \
 	}
-/** Verify that all file descriptors (except for stdin/out/errno) are closed */
+/** Set the list of initially available fds (typically stdin/out/errno) */
+void set_initial_fds(void);
+/** Verify that all file descriptors (except for the initial ones) are closed */
 void check_unclosed_fds(void);
 
 #define WAYPIPE_PROTOCOL_VERSION 0x1u
