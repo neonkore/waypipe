@@ -236,15 +236,14 @@ static bool test_transfer(struct fd_translation_map *src_map,
 		for (int i = transfer_data.start; i < transfer_data.end; i++) {
 			ns += transfer_data.vecs[i].iov_len;
 		}
-		cleanup_transfer_queue(&transfer_data);
-		if (transfer_data.end > transfer_data.start) {
-			wp_error("Collecting updates gave a transfer (%zd bytes, %d blocks) when none was expected",
-					ns,
-					transfer_data.end -
-							transfer_data.start);
-			return false;
+		if (transfer_data.end == transfer_data.start) {
+			/* nothing sent */
+			cleanup_transfer_queue(&transfer_data);
+			return true;
 		}
-		return true;
+		/* Redundant transfers are acceptable, if inefficient */
+		wp_error("Collecting updates gave a transfer (%zd bytes, %d blocks) when none was expected",
+				ns, transfer_data.end - transfer_data.start);
 	}
 	if (transfer_data.end == transfer_data.start) {
 		wp_error("Collecting updates gave a unexpected number (%d) of transfers",
