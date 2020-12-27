@@ -313,6 +313,7 @@ static int update_connections(char current_sockpath[static 110],
 			checked_close(chanfd);
 			return -1;
 		}
+		checked_close(chanfd);
 	}
 	/* If switching connections succeeded, adopt the new socket */
 	if (unlink_at_end && strcmp(current_sockpath, path)) {
@@ -413,6 +414,9 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 		unlink(current_sockpath);
 	}
 	checked_close(wdisplay_socket);
+	if (control_pipe != -1) {
+		checked_close(control_pipe);
+	}
 
 	for (int i = 0; i < connmap.count; i++) {
 		checked_close(connmap.data[i].linkfd);
