@@ -166,7 +166,7 @@ static void log_handler(const char *file, int line, enum log_level level,
 static void handle_noop(int sig) { (void)sig; }
 
 /* Configure signal handling policies */
-static int setup_sighandlers()
+static int setup_sighandlers(void)
 {
 	struct sigaction ia; // SIGINT: abort operations, and set a flag
 	ia.sa_handler = handle_sigint;

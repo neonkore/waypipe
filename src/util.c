@@ -134,7 +134,7 @@ int connect_to_socket(const char *socket_path)
 	}
 	return chanfd;
 }
-void check_unclosed_fds()
+void check_unclosed_fds(void)
 {
 	/* Verify that all file descriptors have been closed. Since most
 	 * instances have <<200 file descriptors open at a given time, it is

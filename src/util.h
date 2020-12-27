@@ -89,7 +89,7 @@ int connect_to_socket(const char *socket_path);
 		wp_error("close(%d) failed: %s", fd, strerror(errno));         \
 	}
 /** Verify that all file descriptors (except for stdin/out/errno) are closed */
-void check_unclosed_fds();
+void check_unclosed_fds(void);
 
 #define WAYPIPE_PROTOCOL_VERSION 0x1u
 /** If the byte order is wrong, the fixed set/unset bits are swapped */
