@@ -6,16 +6,27 @@ waypipe - A transparent proxy for Wayland applications
 
 # SYNOPSIS
 
-*waypipe* [options...] client++
-*waypipe* [options...] server -- _command..._++
-*waypipe* [options...] recon _control_pipe_ _new_socket_path_++
-*waypipe* [options...] ssh ...++
-*waypipe* [options...] bench _bandwidth_
+*waypipe* [options...] *ssh* [ssh options] _destination_ _command..._
+
+*waypipe* [options...] *client*++
+*waypipe* [options...] *server* -- _command..._++
+*waypipe* *recon* _control_pipe_ _new_socket_path_++
+*waypipe* *bench* _bandwidth_++
+*waypipe* [*-v*, *--version*] [*-h*, *--help*]
+
+\[options...\] = [*-c*, *--compress* C] [*-d*, *--debug*] [*-n*, *--no-gpu*] [*-o*, *--oneshot*] [*-s*, *--socket* S] [*--allow-tiled*] [*--control* C] [*--display* D] [*--drm-node* R] [*--remote-node* R] [*--remote-bin* R] [*--login-shell*] [*--threads* T] [*--unlink-socket*] [*--video*] [*--hwvideo*]
+
 
 # DESCRIPTION
 
-waypipe is a proxy for Wayland clients, with the aim of supporting behavior
+Waypipe is a proxy for Wayland clients, with the aim of supporting behavior
 like *ssh -X*.
+
+Prefixing an *ssh ...* command to become *waypipe ssh ...* will automatically
+run *waypipe* both locally and remotely, and modify the ssh command to set up
+forwarding between the two instances of *waypipe*. The remote instance
+will act like a Wayland compositor, letting Wayland applications that are
+run remotely be displayed locally.
 
 When run as *waypipe client*, it will open a socket (by default at
 _/tmp/waypipe-client.sock_) and will connect to the local Wayland compositor
@@ -33,12 +44,7 @@ which has had a control pipe (option *--control*) set. The new socket path
 should indicate a Unix socket whose connections are forwarded to the *waypipe
 client* that the *waypipe server* was initially connected to.
 
-Next, prefixing an *ssh ...* command to become *waypipe ssh ...* will
-automatically set up local and remote copies of *waypipe*, as well as
-forwarding between their sockets, so that Wayland applications run remotely
-will be displayed locally.
-
-Finally, the *waypipe bench* mode can be used to estimate, given a specific
+The *waypipe bench* mode can be used to estimate, given a specific
 connection _bandwidth_ in MB/sec, which compression options produce the
 lowest latency. It tests two synthetic images, one made to be roughly as
 compressible as images containing text, and one made to be roughly as
