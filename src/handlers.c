@@ -47,7 +47,7 @@
 #include <wlr-screencopy-unstable-v1-defs.h>
 #include <xdg-shell-defs.h>
 
-struct wp_shm_pool {
+struct obj_wl_shm_pool {
 	struct wp_object base;
 	struct shadow_fd *owned_buffer;
 };
@@ -57,7 +57,7 @@ enum buffer_type { BUF_SHM, BUF_DMA };
 // This should be a safe limit for the maximum number of dmabuf planes
 #define MAX_DMABUF_PLANES 8
 
-struct wp_buffer {
+struct obj_wl_buffer {
 	struct wp_object base;
 
 	enum buffer_type type;
@@ -93,7 +93,7 @@ struct damage_list {
 };
 
 #define SURFACE_DAMAGE_BACKLOG 7
-struct wp_surface {
+struct obj_wl_surface {
 	struct wp_object base;
 
 	/* The zeroth list is the "current" one, 1st was damage provided at last
@@ -107,7 +107,7 @@ struct wp_surface {
 	int32_t transform;
 };
 
-struct wp_wlr_screencopy_frame {
+struct obj_wlr_screencopy_frame {
 	struct wp_object base;
 	/* Link to a wp_buffer instead of its underlying data,
 	 * because if the buffer object is destroyed early, then
@@ -117,19 +117,19 @@ struct wp_wlr_screencopy_frame {
 	uint32_t buffer_id;
 };
 
-struct waypipe_presentation {
+struct obj_wp_presentation {
 	struct wp_object base;
 
 	// reference clock - given clock
 	int64_t clock_delta_nsec;
 	int clock_id;
 };
-struct waypipe_presentation_feedback {
+struct obj_wp_presentation_feedback {
 	struct wp_object base;
 	int64_t clock_delta_nsec;
 };
 
-struct wp_linux_dmabuf_params {
+struct obj_zwp_linux_dmabuf_params {
 	struct wp_object base;
 
 	struct shadow_fd *sfds;
@@ -153,7 +153,7 @@ struct wp_linux_dmabuf_params {
 	int nplanes;
 };
 
-struct wp_export_dmabuf_frame {
+struct obj_wlr_export_dmabuf_frame {
 	struct wp_object base;
 
 	uint32_t width;
@@ -175,12 +175,12 @@ struct wp_export_dmabuf_frame {
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
 	if (object->type == &intf_wl_shm_pool) {
-		struct wp_shm_pool *r = (struct wp_shm_pool *)object;
+		struct obj_wl_shm_pool *r = (struct obj_wl_shm_pool *)object;
 		if (r->owned_buffer) {
 			shadow_decref_protocol(map, r->owned_buffer);
 		}
 	} else if (object->type == &intf_wl_buffer) {
-		struct wp_buffer *r = (struct wp_buffer *)object;
+		struct obj_wl_buffer *r = (struct obj_wl_buffer *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->dmabuf_buffers[i]) {
 				shadow_decref_protocol(
@@ -191,19 +191,19 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 			shadow_decref_protocol(map, r->shm_buffer);
 		}
 	} else if (object->type == &intf_wl_surface) {
-		struct wp_surface *r = (struct wp_surface *)object;
+		struct obj_wl_surface *r = (struct obj_wl_surface *)object;
 		for (int i = 0; i < SURFACE_DAMAGE_BACKLOG; i++) {
 			free(r->damage_lists[i].list);
 		}
 	} else if (object->type == &intf_zwlr_screencopy_frame_v1) {
-		struct wp_wlr_screencopy_frame *r =
-				(struct wp_wlr_screencopy_frame *)object;
+		struct obj_wlr_screencopy_frame *r =
+				(struct obj_wlr_screencopy_frame *)object;
 		(void)r;
 	} else if (object->type == &intf_wp_presentation) {
 	} else if (object->type == &intf_wp_presentation_feedback) {
 	} else if (object->type == &intf_zwp_linux_buffer_params_v1) {
-		struct wp_linux_dmabuf_params *r =
-				(struct wp_linux_dmabuf_params *)object;
+		struct obj_zwp_linux_dmabuf_params *r =
+				(struct obj_zwp_linux_dmabuf_params *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->add[i].buffer) {
 				shadow_decref_protocol(map, r->add[i].buffer);
@@ -223,8 +223,8 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 			}
 		}
 	} else if (object->type == &intf_zwlr_export_dmabuf_frame_v1) {
-		struct wp_export_dmabuf_frame *r =
-				(struct wp_export_dmabuf_frame *)object;
+		struct obj_wlr_export_dmabuf_frame *r =
+				(struct obj_wlr_export_dmabuf_frame *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->objects[i].buffer) {
 				shadow_decref_protocol(
@@ -240,21 +240,21 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 	 * need special replacement logic when the type is set */
 	size_t sz;
 	if (type == &intf_wl_shm_pool) {
-		sz = sizeof(struct wp_shm_pool);
+		sz = sizeof(struct obj_wl_shm_pool);
 	} else if (type == &intf_wl_buffer) {
-		sz = sizeof(struct wp_buffer);
+		sz = sizeof(struct obj_wl_buffer);
 	} else if (type == &intf_wl_surface) {
-		sz = sizeof(struct wp_surface);
+		sz = sizeof(struct obj_wl_surface);
 	} else if (type == &intf_zwlr_screencopy_frame_v1) {
-		sz = sizeof(struct wp_wlr_screencopy_frame);
+		sz = sizeof(struct obj_wlr_screencopy_frame);
 	} else if (type == &intf_wp_presentation) {
-		sz = sizeof(struct waypipe_presentation);
+		sz = sizeof(struct obj_wp_presentation);
 	} else if (type == &intf_wp_presentation_feedback) {
-		sz = sizeof(struct waypipe_presentation_feedback);
+		sz = sizeof(struct obj_wp_presentation_feedback);
 	} else if (type == &intf_zwp_linux_buffer_params_v1) {
-		sz = sizeof(struct wp_linux_dmabuf_params);
+		sz = sizeof(struct obj_zwp_linux_dmabuf_params);
 	} else if (type == &intf_zwlr_export_dmabuf_frame_v1) {
-		sz = sizeof(struct wp_export_dmabuf_frame);
+		sz = sizeof(struct obj_wlr_export_dmabuf_frame);
 	} else {
 		sz = sizeof(struct wp_object);
 	}
@@ -270,13 +270,13 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 	new_obj->is_zombie = false;
 
 	if (type == &intf_zwp_linux_buffer_params_v1) {
-		struct wp_linux_dmabuf_params *params =
-				(struct wp_linux_dmabuf_params *)new_obj;
+		struct obj_zwp_linux_dmabuf_params *params =
+				(struct obj_zwp_linux_dmabuf_params *)new_obj;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			params->add[i].fd = -1;
 		}
 	} else if (type == &intf_wl_surface) {
-		((struct wp_surface *)new_obj)->scale = 1;
+		((struct obj_wl_surface *)new_obj)->scale = 1;
 	}
 	return new_obj;
 }
@@ -543,10 +543,10 @@ void do_wl_surface_req_attach(struct context *ctx, struct wp_object *buffer,
 		wp_error("Buffer to be attached has the wrong type");
 		return;
 	}
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
+	struct obj_wl_surface *surface = (struct obj_wl_surface *)ctx->obj;
 	surface->attached_buffer_id = bufobj->obj_id;
 }
-static void rotate_damage_lists(struct wp_surface *surface)
+static void rotate_damage_lists(struct obj_wl_surface *surface)
 {
 	free(surface->damage_lists[SURFACE_DAMAGE_BACKLOG - 1].list);
 	memmove(surface->damage_lists + 1, surface->damage_lists,
@@ -560,7 +560,7 @@ static void rotate_damage_lists(struct wp_surface *surface)
 }
 void do_wl_surface_req_commit(struct context *ctx)
 {
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
+	struct obj_wl_surface *surface = (struct obj_wl_surface *)ctx->obj;
 	if (!surface->attached_buffer_id) {
 		/* The wl_surface.commit operation applies all "pending
 		 * state", much of which we don't care about. Typically,
@@ -584,7 +584,7 @@ void do_wl_surface_req_commit(struct context *ctx)
 		wp_error("Buffer to commit has the wrong type, and may have been recycled");
 		return;
 	}
-	struct wp_buffer *buf = (struct wp_buffer *)obj;
+	struct obj_wl_buffer *buf = (struct obj_wl_buffer *)obj;
 	surface->attached_buffer_uids[0] = buf->unique_id;
 	if (buf->type == BUF_DMA) {
 		rotate_damage_lists(surface);
@@ -703,7 +703,7 @@ backup:
 	rotate_damage_lists(surface);
 	return;
 }
-static void append_damage_record(struct wp_surface *surface, int32_t x,
+static void append_damage_record(struct obj_wl_surface *surface, int32_t x,
 		int32_t y, int32_t width, int32_t height,
 		bool in_buffer_coordinates)
 {
@@ -730,8 +730,8 @@ void do_wl_surface_req_damage(struct context *ctx, int32_t x, int32_t y,
 		// The display side does not need to track the damage
 		return;
 	}
-	append_damage_record((struct wp_surface *)ctx->obj, x, y, width, height,
-			false);
+	append_damage_record((struct obj_wl_surface *)ctx->obj, x, y, width,
+			height, false);
 }
 void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		int32_t width, int32_t height)
@@ -740,19 +740,19 @@ void do_wl_surface_req_damage_buffer(struct context *ctx, int32_t x, int32_t y,
 		// The display side does not need to track the damage
 		return;
 	}
-	append_damage_record((struct wp_surface *)ctx->obj, x, y, width, height,
-			true);
+	append_damage_record((struct obj_wl_surface *)ctx->obj, x, y, width,
+			height, true);
 }
 void do_wl_surface_req_set_buffer_transform(
 		struct context *ctx, int32_t transform)
 {
 
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
+	struct obj_wl_surface *surface = (struct obj_wl_surface *)ctx->obj;
 	surface->transform = transform;
 }
 void do_wl_surface_req_set_buffer_scale(struct context *ctx, int32_t scale)
 {
-	struct wp_surface *surface = (struct wp_surface *)ctx->obj;
+	struct obj_wl_surface *surface = (struct obj_wl_surface *)ctx->obj;
 	surface->scale = scale;
 }
 void do_wl_keyboard_evt_keymap(
@@ -782,7 +782,7 @@ void do_wl_keyboard_evt_keymap(
 void do_wl_shm_req_create_pool(
 		struct context *ctx, struct wp_object *id, int fd, int32_t size)
 {
-	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)id;
+	struct obj_wl_shm_pool *the_shm_pool = (struct obj_wl_shm_pool *)id;
 
 	if (size <= 0) {
 		wp_error("Ignoring attempt to create a wl_shm_pool with size %d",
@@ -813,7 +813,8 @@ void do_wl_shm_req_create_pool(
 
 void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)
 {
-	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)ctx->obj;
+	struct obj_wl_shm_pool *the_shm_pool =
+			(struct obj_wl_shm_pool *)ctx->obj;
 
 	if (!the_shm_pool->owned_buffer) {
 		wp_error("Pool to be resized owns no buffer");
@@ -834,8 +835,9 @@ void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
 		int32_t offset, int32_t width, int32_t height, int32_t stride,
 		uint32_t format)
 {
-	struct wp_shm_pool *the_shm_pool = (struct wp_shm_pool *)ctx->obj;
-	struct wp_buffer *the_buffer = (struct wp_buffer *)id;
+	struct obj_wl_shm_pool *the_shm_pool =
+			(struct obj_wl_shm_pool *)ctx->obj;
+	struct obj_wl_buffer *the_buffer = (struct obj_wl_buffer *)id;
 	if (!the_buffer) {
 		wp_error("No buffer available");
 		return;
@@ -860,8 +862,8 @@ void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,
 void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
 {
-	struct wp_wlr_screencopy_frame *frame =
-			(struct wp_wlr_screencopy_frame *)ctx->obj;
+	struct obj_wlr_screencopy_frame *frame =
+			(struct obj_wlr_screencopy_frame *)ctx->obj;
 	if (!frame->buffer_id) {
 		wp_error("frame has no copy target");
 		return;
@@ -876,7 +878,7 @@ void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 		wp_error("frame copy target is not a wl_buffer");
 		return;
 	}
-	struct wp_buffer *buffer = (struct wp_buffer *)obj;
+	struct obj_wl_buffer *buffer = (struct obj_wl_buffer *)obj;
 	struct shadow_fd *sfd = buffer->shm_buffer;
 	if (!sfd) {
 		wp_error("frame copy target does not own any buffers");
@@ -912,8 +914,8 @@ void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 void do_zwlr_screencopy_frame_v1_req_copy(
 		struct context *ctx, struct wp_object *buffer)
 {
-	struct wp_wlr_screencopy_frame *frame =
-			(struct wp_wlr_screencopy_frame *)ctx->obj;
+	struct obj_wlr_screencopy_frame *frame =
+			(struct obj_wlr_screencopy_frame *)ctx->obj;
 	struct wp_object *buf = (struct wp_object *)buffer;
 	if (buf->type != &intf_wl_buffer) {
 		wp_error("frame copy destination is not a wl_buffer");
@@ -930,8 +932,8 @@ static int64_t timespec_diff(struct timespec val, struct timespec sub)
 }
 void do_wp_presentation_evt_clock_id(struct context *ctx, uint32_t clk_id)
 {
-	struct waypipe_presentation *pres =
-			(struct waypipe_presentation *)ctx->obj;
+	struct obj_wp_presentation *pres =
+			(struct obj_wp_presentation *)ctx->obj;
 	pres->clock_id = (int)clk_id;
 	int reference_clock = CLOCK_REALTIME;
 
@@ -953,10 +955,10 @@ void do_wp_presentation_evt_clock_id(struct context *ctx, uint32_t clk_id)
 void do_wp_presentation_req_feedback(struct context *ctx,
 		struct wp_object *surface, struct wp_object *callback)
 {
-	struct waypipe_presentation *pres =
-			(struct waypipe_presentation *)ctx->obj;
-	struct waypipe_presentation_feedback *feedback =
-			(struct waypipe_presentation_feedback *)callback;
+	struct obj_wp_presentation *pres =
+			(struct obj_wp_presentation *)ctx->obj;
+	struct obj_wp_presentation_feedback *feedback =
+			(struct obj_wp_presentation_feedback *)callback;
 	(void)surface;
 
 	feedback->clock_delta_nsec = pres->clock_delta_nsec;
@@ -966,8 +968,8 @@ void do_wp_presentation_feedback_evt_presented(struct context *ctx,
 		uint32_t refresh, uint32_t seq_hi, uint32_t seq_lo,
 		uint32_t flags)
 {
-	struct waypipe_presentation_feedback *feedback =
-			(struct waypipe_presentation_feedback *)ctx->obj;
+	struct obj_wp_presentation_feedback *feedback =
+			(struct obj_wp_presentation_feedback *)ctx->obj;
 
 	(void)refresh;
 	(void)seq_hi;
@@ -1034,7 +1036,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 		int32_t offset1, int32_t stride1, int32_t offset2,
 		int32_t stride2)
 {
-	struct wp_buffer *buf = (struct wp_buffer *)id;
+	struct obj_wl_buffer *buf = (struct obj_wl_buffer *)id;
 	struct dmabuf_slice_data info = {
 			.num_planes = 1,
 			.width = (uint32_t)width,
@@ -1091,9 +1093,9 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 void do_zwp_linux_buffer_params_v1_evt_created(
 		struct context *ctx, struct wp_object *buffer)
 {
-	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)ctx->obj;
-	struct wp_buffer *buf = (struct wp_buffer *)buffer;
+	struct obj_zwp_linux_dmabuf_params *params =
+			(struct obj_zwp_linux_dmabuf_params *)ctx->obj;
+	struct obj_wl_buffer *buf = (struct obj_wl_buffer *)buffer;
 	buf->type = BUF_DMA;
 	buf->dmabuf_nplanes = params->nplanes;
 	for (int i = 0; i < params->nplanes; i++) {
@@ -1118,8 +1120,8 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 		uint32_t plane_idx, uint32_t offset, uint32_t stride,
 		uint32_t modifier_hi, uint32_t modifier_lo)
 {
-	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)ctx->obj;
+	struct obj_zwp_linux_dmabuf_params *params =
+			(struct obj_zwp_linux_dmabuf_params *)ctx->obj;
 	if (params->nplanes != (int)plane_idx) {
 		wp_error("Expected sequentially assigned plane fds: got new_idx=%d != %d=nplanes",
 				plane_idx, params->nplanes);
@@ -1146,8 +1148,8 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 		ctx->drop_this_msg = true;
 	}
 }
-static int reintroduce_add_msgs(
-		struct context *context, struct wp_linux_dmabuf_params *params)
+static int reintroduce_add_msgs(struct context *context,
+		struct obj_zwp_linux_dmabuf_params *params)
 {
 	int net_length = context->message_length;
 	int nfds = 0;
@@ -1202,8 +1204,8 @@ static int reintroduce_add_msgs(
 }
 /** After this function is called, all subsets of fds that duplicate an
  * underlying dmabuf will be reduced to select a single fd. */
-static void deduplicate_dmabuf_fds(
-		struct context *context, struct wp_linux_dmabuf_params *params)
+static void deduplicate_dmabuf_fds(struct context *context,
+		struct obj_zwp_linux_dmabuf_params *params)
 {
 	if (params->nplanes == 1) {
 		return;
@@ -1237,8 +1239,8 @@ static void deduplicate_dmabuf_fds(
 void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		int32_t width, int32_t height, uint32_t format, uint32_t flags)
 {
-	struct wp_linux_dmabuf_params *params =
-			(struct wp_linux_dmabuf_params *)ctx->obj;
+	struct obj_zwp_linux_dmabuf_params *params =
+			(struct obj_zwp_linux_dmabuf_params *)ctx->obj;
 	params->create_flags = flags;
 	params->create_width = width;
 	params->create_height = height;
@@ -1330,8 +1332,8 @@ void do_zwlr_export_dmabuf_frame_v1_evt_frame(struct context *ctx,
 		uint32_t format, uint32_t mod_high, uint32_t mod_low,
 		uint32_t num_objects)
 {
-	struct wp_export_dmabuf_frame *frame =
-			(struct wp_export_dmabuf_frame *)ctx->obj;
+	struct obj_wlr_export_dmabuf_frame *frame =
+			(struct obj_wlr_export_dmabuf_frame *)ctx->obj;
 
 	frame->width = width;
 	frame->height = height;
@@ -1353,8 +1355,8 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 		uint32_t index, int fd, uint32_t size, uint32_t offset,
 		uint32_t stride, uint32_t plane_index)
 {
-	struct wp_export_dmabuf_frame *frame =
-			(struct wp_export_dmabuf_frame *)ctx->obj;
+	struct obj_wlr_export_dmabuf_frame *frame =
+			(struct obj_wlr_export_dmabuf_frame *)ctx->obj;
 	if (index > frame->nobjects) {
 		wp_error("Cannot add frame object with index %u >= %u", index,
 				frame->nobjects);
@@ -1417,8 +1419,8 @@ void do_zwlr_export_dmabuf_frame_v1_evt_ready(struct context *ctx,
 		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
 {
 
-	struct wp_export_dmabuf_frame *frame =
-			(struct wp_export_dmabuf_frame *)ctx->obj;
+	struct obj_wlr_export_dmabuf_frame *frame =
+			(struct obj_wlr_export_dmabuf_frame *)ctx->obj;
 	if (!ctx->on_display_side) {
 		/* The client side does not update the buffer */
 		return;
