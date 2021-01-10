@@ -33,14 +33,14 @@ test('How well pipes are replicated', test_pipe, timeout: 20)
 test_fnlist = files('test_fnlist.txt')
 testproto_src = custom_target(
 	'test-proto code',
-	output: '@BASENAME@-data.c',
+	output: 'protocol-@BASENAME@.c',
 	input: 'test-proto.xml',
 	depend_files: [test_fnlist, symgen_path],
 	command: [python3, symgen_path, 'data', test_fnlist, '@INPUT@', '@OUTPUT@'],
 )
 testproto_header = custom_target(
 	'test-proto client-header',
-	output: '@BASENAME@-defs.h',
+	output: 'protocol-@BASENAME@.h',
 	input: 'test-proto.xml',
 	depend_files: [test_fnlist, symgen_path],
 	command: [python3, symgen_path, 'header', test_fnlist, '@INPUT@', '@OUTPUT@'],

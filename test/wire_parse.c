@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "test-proto-defs.h"
+#include "protocol-test-proto.h"
 #include "util.h"
 
 /* from parsing.c */

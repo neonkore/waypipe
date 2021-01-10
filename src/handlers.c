@@ -33,19 +33,19 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <gtk-primary-selection-defs.h>
-#include <input-method-unstable-v2-defs.h>
-#include <linux-dmabuf-unstable-v1-defs.h>
-#include <presentation-time-defs.h>
-#include <primary-selection-unstable-v1-defs.h>
-#include <virtual-keyboard-unstable-v1-defs.h>
-#include <wayland-defs.h>
-#include <wayland-drm-defs.h>
-#include <wlr-data-control-unstable-v1-defs.h>
-#include <wlr-export-dmabuf-unstable-v1-defs.h>
-#include <wlr-gamma-control-unstable-v1-defs.h>
-#include <wlr-screencopy-unstable-v1-defs.h>
-#include <xdg-shell-defs.h>
+#include <protocol-gtk-primary-selection.h>
+#include <protocol-input-method-unstable-v2.h>
+#include <protocol-linux-dmabuf-unstable-v1.h>
+#include <protocol-presentation-time.h>
+#include <protocol-primary-selection-unstable-v1.h>
+#include <protocol-virtual-keyboard-unstable-v1.h>
+#include <protocol-wayland-drm.h>
+#include <protocol-wayland.h>
+#include <protocol-wlr-data-control-unstable-v1.h>
+#include <protocol-wlr-export-dmabuf-unstable-v1.h>
+#include <protocol-wlr-gamma-control-unstable-v1.h>
+#include <protocol-wlr-screencopy-unstable-v1.h>
+#include <protocol-xdg-shell.h>
 
 struct obj_wl_shm_pool {
 	struct wp_object base;

@@ -29,14 +29,14 @@ protocols_headers += configure_file(input: 'symgen_types.h', copy: true, output:
 foreach xml : protocols
 	protocols_src += custom_target(
 		'@0@ code'.format(xml.underscorify()),
-		output: '@BASENAME@-data.c',
+		output: 'protocol-@BASENAME@.c',
 		input: xml,
 		depend_files: [fn_list, symgen_path],
 		command: [python3, symgen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
 	)
 	protocols_headers += custom_target(
 		'@0@ client-header'.format(xml.underscorify()),
-		output: '@BASENAME@-defs.h',
+		output: 'protocol-@BASENAME@.h',
 		input: xml,
 		depend_files: [fn_list, symgen_path],
 		command: [python3, symgen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
