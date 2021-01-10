@@ -34,11 +34,6 @@ struct fd_translation_map;
 struct main_config;
 
 struct wp_interface;
-struct msg_handler {
-	const struct wp_interface *interface;
-	/** Can the type be produced via wl_registry::bind ? */
-	bool is_global;
-};
 /** An object used by the wayland protocol. Specific types may extend
  * this struct, using the following data as a header */
 struct wp_object {
@@ -124,7 +119,6 @@ struct wp_object *create_wp_object(
 void destroy_wp_object(
 		struct fd_translation_map *map, struct wp_object *object);
 
-extern const struct msg_handler handlers[];
 extern const struct wp_interface *the_display_interface;
 
 #endif // WAYPIPE_PARSING_H

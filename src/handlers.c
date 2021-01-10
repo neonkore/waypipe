@@ -172,6 +172,50 @@ struct obj_wlr_export_dmabuf_frame {
 	uint32_t nobjects;
 };
 
+/* List of interfaces which may be advertised as globals */
+static const struct wp_interface *const global_interfaces[] = {
+		&intf_gtk_primary_selection_device_manager,
+		&intf_wl_compositor,
+		&intf_wl_data_device_manager,
+		&intf_wl_drm,
+		&intf_wl_output,
+		&intf_wl_seat,
+		&intf_wl_shm,
+		&intf_wl_subcompositor,
+		&intf_wp_presentation,
+		&intf_xdg_wm_base,
+		&intf_zwlr_data_control_manager_v1,
+		&intf_zwlr_export_dmabuf_manager_v1,
+		&intf_zwlr_gamma_control_manager_v1,
+		&intf_zwlr_screencopy_manager_v1,
+		&intf_zwp_input_method_manager_v2,
+		&intf_zwp_linux_dmabuf_v1,
+		&intf_zwp_primary_selection_device_manager_v1,
+		&intf_zwp_virtual_keyboard_manager_v1,
+};
+/* List of interfaces which are never advertised as globals */
+static const struct wp_interface *const non_global_interfaces[] = {
+		&intf_gtk_primary_selection_offer,
+		&intf_gtk_primary_selection_source,
+		&intf_wl_buffer,
+		&intf_wl_data_offer,
+		&intf_wl_data_source,
+		&intf_wl_display,
+		&intf_wl_keyboard,
+		&intf_wl_registry,
+		&intf_wl_shm_pool,
+		&intf_wl_surface,
+		&intf_wp_presentation_feedback,
+		&intf_zwlr_data_control_offer_v1,
+		&intf_zwlr_data_control_source_v1,
+		&intf_zwlr_export_dmabuf_frame_v1,
+		&intf_zwlr_gamma_control_v1,
+		&intf_zwlr_screencopy_frame_v1,
+		&intf_zwp_linux_buffer_params_v1,
+		&intf_zwp_primary_selection_offer_v1,
+		&intf_zwp_primary_selection_source_v1,
+};
+
 void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 {
 	if (object->type == &intf_wl_shm_pool) {
@@ -365,18 +409,25 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	/* The object has already been created, but its type is NULL */
 	struct wp_object *the_object = (struct wp_object *)id;
 	uint32_t obj_id = the_object->obj_id;
-	for (int i = 0; handlers[i].interface; i++) {
-		if (!strcmp(interface, handlers[i].interface->name)) {
-			if (!handlers[i].is_global) {
-				wp_error("Interface %s does not support binding globals",
-						handlers[i].interface->name);
-				/* exit search, discard unbound object */
-				break;
-			}
 
+	for (size_t i = 0; i < sizeof(non_global_interfaces) /
+					       sizeof(non_global_interfaces[0]);
+			i++) {
+		if (!strcmp(interface, non_global_interfaces[i]->name)) {
+			wp_error("Interface %s does not support binding globals",
+					non_global_interfaces[i]->name);
+			/* exit search, discard unbound object */
+			goto fail;
+		}
+	}
+
+	for (size_t i = 0; i < sizeof(global_interfaces) /
+					       sizeof(global_interfaces[0]);
+			i++) {
+		if (!strcmp(interface, global_interfaces[i]->name)) {
 			// Set the object type
-			the_object->type = handlers[i].interface;
-			if (handlers[i].interface == &intf_wp_presentation) {
+			the_object->type = global_interfaces[i];
+			if (global_interfaces[i] == &intf_wp_presentation) {
 				// Replace the object with a specialized
 				// version
 				listset_remove(ctx->obj_list, the_object);
@@ -391,6 +442,8 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 			return;
 		}
 	}
+
+fail:
 	listset_remove(ctx->obj_list, the_object);
 	free(the_object);
 
@@ -1515,58 +1568,4 @@ void do_zwlr_gamma_control_v1_req_set_gamma(struct context *ctx, int fd)
 	sfd->has_owner = true;
 }
 
-const struct msg_handler handlers[] = {{&intf_wl_display, false},
-		{&intf_wl_registry, false}, {&intf_wl_shm_pool, false},
-		{&intf_wl_buffer, false}, {&intf_wl_surface, false},
-		{&intf_wl_keyboard, false},
-		{&intf_zwlr_screencopy_frame_v1, false},
-		{&intf_wp_presentation_feedback, false},
-		{&intf_zwp_linux_buffer_params_v1, false},
-		{&intf_zwlr_export_dmabuf_frame_v1, false},
-		{&intf_zwlr_gamma_control_v1, false},
-
-		/* Copy-paste protocol handlers, handled near identically */
-		{&intf_zwlr_data_control_offer_v1, false},
-		{&intf_gtk_primary_selection_offer, false},
-		{&intf_zwp_primary_selection_offer_v1, false},
-		{&intf_wl_data_offer, false},
-
-		{&intf_zwlr_data_control_source_v1, false},
-		{&intf_gtk_primary_selection_source, false},
-		{&intf_zwp_primary_selection_source_v1, false},
-		{&intf_wl_data_source, false},
-
-		/* List all other known global object interface types,
-		 * so that the parsing code can identify all fd usages
-		 */
-		// wayland
-		{&intf_wl_compositor, true}, {&intf_wl_subcompositor, true},
-		{&intf_wl_data_device_manager, true}, {&intf_wl_shm, true},
-		{&intf_wl_seat, true}, {&intf_wl_output, true},
-		// xdg-shell
-		{&intf_xdg_wm_base, true},
-		// presentation-time
-		{&intf_wp_presentation, true},
-		// gtk-primary-selection
-		{&intf_gtk_primary_selection_device_manager, true},
-		// primary-selection
-		{&intf_zwp_primary_selection_device_manager_v1, true},
-		// virtual-keyboard
-		{&intf_zwp_virtual_keyboard_manager_v1, true},
-		// input-method
-		{&intf_zwp_input_method_manager_v2, true},
-		// linux-dmabuf
-		{&intf_zwp_linux_dmabuf_v1, true},
-		// screencopy-manager
-		{&intf_zwlr_screencopy_manager_v1, true},
-		// wayland-drm
-		{&intf_wl_drm, true},
-		// wlr-export-dmabuf
-		{&intf_zwlr_export_dmabuf_manager_v1, true},
-		// wlr-data-control
-		{&intf_zwlr_data_control_manager_v1, true},
-		// wlr-gamma-control
-		{&intf_zwlr_gamma_control_manager_v1, true},
-
-		{NULL, false}};
 const struct wp_interface *the_display_interface = &intf_wl_display;
