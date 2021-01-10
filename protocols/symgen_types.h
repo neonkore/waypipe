@@ -17,6 +17,7 @@ struct msg_data {
 	const unsigned int *new_obj_idxs;/* there are special 'spacer' fields at each string/arr, =-1*/
 	const struct wp_interface **new_obj_types;
 	const bool is_destructor;
+	const wp_callfn_t call;
 };
 struct wp_interface {
 	const char *name;

@@ -137,16 +137,6 @@ void cleanup_message_tracker(
 	free(mt->objects.objs);
 }
 
-static int get_handler_idx_for_interface(const struct wp_interface *intf)
-{
-	for (int i = 0; handlers[i].interface; i++) {
-		if (handlers[i].interface == intf) {
-			return i;
-		}
-	}
-	return -1;
-}
-
 static bool word_has_empty_bytes(uint32_t v)
 {
 	return ((v & 0xFF) == 0) || ((v & 0xFF00) == 0) ||
@@ -305,17 +295,6 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		return PARSE_UNKNOWN;
 	}
 
-	const int handler_idx = get_handler_idx_for_interface(objh->type);
-	wp_callfn_t call_fn = NULL;
-	if (handler_idx >= 0) {
-		const struct msg_handler *handler = &handlers[handler_idx];
-		const void *funcs = from_client ? handler->request_handlers
-						: handler->event_handlers;
-		if (funcs) {
-			call_fn = ((const wp_callfn_t *)funcs)[meth];
-		}
-	}
-
 	const uint32_t *payload = header + 2;
 	if (!size_check(msg, payload, (unsigned int)len / 4 - 2,
 			    fds->zone_end - fds->zone_start)) {
@@ -342,8 +321,8 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 			.fds = fds,
 			.fds_changed = false,
 	};
-	if (call_fn) {
-		(*call_fn)(&ctx, payload, &fds->data[fds->zone_start],
+	if (msg->call) {
+		(*msg->call)(&ctx, payload, &fds->data[fds->zone_start],
 				&g->tracker);
 	}
 	if (num_fds_with_message >= 0 && msg->n_fds != num_fds_with_message) {

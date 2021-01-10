@@ -1515,188 +1515,58 @@ void do_zwlr_gamma_control_v1_req_set_gamma(struct context *ctx, int fd)
 	sfd->has_owner = true;
 }
 
-/* Q: embed this section and what follows into 'symgen'? */
-static const struct evt_map_wl_display wl_display_event_handler = {
-		.error = call_wl_display_evt_error,
-		.delete_id = call_wl_display_evt_delete_id};
-static const struct req_map_wl_display wl_display_request_handler = {
-		.get_registry = call_wl_display_req_get_registry,
-		.sync = call_wl_display_req_sync};
-static const struct evt_map_wl_registry wl_registry_event_handler = {
-		.global = call_wl_registry_evt_global,
-		.global_remove = call_wl_registry_evt_global_remove};
-static const struct req_map_wl_registry wl_registry_request_handler = {
-		.bind = call_wl_registry_req_bind};
-static const struct evt_map_wl_buffer wl_buffer_event_handler = {
-		.release = call_wl_buffer_evt_release};
-static const struct req_map_wl_surface wl_surface_request_handler = {
-		.attach = call_wl_surface_req_attach,
-		.commit = call_wl_surface_req_commit,
-		.damage = call_wl_surface_req_damage,
-		.damage_buffer = call_wl_surface_req_damage_buffer,
-		.set_buffer_scale = call_wl_surface_req_set_buffer_scale,
-		.set_buffer_transform =
-				call_wl_surface_req_set_buffer_transform,
-};
-static const struct evt_map_wl_keyboard wl_keyboard_event_handler = {
-		.keymap = call_wl_keyboard_evt_keymap};
-static const struct req_map_wl_shm wl_shm_request_handler = {
-		.create_pool = call_wl_shm_req_create_pool,
-};
-static const struct req_map_wl_shm_pool wl_shm_pool_request_handler = {
-		.resize = call_wl_shm_pool_req_resize,
-		.create_buffer = call_wl_shm_pool_req_create_buffer,
-};
-static const struct evt_map_zwlr_screencopy_frame_v1
-		zwlr_screencopy_frame_v1_event_handler = {
-				.ready = call_zwlr_screencopy_frame_v1_evt_ready};
-static const struct req_map_zwlr_screencopy_frame_v1
-		zwlr_screencopy_frame_v1_request_handler = {
-				.copy = call_zwlr_screencopy_frame_v1_req_copy};
-static const struct evt_map_wp_presentation wp_presentation_event_handler = {
-		.clock_id = call_wp_presentation_evt_clock_id};
-static const struct req_map_wp_presentation wp_presentation_request_handler = {
-		.feedback = call_wp_presentation_req_feedback};
-static const struct evt_map_wp_presentation_feedback wp_presentation_feedback_event_handler =
-		{.presented = call_wp_presentation_feedback_evt_presented};
-static const struct evt_map_wl_drm wl_drm_event_handler = {
-		.device = call_wl_drm_evt_device};
-static const struct req_map_wl_drm wl_drm_request_handler = {
-		/* the other 'create_buffer' methods require an
-		 * authenticated drm node, which we do never advertise
-		 */
-		.create_prime_buffer = call_wl_drm_req_create_prime_buffer};
-static const struct evt_map_zwp_linux_dmabuf_v1 zwp_linux_dmabuf_v1_event_handler =
-		{.modifier = call_zwp_linux_dmabuf_v1_evt_modifier};
-static const struct evt_map_zwp_linux_buffer_params_v1
-		zwp_linux_buffer_params_v1_event_handler = {
-				.created = call_zwp_linux_buffer_params_v1_evt_created};
-static const struct req_map_zwp_linux_buffer_params_v1
-		zwp_linux_buffer_params_v1_request_handler = {
-				.add = call_zwp_linux_buffer_params_v1_req_add,
-				.create = call_zwp_linux_buffer_params_v1_req_create,
-				.create_immed = call_zwp_linux_buffer_params_v1_req_create_immed,
-};
-static const struct evt_map_zwlr_export_dmabuf_frame_v1
-		zwlr_export_dmabuf_frame_v1_event_handler = {
-				.frame = call_zwlr_export_dmabuf_frame_v1_evt_frame,
-				.object = call_zwlr_export_dmabuf_frame_v1_evt_object,
-				.ready = call_zwlr_export_dmabuf_frame_v1_evt_ready,
-};
-static const struct evt_map_zwlr_data_control_source_v1
-		zwlr_data_control_source_v1_event_handler = {
-				.send = call_zwlr_data_control_source_v1_evt_send};
-static const struct evt_map_gtk_primary_selection_source
-		gtk_primary_selection_source_event_handler = {
-				.send = call_gtk_primary_selection_source_evt_send};
-static const struct evt_map_zwp_primary_selection_source_v1
-		intf_zwp_primary_selection_source_v1_event_handler = {
-				.send = call_zwp_primary_selection_source_v1_evt_send};
-static const struct evt_map_wl_data_source wl_data_source_event_handler = {
-		.send = call_wl_data_source_evt_send};
-static const struct req_map_zwlr_data_control_offer_v1
-		zwlr_data_control_offer_v1_request_handler = {
-				.receive = call_zwlr_data_control_offer_v1_req_receive};
-static const struct req_map_gtk_primary_selection_offer
-		gtk_primary_selection_offer_request_handler = {
-				.receive = call_gtk_primary_selection_offer_req_receive};
-static const struct req_map_zwp_primary_selection_offer_v1
-		zwp_primary_selection_offer_v1_request_handler = {
-				.receive = call_zwp_primary_selection_offer_v1_req_receive};
-static const struct req_map_wl_data_offer wl_data_offer_request_handler = {
-		.receive = call_wl_data_offer_req_receive};
-static const struct req_map_zwlr_gamma_control_v1 zwlr_gamma_control_request_handler =
-		{.set_gamma = call_zwlr_gamma_control_v1_req_set_gamma};
-
-const struct msg_handler handlers[] = {
-		{&intf_wl_display, &wl_display_event_handler,
-				&wl_display_request_handler, false},
-		{&intf_wl_registry, &wl_registry_event_handler,
-				&wl_registry_request_handler, false},
-		{&intf_wl_shm_pool, NULL, &wl_shm_pool_request_handler, false},
-		{&intf_wl_buffer, &wl_buffer_event_handler, NULL, false},
-		{&intf_wl_surface, NULL, &wl_surface_request_handler, false},
-		{&intf_wl_keyboard, &wl_keyboard_event_handler, NULL, false},
-		{&intf_zwlr_screencopy_frame_v1,
-				&zwlr_screencopy_frame_v1_event_handler,
-				&zwlr_screencopy_frame_v1_request_handler,
-				false},
-		{&intf_wp_presentation_feedback,
-				&wp_presentation_feedback_event_handler, NULL,
-				false},
-		{&intf_zwp_linux_buffer_params_v1,
-				&zwp_linux_buffer_params_v1_event_handler,
-				&zwp_linux_buffer_params_v1_request_handler,
-				false},
-		{&intf_zwlr_export_dmabuf_frame_v1,
-				&zwlr_export_dmabuf_frame_v1_event_handler,
-				NULL, false},
-		{&intf_zwlr_gamma_control_v1, NULL,
-				&zwlr_gamma_control_request_handler, false},
+const struct msg_handler handlers[] = {{&intf_wl_display, false},
+		{&intf_wl_registry, false}, {&intf_wl_shm_pool, false},
+		{&intf_wl_buffer, false}, {&intf_wl_surface, false},
+		{&intf_wl_keyboard, false},
+		{&intf_zwlr_screencopy_frame_v1, false},
+		{&intf_wp_presentation_feedback, false},
+		{&intf_zwp_linux_buffer_params_v1, false},
+		{&intf_zwlr_export_dmabuf_frame_v1, false},
+		{&intf_zwlr_gamma_control_v1, false},
 
 		/* Copy-paste protocol handlers, handled near identically */
-		{&intf_zwlr_data_control_offer_v1, NULL,
-				&zwlr_data_control_offer_v1_request_handler,
-				false},
-		{&intf_gtk_primary_selection_offer, NULL,
-				&gtk_primary_selection_offer_request_handler,
-				false},
-		{&intf_zwp_primary_selection_offer_v1, NULL,
-				&zwp_primary_selection_offer_v1_request_handler,
-				false},
-		{&intf_wl_data_offer, NULL, &wl_data_offer_request_handler,
-				false},
+		{&intf_zwlr_data_control_offer_v1, false},
+		{&intf_gtk_primary_selection_offer, false},
+		{&intf_zwp_primary_selection_offer_v1, false},
+		{&intf_wl_data_offer, false},
 
-		{&intf_zwlr_data_control_source_v1,
-				&zwlr_data_control_source_v1_event_handler,
-				NULL, false},
-		{&intf_gtk_primary_selection_source,
-				&gtk_primary_selection_source_event_handler,
-				NULL, false},
-		{&intf_zwp_primary_selection_source_v1,
-				&intf_zwp_primary_selection_source_v1_event_handler,
-				NULL, false},
-		{&intf_wl_data_source, &wl_data_source_event_handler, NULL,
-				false},
+		{&intf_zwlr_data_control_source_v1, false},
+		{&intf_gtk_primary_selection_source, false},
+		{&intf_zwp_primary_selection_source_v1, false},
+		{&intf_wl_data_source, false},
 
 		/* List all other known global object interface types,
 		 * so that the parsing code can identify all fd usages
 		 */
 		// wayland
-		{&intf_wl_compositor, NULL, NULL, true},
-		{&intf_wl_subcompositor, NULL, NULL, true},
-		{&intf_wl_data_device_manager, NULL, NULL, true},
-		{&intf_wl_shm, NULL, &wl_shm_request_handler, true},
-		{&intf_wl_seat, NULL, NULL, true},
-		{&intf_wl_output, NULL, NULL, true},
+		{&intf_wl_compositor, true}, {&intf_wl_subcompositor, true},
+		{&intf_wl_data_device_manager, true}, {&intf_wl_shm, true},
+		{&intf_wl_seat, true}, {&intf_wl_output, true},
 		// xdg-shell
-		{&intf_xdg_wm_base, NULL, NULL, true},
+		{&intf_xdg_wm_base, true},
 		// presentation-time
-		{&intf_wp_presentation, &wp_presentation_event_handler,
-				&wp_presentation_request_handler, true},
+		{&intf_wp_presentation, true},
 		// gtk-primary-selection
-		{&intf_gtk_primary_selection_device_manager, NULL, NULL, true},
+		{&intf_gtk_primary_selection_device_manager, true},
 		// primary-selection
-		{&intf_zwp_primary_selection_device_manager_v1, NULL, NULL,
-				true},
+		{&intf_zwp_primary_selection_device_manager_v1, true},
 		// virtual-keyboard
-		{&intf_zwp_virtual_keyboard_manager_v1, NULL, NULL, true},
+		{&intf_zwp_virtual_keyboard_manager_v1, true},
 		// input-method
-		{&intf_zwp_input_method_manager_v2, NULL, NULL, true},
+		{&intf_zwp_input_method_manager_v2, true},
 		// linux-dmabuf
-		{&intf_zwp_linux_dmabuf_v1, &zwp_linux_dmabuf_v1_event_handler,
-				NULL, true},
+		{&intf_zwp_linux_dmabuf_v1, true},
 		// screencopy-manager
-		{&intf_zwlr_screencopy_manager_v1, NULL, NULL, true},
+		{&intf_zwlr_screencopy_manager_v1, true},
 		// wayland-drm
-		{&intf_wl_drm, &wl_drm_event_handler, &wl_drm_request_handler,
-				true},
+		{&intf_wl_drm, true},
 		// wlr-export-dmabuf
-		{&intf_zwlr_export_dmabuf_manager_v1, NULL, NULL, true},
+		{&intf_zwlr_export_dmabuf_manager_v1, true},
 		// wlr-data-control
-		{&intf_zwlr_data_control_manager_v1, NULL, NULL, true},
+		{&intf_zwlr_data_control_manager_v1, true},
 		// wlr-gamma-control
-		{&intf_zwlr_gamma_control_manager_v1, NULL, NULL, true},
+		{&intf_zwlr_gamma_control_manager_v1, true},
 
-		{NULL, NULL, NULL, false}};
+		{NULL, false}};
 const struct wp_interface *the_display_interface = &intf_wl_display;

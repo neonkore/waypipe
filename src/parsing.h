@@ -36,9 +36,6 @@ struct main_config;
 struct wp_interface;
 struct msg_handler {
 	const struct wp_interface *interface;
-	/** These are structs packed densely with function pointers */
-	const void *event_handlers;
-	const void *request_handlers;
 	/** Can the type be produced via wl_registry::bind ? */
 	bool is_global;
 };

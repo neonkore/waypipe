@@ -242,6 +242,10 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
             msg_data_args.append("true")
         else:
             msg_data_args.append("false")
+        if for_export:
+            msg_data_args.append("call_" + func_name)
+        else:
+            msg_data_args.append("NULL")
 
     return (is_request, func_name, func.attrib["name"], msg_data_args)
 
@@ -256,19 +260,7 @@ def write_interface(is_header, ostream, iface_name, func_data):
 
     W = lambda *x: print(*x, file=ostream)
 
-    if is_header:
-        # Define 'header' type listing functions
-        if len(reqs) > 0:
-            W("struct req_map_" + iface_name + " {")
-            for name, short_name, mda in reqs:
-                W("\twp_callfn_t " + short_name + ";")
-            W("};")
-        if len(evts) > 0:
-            W("struct evt_map_" + iface_name + " {")
-            for name, short_name, mda in evts:
-                W("\twp_callfn_t " + short_name + ";")
-            W("};")
-    else:
+    if not is_header:
         rcn, ecn = "NULL", "NULL"
         if len(reqs) > 0:
             W("static const struct msg_data reqs_" + iface_name + "[] = {")
