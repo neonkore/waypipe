@@ -752,7 +752,17 @@ void do_wl_surface_req_commit(struct context *ctx)
 	free(damage_array);
 	rotate_damage_lists(surface);
 backup:
-	damage_everything(&sfd->damage);
+	if (1) {
+		/* damage the entire buffer (but no other part of the shm_pool)
+		 */
+		struct ext_interval full_surface_damage;
+		full_surface_damage.start = buf->shm_offset;
+		full_surface_damage.rep = 1;
+		full_surface_damage.stride = 0;
+		full_surface_damage.width = buf->shm_stride * buf->shm_height;
+		merge_damage_records(&sfd->damage, 1, &full_surface_damage,
+				ctx->g->threads.diff_alignment_bits);
+	}
 	rotate_damage_lists(surface);
 	return;
 }
@@ -862,6 +872,10 @@ void do_wl_shm_req_create_pool(
 		return;
 	}
 	the_shm_pool->owned_buffer = shadow_incref_protocol(sfd);
+	/* We only send shm_pool updates when the buffers created from the
+	 * pool are used. Some applications make the pool >> actual buffers,
+	 * so this can reduce communication by a lot*/
+	reset_damage(&sfd->damage);
 }
 
 void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)

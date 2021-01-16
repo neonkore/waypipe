@@ -32,8 +32,10 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -96,3 +98,63 @@ bool neon_available(void)
 	return true;
 }
 #endif
+
+static void *align_ptr(void *ptr, size_t alignment)
+{
+	return (uint8_t *)ptr + ((alignment - (uintptr_t)ptr) % alignment);
+}
+void *zeroed_aligned_alloc(size_t bytes, size_t alignment, void **handle)
+{
+	if (*handle) {
+		/* require a clean handle */
+		return NULL;
+	}
+	*handle = calloc(bytes + alignment - 1, 1);
+	return align_ptr(*handle, alignment);
+}
+void *zeroed_aligned_realloc(size_t old_size_bytes, size_t new_size_bytes,
+		size_t alignment, void *data, void **handle)
+{
+	/* warning: this might copy a lot of data */
+	if (new_size_bytes <= 2 * old_size_bytes) {
+		void *new_handle = realloc(
+				*handle, new_size_bytes + alignment - 1);
+		if (!new_handle) {
+			return NULL;
+		}
+		void *new_data = align_ptr(new_handle, alignment);
+		if (((uint8_t *)data - (uint8_t *)*handle) !=
+				((uint8_t *)new_data - (uint8_t *)new_handle)) {
+			/* realloc broke alignment offset */
+			memmove(new_data, data,
+					new_size_bytes > old_size_bytes
+							? old_size_bytes
+							: new_size_bytes);
+		}
+		if (new_size_bytes > old_size_bytes) {
+			memset((uint8_t *)new_data + old_size_bytes, 0,
+					new_size_bytes - old_size_bytes);
+		}
+		*handle = new_handle;
+		return new_data;
+	} else {
+		void *new_handle = calloc(new_size_bytes + alignment - 1, 1);
+		if (!new_handle) {
+			return NULL;
+		}
+		void *new_data = align_ptr(new_handle, alignment);
+		memcpy(new_data, data,
+				new_size_bytes > old_size_bytes
+						? old_size_bytes
+						: new_size_bytes);
+		free(*handle);
+		*handle = new_handle;
+		return new_data;
+	}
+}
+void zeroed_aligned_free(void *data, void **handle)
+{
+	(void)data;
+	free(*handle);
+	*handle = NULL;
+}

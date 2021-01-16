@@ -78,11 +78,11 @@ static void destroy_unlinked_sfd(
 
 	if (sfd->type == FDC_FILE) {
 		munmap(sfd->mem_local, sfd->buffer_size);
-		free(sfd->mem_mirror);
+		zeroed_aligned_free(sfd->mem_mirror, &sfd->mem_mirror_handle);
 	} else if (sfd->type == FDC_DMABUF || sfd->type == FDC_DMAVID_IR ||
 			sfd->type == FDC_DMAVID_IW) {
 		destroy_dmabuf(sfd->dmabuf_bo);
-		free(sfd->mem_mirror);
+		zeroed_aligned_free(sfd->mem_mirror, &sfd->mem_mirror_handle);
 	} else if (sfd->type == FDC_PIPE) {
 		if (sfd->pipe.fd != sfd->fd_local && sfd->pipe.fd != -1) {
 			checked_close(sfd->pipe.fd);
@@ -529,11 +529,14 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 	sfd->fd_local = fd;
 	sfd->mem_local = NULL;
 	sfd->mem_mirror = NULL;
+	sfd->mem_mirror_handle = NULL;
 	sfd->buffer_size = 0;
 	sfd->remote_id = (map->max_local_id++) * map->local_sign;
 	sfd->type = type;
 	// File changes must be propagated
 	sfd->is_dirty = true;
+	/* files/dmabufs are damaged by default; shm_pools are explicitly
+	 * undamaged in handlers.c */
 	damage_everything(&sfd->damage);
 	sfd->has_owner = false;
 	/* Start the number of expected transfers to channel remaining
@@ -1055,22 +1058,24 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		// Clear dirty state
 		sfd->is_dirty = false;
 		if (sfd->only_here) {
-			sfd->only_here = false;
-			reset_damage(&sfd->damage);
-
 			// increase space, to avoid overflow when
 			// writing this buffer along with padding
 			size_t alignment = 1u << threads->diff_alignment_bits;
-			sfd->mem_mirror = aligned_alloc(alignment,
-					alignz(sfd->buffer_size, alignment));
-			memcpy(sfd->mem_mirror, sfd->mem_local,
-					sfd->buffer_size);
+			sfd->mem_mirror = zeroed_aligned_alloc(
+					alignz(sfd->buffer_size, alignment),
+					alignment, &sfd->mem_mirror_handle);
+			if (!sfd->mem_mirror) {
+				wp_error("Failed to allocate mirror");
+				return;
+			}
+
+			sfd->only_here = false;
 
 			sfd->remote_bufsize = 0;
 
 			add_file_create_request(transfers, sfd);
-			queue_fill_transfers(threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
+			queue_diff_transfers(threads, sfd, transfers);
 			return;
 		}
 
@@ -1086,11 +1091,6 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			transfer_add(transfers, sizeof(struct wmsg_open_file),
 					header, false);
 
-			memcpy(sfd->mem_mirror + sfd->remote_bufsize,
-					sfd->mem_local + sfd->remote_bufsize,
-					sfd->buffer_size - sfd->remote_bufsize);
-
-			queue_fill_transfers(threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
 		}
 
@@ -1123,9 +1123,13 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		}
 		if (first) {
 			size_t alignment = 1u << threads->diff_alignment_bits;
-			sfd->mem_mirror = aligned_alloc(alignment,
-					alignz(sfd->buffer_size, alignment));
-			// Q: is it better to run the copy in parallel?
+			sfd->mem_mirror = zeroed_aligned_alloc(
+					alignz(sfd->buffer_size, alignment),
+					alignment, &sfd->mem_mirror_handle);
+			if (!sfd->mem_mirror) {
+				wp_error("Failed to allocate mirror");
+				return;
+			}
 			memcpy(sfd->mem_mirror, sfd->mem_local,
 					sfd->buffer_size);
 
@@ -1133,6 +1137,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			queue_fill_transfers(threads, sfd, transfers);
 			sfd->remote_bufsize = sfd->buffer_size;
 		} else {
+			// TODO: detailed damage tracking
 			damage_everything(&sfd->damage);
 
 			queue_diff_transfers(threads, sfd, transfers);
@@ -1259,6 +1264,7 @@ static int create_from_update(struct fd_translation_map *map,
 	sfd->remote_id = remote_id;
 	sfd->fd_local = -1;
 	sfd->is_dirty = false;
+	/* a received file descriptor is up to date by default */
 	reset_damage(&sfd->damage);
 	sfd->only_here = false;
 	/* Start the object reference at one, so that, if it is owned by
@@ -1277,8 +1283,13 @@ static int create_from_update(struct fd_translation_map *map,
 		sfd->buffer_size = header.file_size;
 		sfd->remote_bufsize = sfd->buffer_size;
 		size_t alignment = 1u << threads->diff_alignment_bits;
-		sfd->mem_mirror = aligned_alloc(
-				alignment, alignz(sfd->buffer_size, alignment));
+		sfd->mem_mirror = zeroed_aligned_alloc(
+				alignz(sfd->buffer_size, alignment), alignment,
+				&sfd->mem_mirror_handle);
+		if (!sfd->mem_mirror) {
+			wp_error("Failed to allocate mirror");
+			return 0;
+		}
 
 		sfd->fd_local = create_anon_file();
 		if (sfd->fd_local == -1) {
@@ -1286,6 +1297,8 @@ static int create_from_update(struct fd_translation_map *map,
 					sfd->remote_id, strerror(errno));
 			return 0;
 		}
+		/* ftruncate zero initializes the file by default, matching
+		 * the zeroed mem_mirror buffer */
 		if (ftruncate(sfd->fd_local, (off_t)sfd->buffer_size) == -1) {
 			wp_error("Failed to resize anon file to size %zu for reason: %s",
 					sfd->buffer_size, strerror(errno));
@@ -1300,7 +1313,6 @@ static int create_from_update(struct fd_translation_map *map,
 			sfd->mem_local = NULL;
 			return 0;
 		}
-		memcpy(sfd->mem_local, sfd->mem_mirror, sfd->buffer_size);
 	} else if (type == WMSG_OPEN_RW_PIPE || type == WMSG_OPEN_IW_PIPE ||
 			type == WMSG_OPEN_IR_PIPE) {
 		sfd->type = FDC_PIPE;
@@ -1417,8 +1429,13 @@ static int create_from_update(struct fd_translation_map *map,
 				msg->data + sizeof(struct wmsg_open_dmabuf),
 				sizeof(struct dmabuf_slice_data));
 		size_t alignment = 1u << threads->diff_alignment_bits;
-		sfd->mem_mirror = aligned_alloc(
-				alignment, alignz(sfd->buffer_size, alignment));
+		sfd->mem_mirror = zeroed_aligned_alloc(
+				alignz(sfd->buffer_size, alignment), alignment,
+				&sfd->mem_mirror_handle);
+		if (!sfd->mem_mirror) {
+			wp_error("Failed to allocate mirror");
+			return 0;
+		}
 
 		wp_debug("Creating remote DMAbuf of %d bytes",
 				(int)sfd->buffer_size);
@@ -1459,17 +1476,15 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 	}
 	// todo: handle allocation failures
 
-	/* Reallocation here is complicated by the requirement that the mirror
-	 * memory be aligned; unfortunately, there is no aligned_realloc */
-	size_t al = 1u << threads->diff_alignment_bits;
-	sfd->mem_mirror =
-			realloc(sfd->mem_mirror, alignz(sfd->buffer_size, al));
-	if ((size_t)sfd->mem_mirror % al != 0) {
-		char *mem = aligned_alloc(al, alignz(sfd->buffer_size, al));
-		memcpy(mem, sfd->mem_mirror, old_size);
-		free(sfd->mem_mirror);
-		sfd->mem_mirror = mem;
+	size_t alignment = 1u << threads->diff_alignment_bits;
+	void *new_mirror = zeroed_aligned_realloc(alignz(old_size, alignment),
+			alignz(sfd->buffer_size, alignment), alignment,
+			sfd->mem_mirror, &sfd->mem_mirror_handle);
+	if (!new_mirror) {
+		wp_error("Failed to reallocate mirror");
+		return;
 	}
+	sfd->mem_mirror = new_mirror;
 }
 
 static void pipe_close_write(struct shadow_fd *sfd)

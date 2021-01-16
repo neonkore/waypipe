@@ -352,5 +352,11 @@ void transfer_async_add(struct thread_msg_recv_buf *q, void *data, size_t sz);
 int create_anon_file(void);
 int get_hardware_thread_count(void);
 int get_iov_max(void);
+/** For large allocations only; functions providing aligned-and-zeroed
+ * allocations. They return NULL on allocation failure.*/
+void *zeroed_aligned_alloc(size_t bytes, size_t alignment, void **handle);
+void *zeroed_aligned_realloc(size_t old_size_bytes, size_t new_size_bytes,
+		size_t alignment, void *data, void **handle);
+void zeroed_aligned_free(void *data, void **handle);
 
 #endif // WAYPIPE_UTIL_H

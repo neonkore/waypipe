@@ -203,8 +203,9 @@ struct shadow_fd {
 	size_t buffer_size;
 	/* mmap'd long term for files, short term for dmabufs */
 	char *mem_local;
-	/* exact mirror of the contents, albeit allocated with overrun space */
+	/* exact mirror of the contents, with proper alignment */
 	char *mem_mirror;
+	void *mem_mirror_handle;
 
 	// File data
 	size_t remote_bufsize; // used to check for and send file extensions
