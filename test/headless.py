@@ -95,12 +95,14 @@ subenv = {
     "WAYLAND_DEBUG": "1",
     "XDG_RUNTIME_DIR": xdg_runtime_dir,
     "LD_LIBRARY_PATH": ld_library_path,
+    "ASAN_OPTIONS": "detect_leaks=0",
 }
 
 wp_serv_env = {
     "WAYLAND_DEBUG": "1",
     "XDG_RUNTIME_DIR": xdg_runtime_dir,
     "LD_LIBRARY_PATH": ld_library_path,
+    "ASAN_OPTIONS": "detect_leaks=0",
 }
 
 subproc_args = {"env": subenv, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT}
