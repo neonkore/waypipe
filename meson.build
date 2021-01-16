@@ -25,7 +25,8 @@ config_data = configuration_data()
 version = '"@0@"'.format(meson.project_version())
 git = find_program('git', native: true, required: false)
 if git.found()
-	commit = run_command([git, 'rev-parse', '--verify', '-q', 'HEAD'])
+	dir_arg = '--git-dir=@0@/.git'.format(meson.source_root())
+	commit = run_command([git, dir_arg, 'rev-parse', '--verify', '-q', 'HEAD'])
 	if commit.returncode() == 0
 		version = '"@0@ (commit @1@)"'.format(meson.project_version(), commit.stdout().strip())
 	endif
