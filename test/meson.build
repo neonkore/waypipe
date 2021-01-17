@@ -111,3 +111,7 @@ fuzz_hook_int = executable(
 	link_with: lib_waypipe_src,
 	dependencies: [pthreads]
 )
+test('That `waypipe bench` doesn\'t crash',
+	waypipe_prog, timeout: 20,
+	args:  ['--threads', '2', '--test-size', '16384', 'bench', '100.0']
+)
