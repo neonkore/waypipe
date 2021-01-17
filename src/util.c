@@ -41,6 +41,27 @@
 #include <time.h>
 #include <unistd.h>
 
+int parse_uint32(const char *str, uint32_t *val)
+{
+	if (!str[0] || (str[0] == '0' && str[1])) {
+		return -1;
+	}
+	uint64_t v = 0;
+	for (const char *cursor = str; *cursor; cursor++) {
+		if (*cursor < '0' || *cursor > '9') {
+			return -1;
+		}
+		uint64_t s = (uint64_t)(*cursor - '0');
+		v *= 10;
+		v += s;
+		if (v >= (1uLL << 32)) {
+			return -1;
+		}
+	}
+	*val = (uint32_t)v;
+	return 0;
+}
+
 /* An integer-to-string converter which is async-signal-safe, unlike sprintf */
 static char *uint_to_str(uint32_t i, char buf[static 11])
 {

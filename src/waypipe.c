@@ -225,12 +225,17 @@ static bool parse_level_choice(const char *str, int *dest, int defval)
 	if (str[0] != '=') {
 		return false;
 	}
-	char *endptr = NULL;
-	int dv = (int)strtol(str + 1, &endptr, 10);
-	if (*endptr != 0) {
+	str++;
+	int sign = 1;
+	if (str[0] == '-') {
+		sign = -1;
+		str++;
+	}
+	uint32_t val;
+	if (parse_uint32(str, &val) == -1 || (int)val < 0) {
 		return false;
 	}
-	*dest = dv;
+	*dest = sign * (int)val;
 	return true;
 }
 
@@ -568,23 +573,20 @@ int main(int argc, char **argv)
 			config.prefer_hwvideo = true;
 			break;
 		case ARG_THREADS: {
-			char *endptr;
-			config.n_worker_threads =
-					(int)strtol(optarg, &endptr, 10);
-			nthread_string = optarg;
-			if (*endptr != 0 || config.n_worker_threads < 0) {
+			uint32_t nthreads;
+			if (parse_uint32(optarg, &nthreads) == -1 ||
+					nthreads > (1u << 16)) {
 				fail = true;
 			}
+			config.n_worker_threads = (int)nthreads;
+			nthread_string = optarg;
 		} break;
 		case ARG_WAYPIPE_BINARY:
 			waypipe_binary = optarg;
 			break;
 		case ARG_BENCH_TEST_SIZE: {
-			char *endptr;
-			bench_test_size =
-					(uint32_t)strtoul(optarg, &endptr, 10);
-			if (*endptr != 0 || bench_test_size >= (1u << 30) ||
-					bench_test_size == 0) {
+			if (parse_uint32(optarg, &bench_test_size) == -1 ||
+					bench_test_size > (1u << 30)) {
 				fail = true;
 			}
 		} break;

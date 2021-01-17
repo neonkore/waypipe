@@ -67,14 +67,13 @@ static inline bool key_match(
 static int get_inherited_socket(void)
 {
 	const char *fd_no = getenv("WAYLAND_SOCKET");
-	char *endptr = NULL;
-	errno = 0;
-	int fd = (int)strtol(fd_no, &endptr, 10);
-	if (*endptr || errno) {
-		wp_error("Failed to parse WAYLAND_SOCKET env variable with value \"%s\", exiting",
+	uint32_t val;
+	if (parse_uint32(fd_no, &val) == -1 || ((int)val) < 0) {
+		wp_error("Failed to parse \"%s\" (value of WAYLAND_SOCKET) as a nonnegative integer, exiting",
 				fd_no);
 		return -1;
 	}
+	int fd = (int)val;
 	int flags = fcntl(fd, F_GETFL, 0);
 	if (flags == -1 && errno == EBADF) {
 		wp_error("The file descriptor WAYLAND_SOCKET=%d was invalid, exiting",

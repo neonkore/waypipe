@@ -74,6 +74,9 @@ static inline int split_interval(int lo, int hi, int nparts, int index)
 	return lo + index * ((hi - lo) / nparts) +
 	       (index * ((hi - lo) % nparts)) / nparts;
 }
+/** Parse a base-10 integer, forbidding leading whitespace, + sign, decimal
+ *  separators, and locale dependent stuff */
+int parse_uint32(const char *str, uint32_t *val);
 
 /** Make the file underlying this file descriptor nonblocking.
  * Silently return -1 on failure. */
