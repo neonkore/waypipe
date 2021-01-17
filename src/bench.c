@@ -347,7 +347,7 @@ static struct bench_result run_sub_bench(bool first,
 	return res;
 }
 
-int run_bench(float bandwidth_mBps, int n_worker_threads)
+int run_bench(float bandwidth_mBps, uint32_t test_size, int n_worker_threads)
 {
 	/* 4MB test image - 1024x1024x4. Any smaller, and unrealistic caching
 	 * speedups may occur */
@@ -355,7 +355,6 @@ int run_bench(float bandwidth_mBps, int n_worker_threads)
 	clock_gettime(CLOCK_REALTIME, &tp);
 
 	srand((unsigned int)tp.tv_nsec);
-	size_t test_size = (1u << 22) + 13;
 	void *text_image = create_text_like_image(test_size);
 	void *vid_image = create_video_like_image(test_size);
 

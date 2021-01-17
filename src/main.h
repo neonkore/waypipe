@@ -68,6 +68,6 @@ int run_server(const char *socket_path, const char *display_path,
 int run_client(const char *socket_path, const struct main_config *config,
 		bool oneshot, bool via_socket, pid_t eol_pid);
 /** Run benchmarking tool; n_worker_threads defined as with \ref main_config */
-int run_bench(float bandwidth_mBps, int n_worker_threads);
+int run_bench(float bandwidth_mBps, uint32_t test_size, int n_worker_threads);
 
 #endif // WAYPIPE_MAIN_H

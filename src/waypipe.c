@@ -346,6 +346,7 @@ static int parse_video_string(const char *str, struct main_config *config)
 #define ARG_HWVIDEO 1009
 #define ARG_CONTROL 1010
 #define ARG_WAYPIPE_BINARY 1011
+#define ARG_BENCH_TEST_SIZE 1012
 
 static const struct option options[] = {
 		{"compress", required_argument, NULL, 'c'},
@@ -366,6 +367,7 @@ static const struct option options[] = {
 		{"threads", required_argument, NULL, ARG_THREADS},
 		{"display", required_argument, NULL, ARG_DISPLAY},
 		{"control", required_argument, NULL, ARG_CONTROL},
+		{"test-size", required_argument, NULL, ARG_BENCH_TEST_SIZE},
 		{0, 0, NULL, 0}};
 struct arg_permissions {
 	int val;
@@ -392,6 +394,7 @@ static const struct arg_permissions arg_permissions[] = {
 						MODE_BENCH},
 		{ARG_DISPLAY, MODE_SSH | MODE_SERVER},
 		{ARG_CONTROL, MODE_SSH | MODE_SERVER},
+		{ARG_BENCH_TEST_SIZE, MODE_BENCH},
 };
 
 int main(int argc, char **argv)
@@ -411,6 +414,8 @@ int main(int argc, char **argv)
 	char *control_path = NULL;
 	bool video_nondefault = false;
 	const char *socketpath = NULL;
+	uint32_t bench_test_size = (1u << 22) + 13;
+	;
 
 	struct main_config config = {.n_worker_threads = 0,
 			.drm_node = NULL,
@@ -574,6 +579,15 @@ int main(int argc, char **argv)
 		case ARG_WAYPIPE_BINARY:
 			waypipe_binary = optarg;
 			break;
+		case ARG_BENCH_TEST_SIZE: {
+			char *endptr;
+			bench_test_size =
+					(uint32_t)strtoul(optarg, &endptr, 10);
+			if (*endptr != 0 || bench_test_size >= (1u << 30) ||
+					bench_test_size == 0) {
+				fail = true;
+			}
+		} break;
 		default:
 			fail = true;
 			break;
@@ -644,7 +658,7 @@ int main(int argc, char **argv)
 					argv[0]);
 			return EXIT_FAILURE;
 		}
-		return run_bench(bw, config.n_worker_threads);
+		return run_bench(bw, bench_test_size, config.n_worker_threads);
 	} else if (mode == MODE_CLIENT) {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe-client.sock";
