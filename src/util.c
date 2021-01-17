@@ -95,17 +95,18 @@ uint64_t inherited_fds[4] = {0, 0, 0, 0};
 void handle_sigint(int sig)
 {
 	(void)sig;
-	char buf[20];
+	char buf[48];
 	char tmp[11];
 	const char *pidstr = uint_to_str((uint32_t)getpid(), tmp);
+	const char *trailing = shutdown_flag ? "), second interrupt, aborting\n"
+					     : ")\n";
 	size_t len = multi_strcat(
-			buf, sizeof(buf), "SIGINT(", pidstr, ")\n", NULL);
-	(void)write(STDOUT_FILENO, buf, len);
+			buf, sizeof(buf), "SIGINT(", pidstr, trailing, NULL);
+	(void)write(STDERR_FILENO, buf, len);
+
 	if (!shutdown_flag) {
 		shutdown_flag = true;
 	} else {
-		const char msg[] = "Second SIGINT, aborting.\n";
-		(void)write(STDERR_FILENO, msg, sizeof(msg));
 		abort();
 	}
 }
