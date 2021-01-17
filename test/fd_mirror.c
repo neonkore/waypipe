@@ -343,7 +343,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	return pass;
 }
 
-log_handler_func_t log_funcs[2] = {NULL, test_log_handler};
+log_handler_func_t log_funcs[2] = {NULL, test_atomic_log_handler};
 int main(int argc, char **argv)
 {
 	(void)argc;
