@@ -41,15 +41,66 @@
 #include <time.h>
 #include <unistd.h>
 
+/* An integer-to-string converter which is async-signal-safe, unlike sprintf */
+static char *uint_to_str(uint32_t i, char buf[static 11])
+{
+	char *pos = &buf[10];
+	*pos = '\0';
+	while (i) {
+		--pos;
+		*pos = (char)((i % 10) + (uint32_t)'0');
+		i /= 10;
+	}
+	return pos;
+}
+/* Multiple string concatenation; returns number of bytes written and
+ * ensures null termination. Is async-signal-safe, unlike sprintf.
+ * Last argment must be NULL. If there is not enough space, returns 0. */
+static size_t multi_strcat(char *dest, size_t dest_space, ...)
+{
+	size_t net_len = 0;
+	va_list args;
+	va_start(args, dest_space);
+	while (true) {
+		const char *str = va_arg(args, const char *);
+		if (!str) {
+			break;
+		}
+		net_len += strlen(str);
+		if (net_len >= dest_space) {
+			va_end(args);
+			dest[0] = '\0';
+			return 0;
+		}
+	}
+	va_end(args);
+	va_start(args, dest_space);
+	char *pos = dest;
+	while (true) {
+		const char *str = va_arg(args, const char *);
+		if (!str) {
+			break;
+		}
+		size_t len = strlen(str);
+		memcpy(pos, str, len);
+		pos += len;
+	}
+	va_end(args);
+	*pos = '\0';
+	return net_len;
+}
+
 bool shutdown_flag = false;
 uint64_t inherited_fds[4] = {0, 0, 0, 0};
 void handle_sigint(int sig)
 {
 	(void)sig;
 	char buf[20];
-	int pid = getpid();
-	sprintf(buf, "SIGINT(%d)\n", pid);
-	(void)write(STDOUT_FILENO, buf, strlen(buf));
+	char tmp[11];
+	const char *pidstr = uint_to_str((uint32_t)getpid(), tmp);
+	size_t len = multi_strcat(
+			buf, sizeof(buf), "SIGINT(", pidstr, ")\n", NULL);
+	(void)write(STDOUT_FILENO, buf, len);
 	if (!shutdown_flag) {
 		shutdown_flag = true;
 	} else {
