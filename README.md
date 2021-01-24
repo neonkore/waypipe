@@ -67,17 +67,25 @@ Optional dependencies:
 
 ## Status
 
-This is usable, but still somewhat unstable right now[0]. The main
-development location[1], command-line interface, and wire format may yet
-change completely. Bug reports and patches are always welcome.
+This program is now relatively stable, with no large changes to the
+command line interface or wire format expected. Features like video
+encoding, multiplanar and tiled DMABUFs, and support for newer Wayland
+protocols are less well tested and more likely to break between minor
+versions.
+
+Waypipe is developed at [1]; file bug reports or submit patches here.
 
 The wire format most recently changed with version 0.7.0, and is not
-compatible with earlier versions of Waypipe.
+compatible with earlier versions of Waypipe. Both the client and
+server sides of a connection must have a feature in order for it to work;
+for example, if the local copy of Waypipe was built without LZ4 support,
+and the remote copy has the `--compress lz4` option set, the connection
+may fail at some point.
 
 Any of the following may make waypipe crash with an error message. If
 it segfaults, file a bug report!
 
-* Different local/client and remote/server versions
+* Different local/client and remote/server versions or capabilities
 * Differing byte orders
 * Applications using unexpected protocols that pass file descriptors; file
   bug reports for these
