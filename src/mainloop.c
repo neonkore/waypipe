@@ -974,6 +974,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 			if (translate_fds(&g->map, &g->render,
 					    wmsg->fds.zone_start,
 					    wmsg->fds.data, rbuffer) == -1) {
+				free(msg);
 				return ERR_FATAL;
 			}
 			decref_transferred_rids(
