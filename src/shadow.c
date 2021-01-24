@@ -1390,6 +1390,39 @@ static int open_sfd(struct fd_translation_map *map, struct shadow_fd **sfd_ptr,
 	*sfd_ptr = sfd;
 	return 0;
 }
+static int check_message_min_size(
+		enum wmsg_type type, const struct bytebuf *msg, size_t min_size)
+{
+	if (msg->size < min_size) {
+		wp_error("Message size for %s is smaller than expected (%zu bytes vs %zu bytes)",
+				wmsg_type_to_str(type), msg->size, min_size);
+		return ERR_FATAL;
+	}
+
+	return 0;
+}
+
+static int check_sfd_type_2(struct shadow_fd *sfd, int remote_id,
+		enum wmsg_type mtype, enum fdcat ftype1, enum fdcat ftype2)
+{
+	if (!sfd) {
+		wp_error("shadow structure for RID=%d was not available",
+				remote_id);
+		return ERR_FATAL;
+	}
+	if (sfd->type != ftype1 && sfd->type != ftype2) {
+		wp_error("Trying to apply %s to RID=%d which has incompatible type=%s",
+				wmsg_type_to_str(mtype), remote_id,
+				fdcat_to_str(sfd->type));
+		return ERR_FATAL;
+	}
+	return 0;
+}
+static int check_sfd_type(struct shadow_fd *sfd, int remote_id,
+		enum wmsg_type mtype, enum fdcat ftype)
+{
+	return check_sfd_type_2(sfd, remote_id, mtype, ftype, ftype);
+}
 
 int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		struct render_data *render, enum wmsg_type type, int remote_id,
@@ -1409,10 +1442,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 	}
 	/* SFD creation messages */
 	case WMSG_OPEN_FILE: {
-		if (msg->size < sizeof(struct wmsg_open_file)) {
-			wp_error("Message size to create file is too small (%zu bytes)",
-					msg->size);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg,
+				     sizeof(struct wmsg_open_file))) < 0) {
+			return ret;
 		}
 
 		if ((ret = open_sfd(map, &sfd, remote_id)) < 0) {
@@ -1461,11 +1493,11 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_OPEN_DMABUF: {
-		if (msg->size < sizeof(struct wmsg_open_dmabuf) +
-						sizeof(struct dmabuf_slice_data)) {
-			wp_error("Message size to create dmabuf is too small (%zu bytes)",
-					msg->size);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg,
+				     sizeof(struct wmsg_open_dmabuf) +
+						     sizeof(struct dmabuf_slice_data))) <
+				0) {
+			return ret;
 		}
 
 		if ((ret = open_sfd(map, &sfd, remote_id)) < 0) {
@@ -1516,10 +1548,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				((type == WMSG_OPEN_DMAVID_DST_V2)
 								? sizeof(struct wmsg_open_dmavid)
 								: sizeof(struct wmsg_open_dmabuf));
-		if (msg->size < min_msg_size) {
-			wp_error("Message size to create dmabuf video is too small (%zu bytes)",
-					msg->size);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg, min_msg_size)) <
+				0) {
+			return ret;
 		}
 
 		if ((ret = open_sfd(map, &sfd, remote_id)) < 0) {
@@ -1586,12 +1617,10 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				((type == WMSG_OPEN_DMAVID_SRC_V2)
 								? sizeof(struct wmsg_open_dmavid)
 								: sizeof(struct wmsg_open_dmabuf));
-		if (msg->size < min_msg_size) {
-			wp_error("Message size to create dmabuf video is too small (%zu bytes)",
-					msg->size);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg, min_msg_size)) <
+				0) {
+			return ret;
 		}
-
 		if ((ret = open_sfd(map, &sfd, remote_id)) < 0) {
 			return ret;
 		}
@@ -1708,20 +1737,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 	}
 	/* SFD update messages */
 	case WMSG_EXTEND_FILE: {
-		if (!sfd) {
-			wp_error("shadow structure for RID=%d was not available",
-					remote_id);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg,
+				     sizeof(struct wmsg_open_file))) < 0) {
+			return ret;
 		}
-		if (sfd->type != FDC_FILE) {
-			wp_error("Trying to extend RID=%d, type=%s, which is not a file",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
-		}
-		if (msg->size < sizeof(struct wmsg_open_file)) {
-			wp_error("File extend message size to RID=%d is too small (%zu) to contain header",
-					remote_id, msg->size);
-			return ERR_FATAL;
+		if ((ret = check_sfd_type(sfd, remote_id, type, FDC_FILE)) <
+				0) {
+			return ret;
 		}
 
 		const struct wmsg_open_file *header =
@@ -1744,20 +1766,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_BUFFER_FILL: {
-		if (!sfd) {
-			wp_error("shadow structure for RID=%d was not available",
-					remote_id);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg,
+				     sizeof(struct wmsg_buffer_fill))) < 0) {
+			return ret;
 		}
-		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
-			wp_error("Trying to fill RID=%d, type=%s, which is not a buffer-type",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
-		}
-		if (msg->size < sizeof(struct wmsg_buffer_fill)) {
-			wp_error("Buffer fill message size to RID=%d is too small (%zu) to contain header",
-					remote_id, msg->size);
-			return ERR_FATAL;
+		if ((ret = check_sfd_type_2(sfd, remote_id, type, FDC_FILE,
+				     FDC_DMABUF)) < 0) {
+			return ret;
 		}
 		if (sfd->type == FDC_FILE && sfd->file_readonly) {
 			wp_debug("Ignoring a fill update to readonly file at RID=%d",
@@ -1821,20 +1836,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_BUFFER_DIFF: {
-		if (!sfd) {
-			wp_error("shadow structure for RID=%d was not available",
-					remote_id);
-			return ERR_FATAL;
+		if ((ret = check_message_min_size(type, msg,
+				     sizeof(struct wmsg_buffer_diff))) < 0) {
+			return ret;
 		}
-		if (sfd->type != FDC_FILE && sfd->type != FDC_DMABUF) {
-			wp_error("Trying to apply diff to RID=%d, type=%s, which is not a buffer-type",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
-		}
-		if (msg->size < sizeof(struct wmsg_buffer_diff)) {
-			wp_error("Buffer diff message size to RID=%d is too small (%zu) to contain header",
-					remote_id, msg->size);
-			return ERR_FATAL;
+		if ((ret = check_sfd_type_2(sfd, remote_id, type, FDC_FILE,
+				     FDC_DMABUF)) < 0) {
+			return ret;
 		}
 		if (sfd->type == FDC_FILE && sfd->file_readonly) {
 			wp_debug("Ignoring a diff update to readonly file at RID=%d",
@@ -1896,16 +1904,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_PIPE_TRANSFER: {
-		if (!sfd) {
-			wp_error("shadow structure for RID=%d was not available",
-					remote_id);
-			return ERR_FATAL;
-		}
-
-		if (sfd->type != FDC_PIPE) {
-			wp_error("Trying to write data to RID=%d, type=%s, which is not a pipe",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
+		if ((ret = check_sfd_type(sfd, remote_id, type, FDC_PIPE)) <
+				0) {
+			return ret;
 		}
 		if (!sfd->pipe.can_write || sfd->pipe.pending_w_shutdown) {
 			wp_debug("Discarding transfer to pipe RID=%d, because pipe cannot be written to",
@@ -1933,15 +1934,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_PIPE_SHUTDOWN_R: {
-		if (!sfd) {
-			wp_error("shadow structure for RID=%d was not available",
-					remote_id);
-			return ERR_FATAL;
-		}
-		if (sfd->type != FDC_PIPE) {
-			wp_error("Trying to read shutdown the pipe RID=%d, type=%s, which is not a pipe",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
+		if ((ret = check_sfd_type(sfd, remote_id, type, FDC_PIPE)) <
+				0) {
+			return ret;
 		}
 		sfd->pipe.remote_can_write = false;
 		if (!sfd->pipe.can_read) {
@@ -1953,16 +1948,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_PIPE_SHUTDOWN_W: {
-		if (!sfd) {
-			wp_error("shadow structure for RID=%d was not available",
-					remote_id);
-			return ERR_FATAL;
-		}
-
-		if (sfd->type != FDC_PIPE) {
-			wp_error("Trying to write shutdown the pipe RID=%d, type=%s, which is not a pipe",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
+		if ((ret = check_sfd_type(sfd, remote_id, type, FDC_PIPE)) <
+				0) {
+			return ret;
 		}
 		sfd->pipe.remote_can_read = false;
 		if (!sfd->pipe.can_write) {
@@ -1981,10 +1969,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		return 0;
 	}
 	case WMSG_SEND_DMAVID_PACKET: {
-		if (sfd->type != FDC_DMAVID_IW) {
-			wp_error("Trying to send video packet to RID=%d, type=%s, which is not a video output buffer",
-					remote_id, fdcat_to_str(sfd->type));
-			return ERR_FATAL;
+		if ((ret = check_sfd_type(sfd, remote_id, type,
+				     FDC_DMAVID_IW)) < 0) {
+			return ret;
 		}
 		if (!sfd->dmabuf_bo) {
 			wp_error("Applying update to nonexistent dma buffer object rid=%d",
