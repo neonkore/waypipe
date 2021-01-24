@@ -550,7 +550,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 
 	wp_debug("Creating new %s shadow RID=%d for local fd %d",
 			fdcat_to_str(sfd->type), sfd->remote_id, fd);
-	if (sfd->type == FDC_FILE) {
+	switch (sfd->type) {
+	case FDC_FILE: {
 		if (file_sz >= UINT32_MAX / 2) {
 			wp_error("Failed to create shadow structure, file size %zu too large to transfer",
 					file_sz);
@@ -581,7 +582,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		}
 		// This will be created at the first transfer
 		sfd->mem_mirror = NULL;
-	} else if (sfd->type == FDC_PIPE) {
+	} break;
+	case FDC_PIPE: {
 		// Make this end of the pipe nonblocking, so that we can
 		// include it in our main loop.
 		if (set_nonblocking(sfd->fd_local) == -1) {
@@ -608,7 +610,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 				sfd->pipe.can_write = true;
 			}
 		}
-	} else if (sfd->type == FDC_DMAVID_IR) {
+	} break;
+	case FDC_DMAVID_IR: {
 		sfd->video_fmt = render->av_video_fmt;
 
 		memcpy(&sfd->dmabuf_info, info,
@@ -624,7 +627,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 			wp_error("Video encoding setup failed for RID=%d",
 					sfd->remote_id);
 		}
-	} else if (sfd->type == FDC_DMAVID_IW) {
+	} break;
+	case FDC_DMAVID_IW: {
 		sfd->video_fmt = render->av_video_fmt;
 
 		memcpy(&sfd->dmabuf_info, info,
@@ -641,7 +645,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 			wp_error("Video decoding setup failed for RID=%d",
 					sfd->remote_id);
 		}
-	} else if (sfd->type == FDC_DMABUF) {
+	} break;
+	case FDC_DMABUF: {
 		sfd->buffer_size = 0;
 
 		init_render_data(render);
@@ -659,6 +664,10 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		}
 		// to be created on first transfer
 		sfd->mem_mirror = NULL;
+	} break;
+	case FDC_UNKNOWN:
+		wp_error("Trying to create shadow_fd for unknown filedesc type");
+		break;
 	}
 	return sfd;
 }
@@ -1078,7 +1087,8 @@ void finish_update(struct shadow_fd *sfd)
 void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		struct transfer_queue *transfers, bool use_old_dmavid_req)
 {
-	if (sfd->type == FDC_FILE) {
+	switch (sfd->type) {
+	case FDC_FILE: {
 		if (!sfd->is_dirty) {
 			// File is clean, we have no reason to believe
 			// that its contents could have changed
@@ -1124,7 +1134,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		}
 
 		queue_diff_transfers(threads, sfd, transfers);
-	} else if (sfd->type == FDC_DMABUF) {
+	} break;
+	case FDC_DMABUF: {
 		// If buffer is clean, do not check for changes
 		if (!sfd->is_dirty) {
 			return;
@@ -1172,8 +1183,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			queue_diff_transfers(threads, sfd, transfers);
 		}
 		/* Unmapping will be handled by finish_update() */
-
-	} else if (sfd->type == FDC_DMAVID_IR) {
+	} break;
+	case FDC_DMAVID_IR: {
 		if (!sfd->is_dirty) {
 			return;
 		}
@@ -1194,7 +1205,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			}
 		}
 		collect_video_from_mirror(sfd, transfers);
-	} else if (sfd->type == FDC_DMAVID_IW) {
+	} break;
+	case FDC_DMAVID_IW: {
 		sfd->is_dirty = false;
 		if (sfd->only_here) {
 			sfd->only_here = false;
@@ -1207,7 +1219,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 						sfd->video_fmt);
 			}
 		}
-	} else if (sfd->type == FDC_PIPE) {
+	} break;
+	case FDC_PIPE: {
 		// Pipes always update, no matter what the message
 		// stream indicates.
 		if (sfd->only_here) {
@@ -1275,6 +1288,9 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					header, false);
 			sfd->pipe.remote_can_read = false;
 		}
+	} break;
+	case FDC_UNKNOWN:
+		break;
 	}
 }
 
