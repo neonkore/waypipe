@@ -679,7 +679,7 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	 * intel-vaapi-driver/src/i965_drv_video.c . Packed formats like
 	 * YUV420P typically don't work. */
 	const enum AVPixelFormat videofmt = AV_PIX_FMT_NV12;
-	const char *hw_encoder = rd->av_video_fmt == VIDEO_H264
+	const char *hw_encoder = sfd->video_fmt == VIDEO_H264
 						 ? VIDEO_H264_HW_ENCODER
 						 : VIDEO_VP9_HW_ENCODER;
 	struct AVCodec *codec = avcodec_find_encoder_by_name(hw_encoder);
@@ -689,7 +689,7 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	}
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	configure_low_latency_enc_context(
-			ctx, false, rd->av_video_fmt, rd->av_bpf);
+			ctx, false, sfd->video_fmt, rd->av_bpf);
 	if (!pad_hardware_size((int)sfd->dmabuf_info.width,
 			    (int)sfd->dmabuf_info.height, &ctx->width,
 			    &ctx->height)) {
@@ -868,7 +868,7 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 				av_get_pix_fmt_name(videofmt));
 		return -1;
 	}
-	const char *sw_encoder = rd->av_video_fmt == VIDEO_H264
+	const char *sw_encoder = sfd->video_fmt == VIDEO_H264
 						 ? VIDEO_H264_SW_ENCODER
 						 : VIDEO_VP9_SW_ENCODER;
 	struct AVCodec *codec = avcodec_find_encoder_by_name(sw_encoder);
@@ -880,7 +880,7 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 	struct AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	ctx->pix_fmt = videofmt;
 	configure_low_latency_enc_context(
-			ctx, true, rd->av_video_fmt, rd->av_bpf);
+			ctx, true, sfd->video_fmt, rd->av_bpf);
 
 	/* Increase image sizes as needed to ensure codec can run */
 	ctx->width = (int)sfd->dmabuf_info.width;
@@ -979,9 +979,8 @@ int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 		return -1;
 	}
 
-	const char *decoder = rd->av_video_fmt == VIDEO_H264
-					      ? VIDEO_H264_DECODER
-					      : VIDEO_VP9_DECODER;
+	const char *decoder = sfd->video_fmt == VIDEO_H264 ? VIDEO_H264_DECODER
+							   : VIDEO_VP9_DECODER;
 	struct AVCodec *codec = avcodec_find_decoder_by_name(decoder);
 	if (!codec) {
 		wp_error("Failed to find decoder \"%s\"", decoder);

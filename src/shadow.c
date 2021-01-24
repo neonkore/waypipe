@@ -609,6 +609,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 			}
 		}
 	} else if (sfd->type == FDC_DMAVID_IR) {
+		sfd->video_fmt = render->av_video_fmt;
+
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
 		init_render_data(render);
@@ -623,6 +625,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 					sfd->remote_id);
 		}
 	} else if (sfd->type == FDC_DMAVID_IW) {
+		sfd->video_fmt = render->av_video_fmt;
+
 		memcpy(&sfd->dmabuf_info, info,
 				sizeof(struct dmabuf_slice_data));
 		// TODO: multifd-dmabuf video surface
@@ -1015,6 +1019,31 @@ static void add_dmabuf_create_request(struct transfer_queue *transfers,
 
 	transfer_add(transfers, padded_len, data, false);
 }
+
+static void add_dmabuf_create_request_v2(struct transfer_queue *transfers,
+		struct shadow_fd *sfd, enum wmsg_type variant,
+		enum video_coding_fmt fmt)
+{
+	size_t actual_len = sizeof(struct wmsg_open_dmavid) +
+			    sizeof(struct dmabuf_slice_data);
+	static_assert((sizeof(struct wmsg_open_dmavid) +
+				      sizeof(struct dmabuf_slice_data)) %
+							4 ==
+					0,
+			"alignment");
+
+	uint8_t *data = calloc(1, actual_len);
+	struct wmsg_open_dmavid *header = (struct wmsg_open_dmavid *)data;
+	header->file_size = (uint32_t)sfd->buffer_size;
+	header->remote_id = sfd->remote_id;
+	header->size_and_type = transfer_header(actual_len, variant);
+	header->vid_flags = (fmt == VIDEO_H264) ? DMAVID_H264 : DMAVID_VP9;
+
+	memcpy(data + sizeof(*header), &sfd->dmabuf_info,
+			sizeof(struct dmabuf_slice_data));
+
+	transfer_add(transfers, actual_len, data, false);
+}
 static void add_file_create_request(
 		struct transfer_queue *transfers, struct shadow_fd *sfd)
 {
@@ -1047,7 +1076,7 @@ void finish_update(struct shadow_fd *sfd)
 }
 
 void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
-		struct transfer_queue *transfers)
+		struct transfer_queue *transfers, bool use_old_dmavid_req)
 {
 	if (sfd->type == FDC_FILE) {
 		if (!sfd->is_dirty) {
@@ -1155,16 +1184,28 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		}
 		if (sfd->only_here) {
 			sfd->only_here = false;
-			add_dmabuf_create_request(
-					transfers, sfd, WMSG_OPEN_DMAVID_DST);
+			if (use_old_dmavid_req) {
+				add_dmabuf_create_request(transfers, sfd,
+						WMSG_OPEN_DMAVID_DST);
+			} else {
+				add_dmabuf_create_request_v2(transfers, sfd,
+						WMSG_OPEN_DMAVID_DST_V2,
+						sfd->video_fmt);
+			}
 		}
 		collect_video_from_mirror(sfd, transfers);
 	} else if (sfd->type == FDC_DMAVID_IW) {
 		sfd->is_dirty = false;
 		if (sfd->only_here) {
 			sfd->only_here = false;
-			add_dmabuf_create_request(
-					transfers, sfd, WMSG_OPEN_DMAVID_SRC);
+			if (use_old_dmavid_req) {
+				add_dmabuf_create_request(transfers, sfd,
+						WMSG_OPEN_DMAVID_SRC);
+			} else {
+				add_dmabuf_create_request_v2(transfers, sfd,
+						WMSG_OPEN_DMAVID_SRC_V2,
+						sfd->video_fmt);
+			}
 		}
 	} else if (sfd->type == FDC_PIPE) {
 		// Pipes always update, no matter what the message
@@ -1241,6 +1282,8 @@ static int create_from_update(struct fd_translation_map *map,
 		struct thread_pool *threads, struct render_data *render,
 		enum wmsg_type type, int remote_id, const struct bytebuf *msg)
 {
+	// TODO: more size checking; delay sfd calloc until after
+	// full message parsing
 	if (type == WMSG_OPEN_FILE) {
 		if (msg->size < sizeof(struct wmsg_open_file)) {
 			wp_error("Message size to create file is too small (%zu bytes)",
@@ -1252,6 +1295,14 @@ static int create_from_update(struct fd_translation_map *map,
 		if (msg->size < sizeof(struct wmsg_open_dmabuf) +
 						sizeof(struct dmabuf_slice_data)) {
 			wp_error("Message size to create dmabuf is too small (%zu bytes)",
+					msg->size);
+			return ERR_FATAL;
+		}
+	} else if (type == WMSG_OPEN_DMAVID_DST ||
+			type == WMSG_OPEN_DMAVID_SRC) {
+		if (msg->size < sizeof(struct wmsg_open_dmavid) +
+						sizeof(struct dmabuf_slice_data)) {
+			wp_error("Message size to create dmabuf video is too small (%zu bytes)",
 					msg->size);
 			return ERR_FATAL;
 		}
@@ -1362,21 +1413,45 @@ static int create_from_update(struct fd_translation_map *map,
 					strerror(errno));
 			return 0;
 		}
-	} else if (type == WMSG_OPEN_DMAVID_DST) {
+	} else if (type == WMSG_OPEN_DMAVID_DST ||
+			type == WMSG_OPEN_DMAVID_DST_V2) {
 		/* remote read data, this side writes data */
 		sfd->type = FDC_DMAVID_IW;
-		const struct wmsg_open_dmabuf header =
-				*(const struct wmsg_open_dmabuf *)msg->data;
+		if (type == WMSG_OPEN_DMAVID_DST) {
+			const struct wmsg_open_dmabuf header =
+					*(const struct wmsg_open_dmabuf *)
+							 msg->data;
+			sfd->buffer_size = header.file_size;
 
-		sfd->buffer_size = header.file_size;
+			memcpy(&sfd->dmabuf_info,
+					msg->data + sizeof(struct wmsg_open_dmabuf),
+					sizeof(struct dmabuf_slice_data));
+			sfd->video_fmt = VIDEO_H264;
+		} else {
+			const struct wmsg_open_dmavid header =
+					*(const struct wmsg_open_dmavid *)
+							 msg->data;
+			sfd->buffer_size = header.file_size;
+
+			memcpy(&sfd->dmabuf_info,
+					msg->data + sizeof(struct wmsg_open_dmavid),
+					sizeof(struct dmabuf_slice_data));
+			if ((header.vid_flags & 0xff) == DMAVID_H264) {
+				sfd->video_fmt = VIDEO_H264;
+			} else if ((header.vid_flags & 0xff) == DMAVID_VP9) {
+				sfd->video_fmt = VIDEO_VP9;
+			} else {
+				sfd->video_fmt = VIDEO_H264;
+				wp_error("Unidentified video format for RID=%d",
+						sfd->remote_id);
+				return 0;
+			}
+		}
 
 		if (init_render_data(render) == -1) {
 			sfd->fd_local = -1;
 			return 0;
 		}
-		memcpy(&sfd->dmabuf_info,
-				msg->data + sizeof(struct wmsg_open_dmabuf),
-				sizeof(struct dmabuf_slice_data));
 		sfd->dmabuf_bo = make_dmabuf(
 				render, sfd->buffer_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
@@ -1394,18 +1469,43 @@ static int create_from_update(struct fd_translation_map *map,
 	} else if (type == WMSG_OPEN_DMAVID_SRC) {
 		/* remote writes data, this side reads data */
 		sfd->type = FDC_DMAVID_IR;
-		const struct wmsg_open_dmabuf header =
-				*(const struct wmsg_open_dmabuf *)msg->data;
-		sfd->buffer_size = header.file_size;
+		// TODO: deduplicate this section with WMSG_OPEN_DMAVID_DST
+		if (type == WMSG_OPEN_DMAVID_SRC) {
+			const struct wmsg_open_dmabuf header =
+					*(const struct wmsg_open_dmabuf *)
+							 msg->data;
+			sfd->buffer_size = header.file_size;
+
+			memcpy(&sfd->dmabuf_info,
+					msg->data + sizeof(struct wmsg_open_dmabuf),
+					sizeof(struct dmabuf_slice_data));
+			sfd->video_fmt = VIDEO_H264;
+		} else {
+			const struct wmsg_open_dmavid header =
+					*(const struct wmsg_open_dmavid *)
+							 msg->data;
+			sfd->buffer_size = header.file_size;
+
+			memcpy(&sfd->dmabuf_info,
+					msg->data + sizeof(struct wmsg_open_dmavid),
+					sizeof(struct dmabuf_slice_data));
+			if ((header.vid_flags & 0xff) == DMAVID_H264) {
+				sfd->video_fmt = VIDEO_H264;
+			} else if ((header.vid_flags & 0xff) == DMAVID_VP9) {
+				sfd->video_fmt = VIDEO_VP9;
+			} else {
+				sfd->video_fmt = VIDEO_H264;
+				wp_error("Unidentified video format for RID=%d",
+						sfd->remote_id);
+				return 0;
+			}
+		}
 
 		if (init_render_data(render) == 1) {
 			sfd->fd_local = -1;
 			return 0;
 		}
 
-		memcpy(&sfd->dmabuf_info,
-				msg->data + sizeof(struct wmsg_open_dmabuf),
-				sizeof(struct dmabuf_slice_data));
 		sfd->dmabuf_bo = make_dmabuf(
 				render, sfd->buffer_size, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
@@ -1533,7 +1633,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			type == WMSG_OPEN_IW_PIPE ||
 			type == WMSG_OPEN_RW_PIPE ||
 			type == WMSG_OPEN_DMAVID_SRC ||
-			type == WMSG_OPEN_DMAVID_DST) {
+			type == WMSG_OPEN_DMAVID_DST ||
+			type == WMSG_OPEN_DMAVID_SRC_V2 ||
+			type == WMSG_OPEN_DMAVID_DST_V2) {
 		struct shadow_fd *sfd = get_shadow_for_rid(map, remote_id);
 		if (sfd) {
 			wp_error("shadow structure for RID=%d was already created",

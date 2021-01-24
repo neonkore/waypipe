@@ -40,6 +40,7 @@ struct main_config {
 	int video_bpf;
 	enum video_coding_fmt video_fmt;
 	bool prefer_hwvideo;
+	bool old_video_mode;
 };
 struct globals {
 	const struct main_config *config;

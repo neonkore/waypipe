@@ -46,7 +46,7 @@ static int shadow_sync(struct fd_translation_map *src_map,
 	for (struct shadow_fd *sfd = src_map->list, *nxt = NULL; sfd;
 			sfd = nxt) {
 		nxt = sfd->next;
-		collect_update(NULL, sfd, &queue);
+		collect_update(NULL, sfd, &queue, false);
 		/* collecting updates can reset `remote_can_X` state, so
 		 * garbage collect the sfd */
 		destroy_shadow_if_unreferenced(src_map, sfd);

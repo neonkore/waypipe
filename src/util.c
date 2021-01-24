@@ -404,6 +404,10 @@ static const char *wmsg_types[] = {
 		"WMSG_OPEN_DMAVID_DST",
 		"WMSG_SEND_DMAVID_PACKET",
 		"WMSG_ACK_NBLOCKS",
+		"WMSG_RESTART",
+		"WMSG_CLOSE",
+		"WMSG_OPEN_DMAVID_SRC_V2",
+		"WMSG_OPEN_DMAVID_DST_V2",
 };
 const char *wmsg_type_to_str(enum wmsg_type tp)
 {

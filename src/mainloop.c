@@ -942,7 +942,8 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 
 	for (struct shadow_fd *cur = g->map.list, *nxt = NULL; cur; cur = nxt) {
 		nxt = cur->next;
-		collect_update(&g->threads, cur, &wmsg->transfers);
+		collect_update(&g->threads, cur, &wmsg->transfers,
+				g->config->old_video_mode);
 		/* collecting updates can reset `pipe.remote_can_X` state, so
 		 * garbage collect the sfd immediately after */
 		destroy_shadow_if_unreferenced(&g->map, cur);

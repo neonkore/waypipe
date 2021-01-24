@@ -90,8 +90,8 @@ static const char usage_string[] =
 		"      --login-shell    server: if server CMD is empty, run a login shell\n"
 		"      --threads T      set thread pool size, default=hardware threads/2\n"
 		"      --unlink-socket  server: unlink the socket that waypipe connects to\n"
-		"      --video          compress certain linear dmabufs only with a video codec\n"
-		"      --hwvideo        use --video, and try hardware enc/decoding if available\n"
+		"      --video[=V]      compress certain linear dmabufs only with a video codec\n"
+		"                         V is list of options: sw,hw,bpf=1.2e5,h264,vp9\n"
 		"\n";
 
 static int usage(int retcode)
@@ -417,7 +417,6 @@ int main(int argc, char **argv)
 	char *wayland_display = NULL;
 	char *waypipe_binary = "waypipe";
 	char *control_path = NULL;
-	bool video_nondefault = false;
 	const char *socketpath = NULL;
 	uint32_t bench_test_size = (1u << 22) + 13;
 	;
@@ -564,7 +563,7 @@ int main(int argc, char **argv)
 				if (parse_video_string(optarg, &config) == -1) {
 					fail = true;
 				}
-				video_nondefault = true;
+				config.old_video_mode = false;
 			}
 			// video_bpf
 			break;
@@ -778,7 +777,7 @@ int main(int argc, char **argv)
 						"--login-shell";
 			}
 			if (config.video_if_possible) {
-				if (video_nondefault) {
+				if (!config.old_video_mode) {
 					sprintf(video_str,
 							"--video=%s,%s,bpf=%d",
 							config.video_fmt == VIDEO_H264

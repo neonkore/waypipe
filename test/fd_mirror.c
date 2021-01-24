@@ -225,7 +225,7 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	pthread_mutex_init(&transfer_data.async_recv_queue.lock, NULL);
 
 	struct shadow_fd *src_shadow = get_shadow_for_rid(src_map, rid);
-	collect_update(src_pool, src_shadow, &transfer_data);
+	collect_update(src_pool, src_shadow, &transfer_data, false);
 	start_parallel_work(src_pool, &transfer_data.async_recv_queue);
 	wait_for_thread_pool(src_pool);
 	finish_update(src_shadow);

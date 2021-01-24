@@ -222,7 +222,7 @@ static struct bench_result run_sub_bench(bool first,
 
 		struct timespec t0, t1;
 		clock_gettime(CLOCK_REALTIME, &t0);
-		collect_update(&pool, sfd, &transfer_data);
+		collect_update(&pool, sfd, &transfer_data, false);
 		start_parallel_work(&pool, &transfer_data.async_recv_queue);
 
 		/* A restricted main loop, in which transfer blocks are

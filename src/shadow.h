@@ -174,6 +174,11 @@ struct pipe_state {
 	bool pending_w_shutdown;
 };
 
+enum video_coding_fmt {
+	VIDEO_H264,
+	VIDEO_VP9,
+};
+
 /**
  * @brief The shadow_fd struct
  *
@@ -229,6 +234,7 @@ struct shadow_fd {
 	struct AVPacket *video_packet;
 	struct SwsContext *video_color_context;
 	int64_t video_frameno;
+	enum video_coding_fmt video_fmt;
 
 	VASurfaceID video_va_surface;
 	VAContextID video_va_context;
@@ -264,7 +270,7 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 /** Given a struct shadow_fd, produce some number of corresponding file update
  * transfer messages. All pointers will be to existing memory. */
 void collect_update(struct thread_pool *threads, struct shadow_fd *cur,
-		struct transfer_queue *transfers);
+		struct transfer_queue *transfers, bool use_old_dmavid_req);
 /** After all thread pool tasks have completed, reduce refcounts and clean up
  * related data. The caller should then invoke destroy_shadow_if_unreferenced.
  */
@@ -340,10 +346,6 @@ bool request_work_task(struct thread_pool *pool, struct task_data *task,
 void run_task(struct task_data *task, struct thread_data *local);
 
 // video.c
-enum video_coding_fmt {
-	VIDEO_H264,
-	VIDEO_VP9,
-};
 void cleanup_hwcontext(struct render_data *rd);
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
 bool video_supports_shm_format(uint32_t format);

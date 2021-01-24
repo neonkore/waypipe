@@ -25,6 +25,7 @@
 #ifndef WAYPIPE_DMABUF_H
 #define WAYPIPE_DMABUF_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -63,7 +64,9 @@ struct dmabuf_slice_data {
 	uint64_t modifier;
 	// to which planes is the matching dmabuf assigned?
 	uint8_t using_planes[4];
+	char pad[4];
 };
+static_assert(sizeof(struct dmabuf_slice_data) == 64, "size check");
 
 int init_render_data(struct render_data *);
 void cleanup_render_data(struct render_data *);

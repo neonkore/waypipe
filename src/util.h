@@ -25,6 +25,7 @@
 #ifndef WAYPIPE_UTIL_H
 #define WAYPIPE_UTIL_H
 
+#include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -34,6 +35,7 @@
 #include <sys/uio.h>
 
 #include "config-waypipe.h"
+#include "dmabuf.h"
 #include "kernel.h"
 
 #ifdef HAS_USDT
@@ -238,7 +240,8 @@ enum wmsg_type {
 	/** Shutdown the write end of the pipe that waypipe uses. */
 	WMSG_PIPE_SHUTDOWN_W, // wmsg_basic
 	/** Create a DMABUF (with following data parameters) that will be used
-	 * to produce/consume video frames. Format: \ref wmsg_open_dmabuf */
+	 * to produce/consume video frames. Format: \ref wmsg_open_dmabuf.
+	 * Deprecated and may be disabled/removed in the future. */
 	WMSG_OPEN_DMAVID_SRC,
 	WMSG_OPEN_DMAVID_DST,
 	/** Send a packet of video data to the destination */
@@ -252,6 +255,10 @@ enum wmsg_type {
 	WMSG_RESTART, // wmsg_restart
 	/** When the remote program is closing. Format: only the header */
 	WMSG_CLOSE,
+	/** Create a DMABUF (with following data parameters) that will be used
+	 * to produce/consume video frames. Format: \ref wmsg_open_dmavid */
+	WMSG_OPEN_DMAVID_SRC_V2,
+	WMSG_OPEN_DMAVID_DST_V2,
 };
 const char *wmsg_type_to_str(enum wmsg_type tp);
 struct wmsg_open_file {
@@ -259,12 +266,27 @@ struct wmsg_open_file {
 	int32_t remote_id;
 	uint32_t file_size;
 };
+static_assert(sizeof(struct wmsg_open_file) == 12, "size check");
+
 struct wmsg_open_dmabuf {
 	uint32_t size_and_type;
 	int32_t remote_id;
 	uint32_t file_size;
 	/* following this, provide struct dmabuf_slice_data */
 };
+static_assert(sizeof(struct wmsg_open_dmabuf) == 12, "size check");
+
+#define DMAVID_H264 0x00
+#define DMAVID_VP9 0x01
+struct wmsg_open_dmavid {
+	uint32_t size_and_type;
+	int32_t remote_id;
+	uint32_t file_size;
+	uint32_t vid_flags; /* lowest 8 bits determine video type */
+	/* immediately followed by struct dmabuf_slice_data */
+};
+static_assert(sizeof(struct wmsg_open_dmavid) == 16, "size check");
+
 struct wmsg_buffer_fill {
 	uint32_t size_and_type;
 	int32_t remote_id;
@@ -272,6 +294,8 @@ struct wmsg_buffer_fill {
 	uint32_t end;
 	/* following this, the possibly-compressed data */
 };
+static_assert(sizeof(struct wmsg_buffer_fill) == 16, "size check");
+
 struct wmsg_buffer_diff {
 	uint32_t size_and_type;
 	int32_t remote_id;
@@ -279,18 +303,24 @@ struct wmsg_buffer_diff {
 	uint32_t ntrailing; /**< number of 'trailing' bytes, copied to tail */
 	/* following this, the possibly-compressed diff  data */
 };
+static_assert(sizeof(struct wmsg_buffer_diff) == 16, "size check");
+
 struct wmsg_basic {
 	uint32_t size_and_type;
 	int32_t remote_id;
 };
+static_assert(sizeof(struct wmsg_basic) == 8, "size check");
 struct wmsg_ack {
 	uint32_t size_and_type;
 	uint32_t messages_received;
 };
+static_assert(sizeof(struct wmsg_ack) == 8, "size check");
 struct wmsg_restart {
 	uint32_t size_and_type;
 	uint32_t last_ack_received;
 };
+static_assert(sizeof(struct wmsg_restart) == 8, "size check");
+
 /** size: the number of bytes in the message, /excluding/ trailing padding. */
 static inline uint32_t transfer_header(size_t size, enum wmsg_type type)
 {
