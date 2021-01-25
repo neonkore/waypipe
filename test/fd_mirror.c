@@ -303,13 +303,24 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	int rid = src_shadow->remote_id;
 
 	bool pass = true;
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 6; i++) {
 		bool fwd = i == 0 || i % 2;
 
 		int target_fd = fwd ? src_shadow->fd_local
 				    : dst_shadow->fd_local;
 		struct gbm_bo *target_bo = fwd ? src_shadow->dmabuf_bo
 					       : dst_shadow->dmabuf_bo;
+		if (i == 5 && src_shadow->type == FDC_FILE) {
+			sz = (sz * 7) / 5;
+			if (ftruncate(target_fd, (off_t)sz) == -1) {
+				wp_error("failed to resize file");
+				break;
+			}
+			extend_shm_shadow(fwd ? &src_map : &dst_map,
+					fwd ? &src_pool : &dst_pool,
+					fwd ? src_shadow : dst_shadow, sz);
+		}
+
 		int ndiff = i > 0 ? (*update)(target_fd, target_bo, sz, i)
 				  : (int)sz;
 		if (ndiff == -1) {
