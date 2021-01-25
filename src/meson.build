@@ -25,19 +25,19 @@ endif
 # Conditionally compile SIMD-optimized code.
 # (The meson simd module is a bit too limited for this)
 kernel_libs = []
-if cc.has_argument('-mavx512f') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi')
+if cc.has_argument('-mavx512f') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi') and get_option('with_avx512f')
 	kernel_libs += static_library('kernel_avx512f', 'kernel_avx512f.c', c_args:['-mavx512f', '-mlzcnt', '-mbmi'])
 	config_data.set('HAVE_AVX512F', 1, description: 'Compiler supports AVX-512F')
 endif
-if cc.has_argument('-mavx2') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi')
+if cc.has_argument('-mavx2') and cc.has_argument('-mlzcnt') and cc.has_argument('-mbmi') and get_option('with_avx2')
 	kernel_libs += static_library('kernel_avx2', 'kernel_avx2.c', c_args:['-mavx2', '-mlzcnt', '-mbmi'])
 	config_data.set('HAVE_AVX2', 1, description: 'Compiler supports AVX2')
 endif
-if cc.has_argument('-msse3')
+if cc.has_argument('-msse3') and get_option('with_sse3')
 	kernel_libs += static_library('kernel_sse3', 'kernel_sse3.c', c_args:['-msse3'])
 	config_data.set('HAVE_SSE3', 1, description: 'Compiler supports SSE 3')
 endif
-if host_machine.cpu_family() == 'aarch64' or cc.has_argument('-mfpu=neon')
+if ( host_machine.cpu_family() == 'aarch64' or cc.has_argument('-mfpu=neon') ) and get_option('with_neon_opts')
 	neon_args = host_machine.cpu_family() == 'aarch64' ? [] : ['-mfpu=neon']
 
 	# Clang additionally enforces that NEON code only be compiled

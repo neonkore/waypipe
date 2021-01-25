@@ -5,3 +5,7 @@ option('with_lz4', type : 'feature', value : 'auto', description : 'Support LZ4 
 option('with_zstd', type : 'feature', value : 'auto', description : 'Support ZStandard as a compression mechanism')
 option('with_vaapi', type : 'feature', value : 'auto', description : 'Link with libva and use VAAPI to perform hardware video output color space conversions on GPU')
 option('with_systemtap', type: 'boolean', value: true, description: 'Enable tracing using sdt and provide static tracepoints for profiling')
+option('with_avx512f', type: 'boolean', value: true, description: 'Enable avx512f SIMD instructions')
+option('with_avx2', type: 'boolean', value: true, description: 'Enable avx2 SIMD instructions')
+option('with_sse3', type: 'boolean', value: true, description: 'Enable sse3 SIMD instructions')
+option('with_neon_opts', type: 'boolean', value: true, description: 'Enable optimizations for ARM64 neon cpus')
