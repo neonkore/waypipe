@@ -74,10 +74,7 @@ static char *uint_to_str(uint32_t i, char buf[static 11])
 	}
 	return pos;
 }
-/* Multiple string concatenation; returns number of bytes written and
- * ensures null termination. Is async-signal-safe, unlike sprintf.
- * Last argment must be NULL. If there is not enough space, returns 0. */
-static size_t multi_strcat(char *dest, size_t dest_space, ...)
+size_t multi_strcat(char *dest, size_t dest_space, ...)
 {
 	size_t net_len = 0;
 	va_list args;
@@ -141,20 +138,12 @@ int set_nonblocking(int fd)
 	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-int setup_nb_socket(const char *socket_path, int nmaxclients)
+int setup_nb_socket(const struct sockaddr_un *socket_addr, int nmaxclients)
 {
-	struct sockaddr_un saddr;
-	int sock;
-
-	if (strlen(socket_path) >= sizeof(saddr.sun_path)) {
-		wp_error("Socket path is too long and would be truncated: %s",
-				socket_path);
-		return -1;
-	}
-
+	struct sockaddr_un saddr = *socket_addr;
 	saddr.sun_family = AF_UNIX;
-	strncpy(saddr.sun_path, socket_path, sizeof(saddr.sun_path) - 1);
-	sock = socket(AF_UNIX, SOCK_STREAM, 0);
+
+	int sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sock == -1) {
 		wp_error("Error creating socket: %s", strerror(errno));
 		return -1;
@@ -166,33 +155,26 @@ int setup_nb_socket(const char *socket_path, int nmaxclients)
 		return -1;
 	}
 	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_error("Error binding socket at %s: %s", socket_path,
+		wp_error("Error binding socket at %s: %s", saddr.sun_path,
 				strerror(errno));
 		checked_close(sock);
 		return -1;
 	}
 	if (listen(sock, nmaxclients) == -1) {
-		wp_error("Error listening to socket at %s: %s", socket_path,
+		wp_error("Error listening to socket at %s: %s", saddr.sun_path,
 				strerror(errno));
 		checked_close(sock);
-		unlink(socket_path);
+		unlink(saddr.sun_path);
 		return -1;
 	}
 	return sock;
 }
 
-int connect_to_socket(const char *socket_path)
+int connect_to_socket(const struct sockaddr_un *socket_addr)
 {
-	struct sockaddr_un saddr;
+	struct sockaddr_un saddr = *socket_addr;
 	int chanfd;
 	saddr.sun_family = AF_UNIX;
-	int len = (int)strlen(socket_path);
-	if (len >= (int)sizeof(saddr.sun_path)) {
-		wp_error("Socket path (%s) is too long, at %d bytes",
-				socket_path, len);
-		return -1;
-	}
-	memcpy(saddr.sun_path, socket_path, (size_t)(len + 1));
 
 	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (chanfd == -1) {
@@ -201,7 +183,7 @@ int connect_to_socket(const char *socket_path)
 	}
 
 	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_error("Error connecting to socket (%s): %s", socket_path,
+		wp_error("Error connecting to socket (%s): %s", saddr.sun_path,
 				strerror(errno));
 		checked_close(chanfd);
 		return -1;

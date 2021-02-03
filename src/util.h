@@ -80,15 +80,25 @@ static inline int split_interval(int lo, int hi, int nparts, int index)
  *  separators, and locale dependent stuff */
 int parse_uint32(const char *str, uint32_t *val);
 
+/* Multiple string concatenation; returns number of bytes written and
+ * ensures null termination. Is async-signal-safe, unlike sprintf.
+ * Last argment must be NULL. If there is not enough space, returns 0. */
+size_t multi_strcat(char *dest, size_t dest_space, ...);
+
 /** Make the file underlying this file descriptor nonblocking.
  * Silently return -1 on failure. */
 int set_nonblocking(int fd);
+
+/* socket path lengths being overly constrained, it is perhaps best to enforce
+ * this constraint as early as possible by using this type */
+struct sockaddr_un;
+
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
  * nmaxclients. Prints its own error messages; returns -1 on failure. */
-int setup_nb_socket(const char *socket_path, int nmaxclients);
+int setup_nb_socket(const struct sockaddr_un *socket_addr, int nmaxclients);
 /** Connect to the socket at the given path, returning created fd if
  * successful, else -1.*/
-int connect_to_socket(const char *socket_path);
+int connect_to_socket(const struct sockaddr_un *socket_addr);
 /** Call close(fd), logging error when fd is invalid */
 #define checked_close(fd)                                                      \
 	if (close(fd) == -1) {                                                 \

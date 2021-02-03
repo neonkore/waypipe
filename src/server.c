@@ -69,6 +69,29 @@ static void fill_random_key(struct connection_token *token)
 	}
 }
 
+static int read_sockaddr(int control_pipe, struct sockaddr_un *sockaddr)
+{
+	/* It is unlikely that a signal would interrupt a read of a ~100 byte
+	 * sockaddr; and if used properly, the control pipe should never be
+	 * sent much more data than that */
+	char path[4096];
+	ssize_t amt = read(control_pipe, path, sizeof(path) - 1);
+	if (amt == -1) {
+		wp_error("Failed to read from control pipe: %s",
+				strerror(errno));
+		return -1;
+	}
+	path[amt] = '\0';
+	if (strlen(path) >= sizeof(sockaddr->sun_path)) {
+		wp_error("Socket path read from control pipe is too long (%zu bytes, expected <= %zu): %s",
+				strlen(path), sizeof(sockaddr->sun_path) - 1,
+				path);
+		return -1;
+	}
+	strcpy(sockaddr->sun_path, path);
+	return 0;
+}
+
 static int run_single_server_reconnector(int control_pipe, int linkfd,
 		const struct connection_token *flagged_token)
 {
@@ -98,42 +121,35 @@ static int run_single_server_reconnector(int control_pipe, int linkfd,
 			break;
 		}
 		if (pf[0].revents & POLLIN) {
-			/* It is extremely unlikely that a signal would
-			 * interrupt a read of properly sized socketpath */
-			char path[4096];
-			ssize_t amt = read(
-					control_pipe, path, sizeof(path) - 1);
-			if (amt == -1) {
-				wp_error("Failed to read from control pipe: %s",
-						strerror(errno));
+			struct sockaddr_un new_sockaddr;
+			if (read_sockaddr(control_pipe, &new_sockaddr) == -1) {
 				retcode = EXIT_FAILURE;
 				break;
 			}
-			path[amt] = '\0';
-			if (strlen(path) < 108) {
-				int new_conn = connect_to_socket(path);
-				if (new_conn == -1) {
-					wp_error("Socket path \"%s\" was invalid: %s",
-							path, strerror(errno));
-					/* Socket path was invalid */
-					continue;
-				}
 
-				if (write(new_conn, flagged_token,
-						    sizeof(*flagged_token)) !=
-						sizeof(*flagged_token)) {
-					wp_error("Failed to write to new connection: %s",
-							strerror(errno));
-					checked_close(new_conn);
-					continue;
-				}
-
-				if (send_one_fd(linkfd, new_conn) == -1) {
-					wp_error("Failed to send new connection to subprocess: %s",
-							strerror(errno));
-				}
-				checked_close(new_conn);
+			int new_conn = connect_to_socket(&new_sockaddr);
+			if (new_conn == -1) {
+				wp_error("Socket path \"%s\" was invalid: %s",
+						new_sockaddr.sun_path,
+						strerror(errno));
+				/* Socket path was invalid */
+				continue;
 			}
+
+			if (write(new_conn, flagged_token,
+					    sizeof(*flagged_token)) !=
+					sizeof(*flagged_token)) {
+				wp_error("Failed to write to new connection: %s",
+						strerror(errno));
+				checked_close(new_conn);
+				continue;
+			}
+
+			if (send_one_fd(linkfd, new_conn) == -1) {
+				wp_error("Failed to send new connection to subprocess: %s",
+						strerror(errno));
+			}
+			checked_close(new_conn);
 		}
 	}
 	checked_close(control_pipe);
@@ -141,17 +157,17 @@ static int run_single_server_reconnector(int control_pipe, int linkfd,
 	return retcode;
 }
 
-static int run_single_server(int control_pipe, const char *socket_path,
-		bool unlink_at_end, int server_link,
-		const struct main_config *config)
+static int run_single_server(int control_pipe,
+		const struct sockaddr_un *socket_addr, bool unlink_at_end,
+		int server_link, const struct main_config *config)
 {
-	int chanfd = connect_to_socket(socket_path);
+	int chanfd = connect_to_socket(socket_addr);
 	if (chanfd == -1) {
 		goto fail_srv;
 	}
 	/* Only unlink the socket if it actually was a socket */
 	if (unlink_at_end) {
-		unlink(socket_path);
+		unlink(socket_addr->sun_path);
 	}
 	bool reconnectable = control_pipe != -1;
 
@@ -205,9 +221,10 @@ fail_srv:
 	return EXIT_FAILURE;
 }
 
-static int handle_new_server_connection(const char *current_sockpath,
-		int control_pipe, int wdisplay_socket, int appfd,
-		struct conn_map *connmap, const struct main_config *config,
+static int handle_new_server_connection(
+		const struct sockaddr_un *current_sockaddr, int control_pipe,
+		int wdisplay_socket, int appfd, struct conn_map *connmap,
+		const struct main_config *config,
 		const struct connection_token *new_token)
 {
 	bool reconnectable = control_pipe != -1;
@@ -219,7 +236,7 @@ static int handle_new_server_connection(const char *current_sockpath,
 		goto fail_appfd;
 	}
 
-	int chanfd = connect_to_socket(current_sockpath);
+	int chanfd = connect_to_socket(current_sockaddr);
 	if (chanfd == -1) {
 		goto fail_appfd;
 	}
@@ -287,15 +304,17 @@ fail_appfd:
 	return -1;
 }
 
-static int update_connections(char current_sockpath[static 110],
-		const char *path, struct conn_map *connmap, bool unlink_at_end)
+static int update_connections(struct sockaddr_un *current_sockaddr,
+		const struct sockaddr_un *new_sockaddr,
+		struct conn_map *connmap, bool unlink_at_end)
 {
 	/* TODO: what happens if there's a partial failure? */
 	for (int i = 0; i < connmap->count; i++) {
-		int chanfd = connect_to_socket(path);
+		int chanfd = connect_to_socket(new_sockaddr);
 		if (chanfd == -1) {
 			wp_error("Failed to connect to socket at \"%s\": %s",
-					path, strerror(errno));
+					new_sockaddr->sun_path,
+					strerror(errno));
 			return -1;
 		}
 		struct connection_token flagged_token = connmap->data[i].token;
@@ -316,22 +335,21 @@ static int update_connections(char current_sockpath[static 110],
 		checked_close(chanfd);
 	}
 	/* If switching connections succeeded, adopt the new socket */
-	if (unlink_at_end && strcmp(current_sockpath, path)) {
-		unlink(current_sockpath);
+	if (unlink_at_end && strcmp(current_sockaddr->sun_path,
+					     new_sockaddr->sun_path)) {
+		unlink(current_sockaddr->sun_path);
 	}
-	/* Length already checked */
-	strcpy(current_sockpath, path);
+	*current_sockaddr = *new_sockaddr;
 	return 0;
 }
 
-static int run_multi_server(int control_pipe, const char *socket_path,
-		bool unlink_at_end, int wdisplay_socket,
-		const struct main_config *config, pid_t *child_pid)
+static int run_multi_server(int control_pipe,
+		const struct sockaddr_un *socket_addr, bool unlink_at_end,
+		int wdisplay_socket, const struct main_config *config,
+		pid_t *child_pid)
 {
 	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
-	char current_sockpath[110];
-	current_sockpath[sizeof(current_sockpath) - 1] = 0;
-	strncpy(current_sockpath, socket_path, sizeof(current_sockpath) - 1);
+	struct sockaddr_un current_sockaddr = *socket_addr;
 
 	struct pollfd pfs[2];
 	pfs[0].fd = wdisplay_socket;
@@ -368,19 +386,13 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 			continue;
 		}
 		if (pfs[1].revents & POLLIN) {
-			char path[4096];
-			ssize_t amt = read(
-					control_pipe, path, sizeof(path) - 1);
-			if (amt == -1) {
-				wp_error("Failed to read from control pipe: %s",
-						strerror(errno));
+			struct sockaddr_un new_sockaddr;
+			if (read_sockaddr(control_pipe, &new_sockaddr) == -1) {
+
 			} else {
-				path[amt] = '\0';
-				if (strlen(path) <= 108) {
-					update_connections(current_sockpath,
-							path, &connmap,
-							unlink_at_end);
-				}
+				update_connections(&current_sockaddr,
+						&new_sockaddr, &connmap,
+						unlink_at_end);
 			}
 		}
 
@@ -399,7 +411,7 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 			} else {
 				fill_random_key(&token);
 				if (handle_new_server_connection(
-						    current_sockpath,
+						    &current_sockaddr,
 						    control_pipe,
 						    wdisplay_socket, appfd,
 						    &connmap, config,
@@ -411,7 +423,7 @@ static int run_multi_server(int control_pipe, const char *socket_path,
 		}
 	}
 	if (unlink_at_end) {
-		unlink(current_sockpath);
+		unlink(current_sockaddr.sun_path);
 	}
 	checked_close(wdisplay_socket);
 	if (control_pipe != -1) {
@@ -461,24 +473,29 @@ static void setup_login_shell_command(char shell[static 256],
 	}
 }
 
-int run_server(const char *socket_path, const char *wayland_display,
-		const char *control_path, const struct main_config *config,
-		bool oneshot, bool unlink_at_end, char *const app_argv[],
+int run_server(const struct sockaddr_un *socket_addr,
+		const char *wayland_display, const char *control_path,
+		const struct main_config *config, bool oneshot,
+		bool unlink_at_end, char *const app_argv[],
 		bool login_shell_if_backup)
 {
-	wp_debug("I'm a server on %s, running: %s", socket_path, app_argv[0]);
+	wp_debug("I'm a server on %s, running: %s", socket_addr->sun_path,
+			app_argv[0]);
 
-	if (strlen(socket_path) >=
-			sizeof(((struct sockaddr_un *)NULL)->sun_path)) {
-		wp_error("Socket path is too long and would be truncated: %s",
-				socket_path);
-		return EXIT_FAILURE;
-	}
-	char display_path[256];
-	memset(display_path, 0, sizeof(display_path));
+	struct sockaddr_un display_path;
+	memset(&display_path, 0, sizeof(display_path));
 	if (!oneshot) {
 		if (wayland_display[0] == '/') {
-			snprintf(display_path, 256, "%s", wayland_display);
+			if (strlen(wayland_display) >=
+					sizeof(display_path.sun_path)) {
+				wp_error("Absolute path '%s' specified for WAYLAND_DISPLAY is too long (%zu bytes > %zu)",
+						wayland_display,
+						strlen(wayland_display),
+						sizeof(display_path.sun_path) -
+								1);
+				return EXIT_FAILURE;
+			}
+			strcpy(display_path.sun_path, wayland_display);
 		} else {
 			const char *xdg_dir = getenv("XDG_RUNTIME_DIR");
 			if (!xdg_dir) {
@@ -486,8 +503,19 @@ int run_server(const char *socket_path, const char *wayland_display,
 						wayland_display);
 				return EXIT_FAILURE;
 			}
-			snprintf(display_path, 256, "%s/%s", xdg_dir,
-					wayland_display);
+			if (strlen(xdg_dir) + 1 + strlen(wayland_display) >=
+					sizeof(display_path.sun_path)) {
+				wp_error("Path '%s/%s' specified for WAYLAND_DISPLAY is too long (%zu + 1 + %zu bytes > %zu)",
+						xdg_dir, wayland_display,
+						strlen(xdg_dir),
+						strlen(wayland_display),
+						sizeof(display_path.sun_path) -
+								1);
+				return EXIT_FAILURE;
+			}
+			multi_strcat(display_path.sun_path,
+					sizeof(display_path.sun_path), xdg_dir,
+					"/", wayland_display, NULL);
 		}
 	}
 
@@ -504,7 +532,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 	} else {
 		// Bind a socket for WAYLAND_DISPLAY, and listen
 		int nmaxclients = 128;
-		wdisplay_socket = setup_nb_socket(display_path, nmaxclients);
+		wdisplay_socket = setup_nb_socket(&display_path, nmaxclients);
 		if (wdisplay_socket == -1) {
 			// Error messages already made
 			return EXIT_FAILURE;
@@ -516,7 +544,7 @@ int run_server(const char *socket_path, const char *wayland_display,
 	if (pid == -1) {
 		wp_error("Fork failed");
 		if (!oneshot) {
-			unlink(display_path);
+			unlink(display_path.sun_path);
 		}
 		return EXIT_FAILURE;
 	} else if (pid == 0) {
@@ -579,17 +607,17 @@ int run_server(const char *socket_path, const char *wayland_display,
 	/* These functions will close server_link, wdisplay_socket, and
 	 * control_pipe */
 	if (oneshot) {
-		retcode = run_single_server(control_pipe, socket_path,
+		retcode = run_single_server(control_pipe, socket_addr,
 				unlink_at_end, server_link, config);
 	} else {
-		retcode = run_multi_server(control_pipe, socket_path,
+		retcode = run_multi_server(control_pipe, socket_addr,
 				unlink_at_end, wdisplay_socket, config, &pid);
 	}
 	if (control_pipe != -1) {
 		unlink(control_path);
 	}
 	if (!oneshot) {
-		unlink(display_path);
+		unlink(display_path.sun_path);
 	}
 
 	// Wait for child processes to exit

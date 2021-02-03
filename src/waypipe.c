@@ -419,7 +419,6 @@ int main(int argc, char **argv)
 	char *control_path = NULL;
 	const char *socketpath = NULL;
 	uint32_t bench_test_size = (1u << 22) + 13;
-	;
 
 	struct main_config config = {.n_worker_threads = 0,
 			.drm_node = NULL,
@@ -650,7 +649,7 @@ int main(int argc, char **argv)
 
 	int ret;
 	if (mode == MODE_RECON) {
-		return run_recon(argv[0], argv[1]);
+		ret = run_recon(argv[0], argv[1]);
 	} else if (mode == MODE_BENCH) {
 		char *endptr = NULL;
 		float bw = strtof(argv[0], &endptr);
@@ -659,17 +658,26 @@ int main(int argc, char **argv)
 					argv[0]);
 			return EXIT_FAILURE;
 		}
-		return run_bench(bw, bench_test_size, config.n_worker_threads);
+		ret = run_bench(bw, bench_test_size, config.n_worker_threads);
 	} else if (mode == MODE_CLIENT) {
-		if (!socketpath) {
-			socketpath = "/tmp/waypipe-client.sock";
+		struct sockaddr_un sockaddr;
+		memset(&sockaddr, 0, sizeof(sockaddr));
+		if (socketpath && strlen(socketpath) >=
+						  sizeof(sockaddr.sun_path)) {
+			wp_error("Socket path '%s' is too long (%zu bytes > %zu)",
+					socketpath, strlen(socketpath),
+					sizeof(sockaddr.sun_path) - 1);
+			ret = EXIT_FAILURE;
+		} else {
+			strcpy(sockaddr.sun_path,
+					socketpath ? socketpath
+						   : "/tmp/waypipe-client.sock");
+			ret = run_client(&sockaddr, &config, oneshot,
+					via_socket, 0);
 		}
-		ret = run_client(socketpath, &config, oneshot, via_socket, 0);
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
-		if (!socketpath) {
-			socketpath = "/tmp/waypipe-server.sock";
-		}
+
 		char display_path[20];
 		if (!wayland_display) {
 			char rbytes[9];
@@ -678,30 +686,39 @@ int main(int argc, char **argv)
 			sprintf(display_path, "wayland-%s", rbytes);
 			wayland_display = display_path;
 		}
-		ret = run_server(socketpath, wayland_display, control_path,
-				&config, oneshot, unlink_at_end, app_argv,
-				login_shell);
+
+		struct sockaddr_un sockaddr;
+		memset(&sockaddr, 0, sizeof(sockaddr));
+		if (socketpath && strlen(socketpath) >=
+						  sizeof(sockaddr.sun_path)) {
+			wp_error("Socket path '%s' is too long (%zu bytes > %zu)",
+					socketpath, strlen(socketpath),
+					sizeof(sockaddr.sun_path) - 1);
+			ret = EXIT_FAILURE;
+		} else {
+			strcpy(sockaddr.sun_path,
+					socketpath ? socketpath
+						   : "/tmp/waypipe-server.sock");
+
+			ret = run_server(&sockaddr, wayland_display,
+					control_path, &config, oneshot,
+					unlink_at_end, app_argv, login_shell);
+		}
 	} else {
 		if (!socketpath) {
 			socketpath = "/tmp/waypipe";
 		}
-		const size_t max_splen =
-				(int)sizeof(((struct sockaddr_un *)NULL)
-								->sun_path) -
-				22;
-		if (strlen(socketpath) > max_splen) {
-			fprintf(stderr, "Socket path prefix '%s' is too long (more than %d bytes).\n",
-					socketpath, (int)max_splen);
+		const size_t spsz =
+				sizeof(((struct sockaddr_un *)NULL)->sun_path);
+		if (strlen(socketpath) + 22 >= spsz) {
+			wp_error("Socket path prefix '%s' is too long (more than %zu bytes).\n",
+					socketpath, spsz - 23);
 			return EXIT_FAILURE;
 		}
 
 		char rbytes[9];
 		fill_rand_token(rbytes);
 		rbytes[8] = 0;
-
-		char clientsock[110];
-		memset(clientsock, 0, sizeof(clientsock));
-		sprintf(clientsock, "%s-client-%s.sock", socketpath, rbytes);
 
 		bool allocates_pty = false;
 		int dstidx = locate_openssh_cmd_hostname(
@@ -722,12 +739,13 @@ int main(int argc, char **argv)
 			return EXIT_FAILURE;
 		} else if (conn_pid == 0) {
 			char linkage[256];
-			char serversock[110];
-			char remote_display[20];
+			char serversock[128];
 			char video_str[140];
+			char remote_display[20];
 			sprintf(serversock, "%s-server-%s.sock", socketpath,
 					rbytes);
-			sprintf(linkage, "%s:%s", serversock, clientsock);
+			sprintf(linkage, "%s-server-%s.sock:%s-client-%s.sock",
+					socketpath, rbytes, socketpath, rbytes);
 			sprintf(remote_display, "wayland-%s", rbytes);
 			if (!wayland_display) {
 				wayland_display = remote_display;
@@ -830,7 +848,12 @@ int main(int argc, char **argv)
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
-			ret = run_client(clientsock, &config, oneshot,
+			struct sockaddr_un clientsock;
+			memset(&clientsock, 0, sizeof(clientsock));
+			sprintf(clientsock.sun_path, "%s-client-%s.sock",
+					socketpath, rbytes);
+
+			ret = run_client(&clientsock, &config, oneshot,
 					via_socket, conn_pid);
 		}
 	}
