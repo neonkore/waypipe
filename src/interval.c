@@ -254,6 +254,12 @@ void merge_damage_records(struct damage *base, int nintervals,
 	if (base->damage == DAMAGE_EVERYTHING || nintervals <= 0) {
 		return;
 	}
+	if (nintervals >= (1 << 30) || base->ndamage_intvs >= (1 << 30)) {
+		/* avoid overflow in merge routine; also would be cheaper to
+		 * damage everything at this point;  */
+		damage_everything(base);
+		return;
+	}
 
 	merge_mergesort(base->ndamage_intvs, base->damage, nintervals, new_list,
 			&base->ndamage_intvs, &base->damage, MERGE_MARGIN,
