@@ -642,8 +642,8 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
-	bool via_socket = getenv("WAYLAND_SOCKET") != NULL;
-	if (via_socket) {
+	const char *wayland_socket = getenv("WAYLAND_SOCKET");
+	if (wayland_socket != NULL) {
 		oneshot = true;
 	}
 
@@ -673,7 +673,7 @@ int main(int argc, char **argv)
 					socketpath ? socketpath
 						   : "/tmp/waypipe-client.sock");
 			ret = run_client(&sockaddr, &config, oneshot,
-					via_socket, 0);
+					wayland_socket, 0);
 		}
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
@@ -854,7 +854,7 @@ int main(int argc, char **argv)
 					socketpath, rbytes);
 
 			ret = run_client(&clientsock, &config, oneshot,
-					via_socket, conn_pid);
+					wayland_socket, conn_pid);
 		}
 	}
 	check_unclosed_fds();

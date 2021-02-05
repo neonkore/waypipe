@@ -64,13 +64,12 @@ static inline bool key_match(
 {
 	return key1[0] == key2[0] && key1[1] == key2[1] && key1[2] == key2[2];
 }
-static int get_inherited_socket(void)
+static int get_inherited_socket(const char *wayland_socket)
 {
-	const char *fd_no = getenv("WAYLAND_SOCKET");
 	uint32_t val;
-	if (parse_uint32(fd_no, &val) == -1 || ((int)val) < 0) {
+	if (parse_uint32(wayland_socket, &val) == -1 || ((int)val) < 0) {
 		wp_error("Failed to parse \"%s\" (value of WAYLAND_SOCKET) as a nonnegative integer, exiting",
-				fd_no);
+				wayland_socket);
 		return -1;
 	}
 	int fd = (int)val;
@@ -575,8 +574,8 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 }
 
 int run_client(const struct sockaddr_un *socket_addr,
-		const struct main_config *config, bool oneshot, bool via_socket,
-		pid_t eol_pid)
+		const struct main_config *config, bool oneshot,
+		const char *wayland_socket, pid_t eol_pid)
 {
 	/* Connect to Wayland display. We don't use the wayland-client
 	 * function here, because its errors aren't immediately useful,
@@ -585,8 +584,8 @@ int run_client(const struct sockaddr_un *socket_addr,
 	struct sockaddr_un disp_addr;
 	memset(&disp_addr, 0, sizeof(disp_addr));
 
-	if (via_socket) {
-		dispfd = get_inherited_socket();
+	if (wayland_socket) {
+		dispfd = get_inherited_socket(wayland_socket);
 		if (dispfd == -1) {
 			if (eol_pid) {
 				waitpid(eol_pid, NULL, 0);
@@ -607,7 +606,7 @@ int run_client(const struct sockaddr_un *socket_addr,
 	}
 
 	if (oneshot) {
-		if (!via_socket) {
+		if (!wayland_socket) {
 			dispfd = connect_to_socket(&disp_addr);
 		}
 	} else {
