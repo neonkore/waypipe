@@ -53,6 +53,9 @@ static const struct compression_range comp_ranges[] = {
 static void *create_text_like_image(size_t size)
 {
 	uint8_t *data = malloc(size);
+	if (!data) {
+		return NULL;
+	}
 	for (size_t i = 0; i < size; i++) {
 		size_t step = i / 203 - i / 501;
 		bool s = step % 2 == 0;
@@ -66,6 +69,9 @@ static void *create_text_like_image(size_t size)
 static void *create_video_like_image(size_t size)
 {
 	uint8_t *data = malloc(size);
+	if (!data) {
+		return NULL;
+	}
 	for (size_t i = 0; i < size; i++) {
 		/* primary sequence, with runs, but avoiding obvious repetition
 		 * then add fine grain, a main source of complexity in real
@@ -357,6 +363,10 @@ int run_bench(float bandwidth_mBps, uint32_t test_size, int n_worker_threads)
 	srand((unsigned int)tp.tv_nsec);
 	void *text_image = create_text_like_image(test_size);
 	void *vid_image = create_video_like_image(test_size);
+	if (!text_image || !vid_image) {
+		wp_error("Failed to allocate test images");
+		return EXIT_FAILURE;
+	}
 
 	/* Q: store an array of all the modes -> outputs */
 	// Then sort that array
