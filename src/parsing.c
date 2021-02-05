@@ -79,6 +79,14 @@ int listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 	lst->objs[lst->nobj++] = obj;
 	return 0;
 }
+void listset_replace_existing(struct obj_list *lst, struct wp_object *new_obj)
+{
+	for (int i = 0; i < lst->nobj; i++) {
+		if (lst->objs[i]->obj_id == new_obj->obj_id) {
+			lst->objs[i] = new_obj;
+		}
+	}
+}
 void listset_remove(struct obj_list *lst, struct wp_object *obj)
 {
 	for (int i = 0; i < lst->nobj; i++) {

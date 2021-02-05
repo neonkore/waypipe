@@ -81,6 +81,9 @@ struct context {
 int listset_insert(struct fd_translation_map *map, struct obj_list *lst,
 		struct wp_object *obj);
 void listset_remove(struct obj_list *lst, struct wp_object *obj);
+/** Replace an object that is already in the protocol list with a new object
+ * that has the same id; will silently fail if id not present */
+void listset_replace_existing(struct obj_list *lst, struct wp_object *obj);
 struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
 
 int init_message_tracker(struct message_tracker *mt);

@@ -428,16 +428,14 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 			// Set the object type
 			the_object->type = global_interfaces[i];
 			if (global_interfaces[i] == &intf_wp_presentation) {
-				// Replace the object with a specialized
-				// version
-				listset_remove(ctx->obj_list, the_object);
-				free(the_object);
-				the_object = create_wp_object(
+				struct wp_object *new_object = create_wp_object(
 						obj_id, &intf_wp_presentation);
-				if (listset_insert(&ctx->g->map, ctx->obj_list,
-						    the_object) == -1) {
-					wp_error("Failed to allocate space to store new presentation object");
+				if (!new_object) {
+					return;
 				}
+				listset_replace_existing(
+						ctx->obj_list, new_object);
+				free(the_object);
 			}
 			return;
 		}
