@@ -1819,9 +1819,11 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type == FDC_DMABUF && !already_mapped) {
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
-			if (!sfd->mem_local) {
-				return 0;
-			}
+		}
+		if (!sfd->mem_local) {
+			wp_error("Failed to fill RID=%d, fd not mapped",
+					sfd->remote_id);
+			return 0;
 		}
 		memcpy(sfd->mem_local + header->start,
 				sfd->mem_mirror + header->start,
@@ -1882,9 +1884,11 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		if (sfd->type == FDC_DMABUF && !already_mapped) {
 			sfd->mem_local = map_dmabuf(
 					sfd->dmabuf_bo, true, &handle);
-			if (!sfd->mem_local) {
-				return 0;
-			}
+		}
+		if (!sfd->mem_local) {
+			wp_error("Failed to apply diff to RID=%d, fd not mapped",
+					sfd->remote_id);
+			return 0;
 		}
 
 		DTRACE_PROBE2(waypipe, apply_diff_enter, sfd->buffer_size,
