@@ -14,7 +14,7 @@ waypipe - A transparent proxy for Wayland applications
 *waypipe* *bench* _bandwidth_++
 *waypipe* [*-v*, *--version*] [*-h*, *--help*]
 
-\[options...\] = [*-c*, *--compress* C] [*-d*, *--debug*] [*-n*, *--no-gpu*] [*-o*, *--oneshot*] [*-s*, *--socket* S] [*--allow-tiled*] [*--control* C] [*--display* D] [*--drm-node* R] [*--remote-node* R] [*--remote-bin* R] [*--login-shell*] [*--threads* T] [*--unlink-socket*] [*--video*] [*--hwvideo*]
+\[options...\] = [*-c*, *--compress* C] [*-d*, *--debug*] [*-n*, *--no-gpu*] [*-o*, *--oneshot*] [*-s*, *--socket* S] [*--allow-tiled*] [*--control* C] [*--display* D] [*--drm-node* R] [*--remote-node* R] [*--remote-bin* R] [*--login-shell*] [*--threads* T] [*--unlink-socket*] [*--video*[=V]]
 
 
 # DESCRIPTION
@@ -127,15 +127,33 @@ compressible as images containing pictures.
 *--unlink-socket*
 	Only for server mode; on shutdown, unlink the Unix socket that waypipe connects to.
 
-*--video*
+*--video[=V]*
 	Compress specific DMABUF formats using a lossy video codec. Opaque, 10-bit, and
-	multiplanar formats, among others, are not supported.
+	multiplanar formats, among others, are not supported. *V* is a comma separated 
+	list of options to control the video encoding. Using the *--video* flag without
+	setting any options is equivalent to using the default setting of:
+	*--video=sw,bpf=120000,h264*. Later options supersede earlier ones.
+	
+	*sw*
+		Use software encoding and decoding.
+	
+	*hw*
+		Use hardware (VAAPI) encoding and decoding, if available. This can be finicky
+		and may only work with specific window buffer formats and sizes.
+		
+	*h264*
+		Use H.264 encoded video.
+		
+	*vp9*
+		Use VP9 encoded video.
+		
+	*bpf=B*
+		Set the target bit rate of the video encoder, in units of bits per frame.
+		*B* can be written as an integer or with exponential notation; thus
+		*--video=bpf=7.5e5* is equivalent to *--video=bpf=750000*.
 
 *--hwvideo*
-	Sets the *--video* option, and also specifies that hardware video encoding and decoding
-	should be used if possible. Whether this option improves bandwidth use and latency
-	is hardware dependent.
-
+	Deprecated option, equivalent to --video=hw .
 
 # EXAMPLE 
 
