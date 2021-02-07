@@ -116,18 +116,24 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 
 	/* Replace fds with RIDs in place */
 	for (int i = 0; i < fd_window.zone_start; i++) {
-		size_t fdsz = 0;
-		enum fdcat fdtype = get_fd_type(msg.fds[i], &fdsz);
-		int rid = translate_fd(&src->glob.map, &src->glob.render,
-				fd_window.data[i], fdtype, fdsz, NULL, false,
-				false)
-					  ->remote_id;
-		if (rid == 0) {
+		struct shadow_fd *sfd = get_shadow_for_local_fd(
+				&src->glob.map, fd_window.data[i]);
+		if (!sfd) {
+			/* Autodetect type + create shadow fd */
+			size_t fdsz = 0;
+			enum fdcat fdtype =
+					get_fd_type(fd_window.data[i], &fdsz);
+			sfd = translate_fd(&src->glob.map, &src->glob.render,
+					fd_window.data[i], fdtype, fdsz, NULL,
+					false, false);
+		}
+		if (sfd) {
+			fd_window.data[i] = sfd->remote_id;
+		} else {
 			wp_error("failed to translate");
 			src->failed = true;
 			goto cleanup;
 		}
-		fd_window.data[i] = rid;
 	}
 
 	for (struct shadow_fd *cur = src->glob.map.list, *nxt = NULL; cur;

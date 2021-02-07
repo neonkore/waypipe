@@ -139,13 +139,17 @@ static int translate_fds(struct fd_translation_map *map,
 		int ids[])
 {
 	for (int i = 0; i < nfds; i++) {
-		/* Autodetect type */
-		size_t fdsz = 0;
-		enum fdcat fdtype = get_fd_type(fds[i], &fdsz);
-		ids[i] = translate_fd(map, render, fds[i], fdtype, fdsz, NULL,
-				false, false)
-					 ->remote_id;
-		if (!ids[i]) {
+		struct shadow_fd *sfd = get_shadow_for_local_fd(map, fds[i]);
+		if (!sfd) {
+			/* Autodetect type + create shadow fd */
+			size_t fdsz = 0;
+			enum fdcat fdtype = get_fd_type(fds[i], &fdsz);
+			sfd = translate_fd(map, render, fds[i], fdtype, fdsz,
+					NULL, false, false);
+		}
+		if (sfd) {
+			ids[i] = sfd->remote_id;
+		} else {
 			return -1;
 		}
 	}

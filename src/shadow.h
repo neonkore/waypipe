@@ -286,6 +286,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		const struct bytebuf *msg);
 /** Get the shadow structure associated to a remote id, or NULL if it dne */
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid);
+/** Get shadow structure for a local file descriptor, or NULL if it dne */
+struct shadow_fd *get_shadow_for_local_fd(
+		struct fd_translation_map *map, int lfd);
 
 /** Count the number of pipe fds being maintained by the translation map */
 int count_npipes(const struct fd_translation_map *map);
