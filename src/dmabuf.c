@@ -104,15 +104,43 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 #include <unistd.h>
 
 #include <gbm.h>
-#if defined(__DragonFly__) || defined(__FreeBSD__)
-/* kms-drm doesn't install any headers */
-#define DMA_BUF_IOCTL_SYNC _IOW('b', 0, struct dma_buf_sync)
-struct dma_buf_sync {
-	uint64_t flags;
-};
-#else
+
+#ifdef __linux__
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
 #include <linux/dma-buf.h>
+#define HAS_DETECTING_DMABUF_SYNC
 #endif
+#endif
+
+int is_dmabuf(int fd)
+{
+#ifdef HAS_DETECTING_DMABUF_SYNC
+	// TODO: find a more portable way to do type detection, or just attempt
+	// import instead of checking. Or try DRM_IOCTL_PRIME_FD_TO_HANDLE?
+
+	/* Prepare an invalid request, with a dma-buf specific IOCTL */
+	struct dma_buf_sync arg;
+	arg.flags = 0;
+	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &arg) != -1) {
+		wp_error("DMAbuf test ioctl succeeded when it should have errored");
+		return -1;
+	}
+	if (errno == EINVAL) {
+		return 1;
+	} else if (errno == ENOTTY) {
+		/* mismatched type = not a dmabuf */
+		return 0;
+	} else {
+		wp_error("Unexpected error from dmabuf detection probe: %d, %s",
+				errno, strerror(errno));
+		return -1;
+	}
+#else
+	(void)fd;
+	return -1;
+#endif
+}
 
 int init_render_data(struct render_data *data)
 {
@@ -263,26 +291,6 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	*size = gbm_bo_get_stride(bo) * gbm_bo_get_height(bo);
 
 	return bo;
-}
-
-bool is_dmabuf(int fd)
-{
-	// Prepare an invalid request, with a dma-buf specific IOCTL
-	struct dma_buf_sync arg;
-	arg.flags = 0;
-	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &arg) != -1) {
-		wp_error("DMAbuf test ioctl succeeded when it should have errored");
-		return false;
-	}
-	if (errno == EINVAL) {
-		return true;
-	} else if (errno == ENOTTY) {
-		return false;
-	} else {
-		wp_error("Unexpected error from dmabuf detection probe: %d, %s",
-				errno, strerror(errno));
-		return false;
-	}
 }
 
 int get_unique_dmabuf_handle(

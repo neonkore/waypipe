@@ -351,7 +351,7 @@ enum fdcat get_fd_type(int fd, size_t *size)
 					fsdata.st_mode);
 		}
 		return FDC_PIPE;
-	} else if (is_dmabuf(fd)) {
+	} else if (is_dmabuf(fd) == 1) {
 		return FDC_DMABUF;
 	} else {
 		wp_error("The fd %d has an unusual mode %x (type=%x): blk=%d chr=%d dir=%d lnk=%d reg=%d fifo=%d sock=%d; expect an application crash!",
