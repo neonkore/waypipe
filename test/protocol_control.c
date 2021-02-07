@@ -107,6 +107,13 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	parse_and_prune_messages(&src->glob, src->display_side,
 			!src->display_side, &proto_src, &proto_mid, &fd_window);
 
+	if (fd_window.zone_start != fd_window.zone_end) {
+		wp_error("Not all fds were consumed, final unused window %d %d",
+				fd_window.zone_start, fd_window.zone_end);
+		src->failed = true;
+		goto cleanup;
+	}
+
 	/* Replace fds with RIDs in place */
 	for (int i = 0; i < fd_window.zone_start; i++) {
 		size_t fdsz = 0;
@@ -134,14 +141,17 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	decref_transferred_rids(
 			&src->glob.map, fd_window.zone_start, fd_window.data);
 
-	start_parallel_work(&src->glob.threads, &transfers.async_recv_queue);
-	bool is_done;
-	struct task_data task;
-	while (request_work_task(&src->glob.threads, &task, &is_done)) {
-		run_task(&task, &src->glob.threads.threads[0]);
-		src->glob.threads.tasks_in_progress--;
+	{
+		start_parallel_work(&src->glob.threads,
+				&transfers.async_recv_queue);
+		bool is_done;
+		struct task_data task;
+		while (request_work_task(&src->glob.threads, &task, &is_done)) {
+			run_task(&task, &src->glob.threads.threads[0]);
+			src->glob.threads.tasks_in_progress--;
+		}
+		(void)transfer_load_async(&transfers);
 	}
-	(void)transfer_load_async(&transfers);
 
 	/* On destination side, a bit easier; process transfers, and
 	 * then deliver all messages */
@@ -361,15 +371,29 @@ static int make_filled_file(size_t size, const char *contents)
 
 static bool check_file_contents(int fd, size_t size, const char *contents)
 {
+	if (fd == -1) {
+		return false;
+	}
 	uint32_t *mem = (uint32_t *)mmap(
 			NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
 	bool match = memcmp(mem, contents, size) == 0;
 	munmap(mem, size);
 	return match;
 }
+static int get_only_fd_from_msg(const struct test_state *s)
+{
+
+	if (s->rcvd && s->rcvd[s->nrcvd - 1].nfds == 1) {
+		return s->rcvd[s->nrcvd - 1].fds[0];
+	} else {
+		return -1;
+	}
+}
 
 static bool test_fixed_shm_buffer_copy()
 {
+	fprintf(stdout, "\nshm_pool+buffer test\n");
+
 	struct test_state comp; /* compositor */
 	struct test_state app;  /* application */
 	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
@@ -394,16 +418,9 @@ static bool test_fixed_shm_buffer_copy()
 	// -> wl_registry@2.bind(2, "wl_compositor", 3, new id [unknown]@4)
 	bind_msg(AC, 0x2, 1, "wl_shm", 1, 0x3);
 	bind_msg(AC, 0x2, 2, "wl_compositor", 1, 0x4);
-	// -> wl_shm@3.create_pool(new id wl_shm_pool@5, fd 12, 16384)
+	// -> wl_shm@3.create_pool(new id wl_shm_pool@5, fd ?, 16384)
 	msg_fd(AC, 0x3, 0, 2, (uint32_t[]){0x5, 16384}, fd);
-
-	if (comp.rcvd && comp.rcvd[comp.nrcvd - 1].nfds == 1) {
-		ret_fd = comp.rcvd[comp.nrcvd - 1].fds[0];
-	} else {
-		wp_error("Fd not passed through");
-		pass = false;
-		goto end;
-	}
+	ret_fd = get_only_fd_from_msg(&comp);
 	// -> wl_shm_pool@5.create_buffer(new id wl_buffer@6, 0, 64, 64,
 	// 256, 0x30334258)
 	msg(AC, 0x5, 0, 6, (uint32_t[]){0x6, 0, 64, 64, 256, 0x30334258});
@@ -418,6 +435,11 @@ static bool test_fixed_shm_buffer_copy()
 
 	/* confirm receipt of fd with the correct contents; if not,
 	 * reject */
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
 	pass = check_file_contents(ret_fd, 16384, testpat);
 	if (!pass) {
 		wp_error("Failed to transfer file");
@@ -429,6 +451,58 @@ end:
 	cleanup_state(&app);
 	return pass;
 }
+
+static bool test_fixed_keymap_copy()
+{
+	fprintf(stdout, "\nKeymap test\n");
+	struct test_state comp; /* compositor */
+	struct test_state app;  /* application */
+	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+	struct msgtransfer CA = {.src = &comp, .dst = &app};
+	struct msgtransfer AC = {.src = &app, .dst = &comp};
+
+	char *testpat = make_filled_pattern(16384, 0xFEDCBA98);
+	int fd = make_filled_file(16384, testpat);
+	int ret_fd = -1;
+
+	// -> wl_display@1.get_registry(new id wl_registry@2)
+	msg(AC, 0x1, 1, 1, (uint32_t[]){0x2});
+	// wl_registry@2.global(1, "wl_seat", 7)
+	global_msg(CA, 0x2, 1, "wl_seat", 7);
+	// -> wl_registry@2.bind(1, "wl_seat", 7, new id [unknown]@3)
+	bind_msg(AC, 0x2, 1, "wl_seat", 7, 0x3);
+	// wl_seat@3.capabilities(3)
+	msg(CA, 0x3, 0, 1, (uint32_t[]){3});
+	// -> wl_seat@3.get_keyboard(new id wl_keyboard@4)
+	msg(AC, 0x3, 1, 1, (uint32_t[]){0x4});
+	// wl_keyboard@4.keymap(1, fd ?, 16384)
+	msg_fd(CA, 0x4, 0, 2, (uint32_t[]){1, 16384}, fd);
+	ret_fd = get_only_fd_from_msg(&app);
+
+	/* confirm receipt of fd with the correct contents; if not,
+	 * reject */
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	pass = check_file_contents(ret_fd, 16384, testpat);
+	if (!pass) {
+		wp_error("Failed to transfer file");
+	}
+
+end:
+	free(testpat);
+	checked_close(fd);
+	cleanup_state(&comp);
+	cleanup_state(&app);
+	return pass;
+}
+
 static bool test_fixed_dmabuf_copy()
 {
 	/* todo: back out if no dmabuf support */
@@ -451,11 +525,15 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
-	bool all_success = true;
-	all_success &= test_fixed_shm_buffer_copy();
-	all_success &= test_fixed_dmabuf_copy();
-	all_success &= test_fixed_video_color_copy(VIDEO_H264, false);
-	all_success &= test_fixed_video_color_copy(VIDEO_H264, true);
-	all_success &= test_fixed_video_color_copy(VIDEO_VP9, false);
-	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;
+	int ntest = 6;
+	int nsuccess = 0;
+	nsuccess += test_fixed_shm_buffer_copy();
+	nsuccess += test_fixed_keymap_copy();
+	nsuccess += test_fixed_dmabuf_copy();
+	nsuccess += test_fixed_video_color_copy(VIDEO_H264, false);
+	nsuccess += test_fixed_video_color_copy(VIDEO_H264, true);
+	nsuccess += test_fixed_video_color_copy(VIDEO_VP9, false);
+	// TODO: add a copy-paste test, and screencapture
+	fprintf(stdout, "%d of %d cases passed\n", nsuccess, ntest);
+	return (nsuccess == ntest) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
