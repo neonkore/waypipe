@@ -112,6 +112,22 @@ enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
 enum parse_state handle_message(struct globals *g, bool on_display_side,
 		bool from_client, struct char_window *chars,
 		struct int_window *fds);
+/**
+ * Given a set of messages and fds, parse the messages, and if indicated
+ * by parsing logic, compact the message buffer by removing selected
+ * messages, or edit message contents.
+ *
+ * The `source_bytes` window indicates the range of unread data; it's
+ * zone start point will be advanced. The 'dest_bytes' window indicates
+ * the range of written data; it's zone end point will be advanced.
+ *
+ * The file descriptor queue `fds` will have its start advanced, leaving only
+ * file descriptors that have not yet been read. Further edits may be made
+ * to inject new file descriptors.
+ */
+void parse_and_prune_messages(struct globals *g, bool on_display_side,
+		bool from_client, struct char_window *source_bytes,
+		struct char_window *dest_bytes, struct int_window *fds);
 
 // handlers.c
 /** Create a new Wayland protocol object of the given type; some types

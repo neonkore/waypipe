@@ -256,6 +256,8 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 			(uint32_t *)&chars->data[chars->zone_start];
 	uint32_t obj = header[0];
 	int len = (int)(header[1] >> 16);
+	int meth = (int)((header[1] << 16) >> 16);
+
 	if (len != chars->zone_end - chars->zone_start) {
 		wp_error("Message length disagreement %d vs %d", len,
 				chars->zone_end - chars->zone_start);
@@ -263,7 +265,6 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 	// display: object = 0?
 	struct wp_object *objh = listset_get(&g->tracker.objects, obj);
-
 	if (!objh || !objh->type) {
 		wp_debug("Unidentified object %d with %s", obj,
 				from_client ? "request" : "event");
@@ -274,7 +275,6 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	 * with the number of file descriptors that are bound to the message.
 	 * This incidentally limits the number of fds to 31, and number of
 	 * messages per type 2047. */
-	int meth = (int)((header[1] << 16) >> 16);
 	int num_fds_with_message = -1;
 	if (!to_wire) {
 		num_fds_with_message = meth >> 11;
@@ -408,4 +408,80 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	// Move the end, in case there were changes
 	chars->zone_end = chars->zone_start + ctx.message_length;
 	return PARSE_KNOWN;
+}
+
+void parse_and_prune_messages(struct globals *g, bool on_display_side,
+		bool from_client, struct char_window *source_bytes,
+		struct char_window *dest_bytes, struct int_window *fds)
+{
+	bool anything_unknown = false;
+	struct char_window scan_bytes;
+	scan_bytes.data = dest_bytes->data;
+	scan_bytes.zone_start = dest_bytes->zone_start;
+	scan_bytes.zone_end = dest_bytes->zone_start;
+	scan_bytes.size = dest_bytes->size;
+
+	DTRACE_PROBE1(waypipe, parse_enter,
+			source_bytes->zone_end - source_bytes->zone_start);
+
+	for (; source_bytes->zone_start < source_bytes->zone_end;) {
+		if (source_bytes->zone_end - source_bytes->zone_start < 8) {
+			// Not enough remaining bytes to parse the
+			// header
+			wp_debug("Insufficient bytes for header: %d %d",
+					source_bytes->zone_start,
+					source_bytes->zone_end);
+			break;
+		}
+		int msgsz = peek_message_size(
+				&source_bytes->data[source_bytes->zone_start]);
+		if (msgsz % 4 != 0) {
+			wp_debug("Wayland messages lengths must be divisible by 4");
+			break;
+		}
+		if (source_bytes->zone_start + msgsz > source_bytes->zone_end) {
+			wp_debug("Insufficient bytes");
+			// Not enough remaining bytes to contain the
+			// message
+			break;
+		}
+		if (msgsz < 8) {
+			wp_debug("Degenerate message, claimed len=%d", msgsz);
+			// Not enough remaining bytes to contain the
+			// message
+			break;
+		}
+
+		/* We copy the message to the trailing end of the
+		 * in-progress buffer; the parser may elect to modify
+		 * the message's size */
+		memcpy(&scan_bytes.data[scan_bytes.zone_start],
+				&source_bytes->data[source_bytes->zone_start],
+				(size_t)msgsz);
+		source_bytes->zone_start += msgsz;
+		scan_bytes.zone_end = scan_bytes.zone_start + msgsz;
+
+		enum parse_state pstate = handle_message(g, on_display_side,
+				from_client, &scan_bytes, fds);
+		if (pstate == PARSE_UNKNOWN || pstate == PARSE_ERROR) {
+			anything_unknown = true;
+		}
+		scan_bytes.zone_start = scan_bytes.zone_end;
+	}
+	dest_bytes->zone_end = scan_bytes.zone_end;
+
+	if (anything_unknown) {
+		// All-un-owned buffers are assumed to have changed.
+		// (Note that in some cases, a new protocol could imply
+		// a change for an existing buffer; it may make sense to
+		// mark everything dirty, then.)
+		for (struct shadow_fd *cur = g->map.list; cur;
+				cur = cur->next) {
+			if (!cur->has_owner) {
+				cur->is_dirty = true;
+			}
+		}
+	}
+	DTRACE_PROBE(waypipe, parse_exit);
+	return;
 }

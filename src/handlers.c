@@ -612,6 +612,7 @@ static void rotate_damage_lists(struct obj_wl_surface *surface)
 void do_wl_surface_req_commit(struct context *ctx)
 {
 	struct obj_wl_surface *surface = (struct obj_wl_surface *)ctx->obj;
+
 	if (!surface->attached_buffer_id) {
 		/* The wl_surface.commit operation applies all "pending
 		 * state", much of which we don't care about. Typically,

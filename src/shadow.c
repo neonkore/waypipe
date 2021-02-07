@@ -700,6 +700,7 @@ static void worker_run_compress_diff(
 	if (task->damaged_end) {
 		damage_space += 1u << pool->diff_alignment_bits;
 	}
+
 	DTRACE_PROBE1(waypipe, worker_compdiff_enter, damage_space);
 
 	char *diff_buffer = NULL;
@@ -733,6 +734,7 @@ static void worker_run_compress_diff(
 				sfd->mem_local, diff_target + diffsize);
 	}
 	DTRACE_PROBE1(waypipe, construct_diff_exit, diffsize);
+
 	if (diffsize == 0 && ntrailing == 0) {
 		free(diff_buffer);
 		goto end;

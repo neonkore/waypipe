@@ -186,7 +186,7 @@ enum video_coding_fmt {
  * Wayland protocol.
  */
 struct shadow_fd {
-	struct shadow_fd *next; // singly-linked list
+	struct shadow_fd *next; // singly-linked list // TODO: make double?
 	enum fdcat type;
 	int remote_id; // + if created serverside; - if created clientside
 	int fd_local;

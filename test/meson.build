@@ -23,6 +23,13 @@ test_mirror = executable(
 )
 # disable leak checking, because library code is often responsible
 test('How well buffers are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 40)
+test_protocol = executable(
+	'protocol_control',
+	['protocol_control.c'],
+	include_directories: waypipe_includes,
+	link_with: lib_waypipe_src
+)
+test('That common Wayland message patterns work', test_protocol, timeout: 20)
 test_pipe = executable(
 	'pipe_mirror',
 	['pipe_mirror.c'],
