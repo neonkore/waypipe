@@ -34,10 +34,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-enum side {
-	FROM_APP,
-	FROM_DISP,
-};
 struct msg {
 	uint32_t *data;
 	int len;
@@ -72,8 +68,8 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	proto_src.data = calloc(16384, 1);
 	proto_src.size = 16384;
 	proto_src.zone_start = 0;
-	memcpy(proto_src.data, msg.data, sizeof(uint32_t) * msg.len);
-	proto_src.zone_end = sizeof(uint32_t) * msg.len;
+	memcpy(proto_src.data, msg.data, sizeof(uint32_t) * (size_t)msg.len);
+	proto_src.zone_end = (int)sizeof(uint32_t) * msg.len;
 
 	struct char_window proto_mid;
 	// todo: test_(re)alloc for tests, to abort (but still pass?) if
@@ -100,7 +96,8 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	pthread_mutex_init(&transfers.async_recv_queue.lock, NULL);
 
 	if (msg.nfds > 0) {
-		memcpy(fd_window.data, msg.fds, sizeof(uint32_t) * msg.nfds);
+		memcpy(fd_window.data, msg.fds,
+				sizeof(uint32_t) * (size_t)msg.nfds);
 	}
 	fd_window.zone_end = msg.nfds;
 
@@ -166,7 +163,7 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		char *msg = transfers.vecs[i].iov_base;
 		uint32_t header = ((uint32_t *)msg)[0];
 		size_t sz = transfer_size(header);
-		int rid = ((uint32_t *)msg)[1];
+		int rid = (int)((uint32_t *)msg)[1];
 		struct bytebuf bb;
 		bb.data = msg;
 		bb.size = sz;
@@ -195,14 +192,15 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	 * ditto with the output messages. Assume for now messages are 1-in
 	 * 1-out */
 	dst->nrcvd++;
-	dst->rcvd = realloc(dst->rcvd, sizeof(struct msg) * dst->nrcvd);
+	dst->rcvd = realloc(dst->rcvd, sizeof(struct msg) * (size_t)dst->nrcvd);
 	struct msg *lastmsg = &dst->rcvd[dst->nrcvd - 1];
 	memset(lastmsg, 0, sizeof(struct msg));
 
 	/* Save the fds that were marked used (which should be all of them) */
 	if (fd_window.zone_start > 0) {
 		lastmsg->nfds = fd_window.zone_start;
-		lastmsg->fds = malloc(sizeof(int) * fd_window.zone_start);
+		lastmsg->fds = malloc(
+				sizeof(int) * (size_t)fd_window.zone_start);
 		for (int i = 0; i < fd_window.zone_start; i++) {
 			/* duplicate fd, so it's still usable if shadowfd gone
 			 */
@@ -211,8 +209,10 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	}
 	if (proto_end.zone_end > 0) {
 		lastmsg->len = proto_end.zone_end;
-		lastmsg->data = malloc(sizeof(uint32_t) * proto_end.zone_end);
-		memcpy(lastmsg->data, proto_end.data, proto_end.zone_end);
+		lastmsg->data = malloc(
+				sizeof(uint32_t) * (size_t)proto_end.zone_end);
+		memcpy(lastmsg->data, proto_end.data,
+				(size_t)proto_end.zone_end);
 	}
 
 cleanup:
@@ -296,12 +296,12 @@ static void msg(const struct msgtransfer tx, uint32_t id, uint32_t msgno,
 	m.nfds = 0;
 	m.data = calloc(arglen + 2, sizeof(uint32_t));
 	m.data[0] = id;
-	m.data[1] = (((arglen + 2) * 4) << 16) | msgno;
+	m.data[1] = (uint32_t)(((arglen + 2) * 4) << 16) | msgno;
 	if (arglen > 0) {
 		memcpy(&m.data[2], args, arglen * sizeof(uint32_t));
 	}
 
-	m.len = arglen + 2;
+	m.len = (int)arglen + 2;
 
 	send_protocol_msg(tx.src, tx.dst, m);
 	free(m.data);
@@ -317,12 +317,12 @@ static void msg_fd(const struct msgtransfer tx, uint32_t id, uint32_t msgno,
 	m.nfds = 1;
 	m.data = calloc(arglen + 2, sizeof(uint32_t));
 	m.data[0] = id;
-	m.data[1] = (((arglen + 2) * 4) << 16) | msgno;
+	m.data[1] = (uint32_t)(((arglen + 2) * 4) << 16) | msgno;
 	if (arglen > 0) {
 		memcpy(&m.data[2], args, arglen * sizeof(uint32_t));
 	}
 
-	m.len = arglen + 2;
+	m.len = (int)arglen + 2;
 
 	send_protocol_msg(tx.src, tx.dst, m);
 	free(m.data);
@@ -333,10 +333,10 @@ static void global_msg(const struct msgtransfer tx, uint32_t id, int globnum,
 {
 	size_t typesz = (strlen(type) + 3) / 4;
 	uint32_t *args = calloc(3 + typesz, sizeof(uint32_t));
-	args[0] = globnum;
-	args[1] = strlen(type);
+	args[0] = (uint32_t)globnum;
+	args[1] = (uint32_t)strlen(type);
 	memcpy(args + 2, type, strlen(type));
-	args[2 + typesz] = version;
+	args[2 + typesz] = (uint32_t)version;
 	msg(tx, id, 0, 3 + typesz, args);
 	free(args);
 }
@@ -345,10 +345,10 @@ static void bind_msg(const struct msgtransfer tx, uint32_t id, int globnum,
 {
 	size_t typesz = (strlen(type) + 3) / 4;
 	uint32_t *args = calloc(4 + typesz, sizeof(uint32_t));
-	args[0] = globnum;
-	args[1] = strlen(type);
+	args[0] = (uint32_t)globnum;
+	args[1] = (uint32_t)strlen(type);
 	memcpy(args + 2, type, strlen(type));
-	args[2 + typesz] = version;
+	args[2 + typesz] = (uint32_t)version;
 	args[3 + typesz] = new_id;
 	msg(tx, id, 0, 4 + typesz, args);
 	free(args);
@@ -366,7 +366,7 @@ static char *make_filled_pattern(size_t size, uint32_t contents)
 static int make_filled_file(size_t size, const char *contents)
 {
 	int fd = create_anon_file();
-	ftruncate(fd, size);
+	ftruncate(fd, (off_t)size);
 
 	uint32_t *mem = (uint32_t *)mmap(
 			NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
