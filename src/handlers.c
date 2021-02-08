@@ -445,8 +445,8 @@ fail:
 	listset_remove(ctx->obj_list, the_object);
 	free(the_object);
 
-	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface, id,
-			version);
+	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface,
+			id->obj_id, version);
 	(void)name;
 	(void)version;
 }

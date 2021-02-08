@@ -158,6 +158,8 @@ static int run_single_client_reconnector(
 				retcode = EXIT_FAILURE;
 				break;
 			} else {
+				wp_debug("Reconnection to oneshot client");
+
 				struct connection_token new_conn;
 				memset(&new_conn, 0, sizeof(new_conn));
 				if (read(newclient, &new_conn.header,
@@ -249,6 +251,7 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 			retcode = EXIT_FAILURE;
 			break;
 		} else {
+			wp_debug("New connection to client");
 			if (read(chanclient, &conn_id.header,
 					    sizeof(conn_id.header)) !=
 					sizeof(conn_id.header)) {
@@ -536,6 +539,7 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 				retcode = EXIT_FAILURE;
 				break;
 			} else {
+				wp_debug("New connection to client");
 				if (set_nonblocking(chanclient) == -1) {
 					wp_error("Error making new connection nonblocking: %s",
 							strerror(errno));
@@ -577,6 +581,9 @@ int run_client(const struct sockaddr_un *socket_addr,
 		const struct main_config *config, bool oneshot,
 		const char *wayland_socket, pid_t eol_pid)
 {
+	wp_debug("I'm a client listening on %s", socket_addr->sun_path);
+	wp_debug("version: %s", WAYPIPE_VERSION);
+
 	/* Connect to Wayland display. We don't use the wayland-client
 	 * function here, because its errors aren't immediately useful,
 	 * and older Wayland versions have edge cases */

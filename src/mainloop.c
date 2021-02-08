@@ -1096,6 +1096,7 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 		return EXIT_FAILURE;
 	}
 	const char *progdesc = display_side ? "compositor" : "application";
+	wp_debug("Running main loop on %s side", progdesc);
 
 	struct way_msg_state way_msg;
 	memset(&way_msg, 0, sizeof(way_msg));

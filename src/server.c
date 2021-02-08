@@ -409,6 +409,7 @@ static int run_multi_server(int control_pipe,
 				retcode = EXIT_FAILURE;
 				break;
 			} else {
+				wp_debug("New connection to server");
 				fill_random_key(&token);
 				if (handle_new_server_connection(
 						    &current_sockaddr,
@@ -479,8 +480,9 @@ int run_server(const struct sockaddr_un *socket_addr,
 		bool unlink_at_end, char *const app_argv[],
 		bool login_shell_if_backup)
 {
-	wp_debug("I'm a server on %s, running: %s", socket_addr->sun_path,
-			app_argv[0]);
+	wp_debug("I'm a server connecting on %s, running: %s",
+			socket_addr->sun_path, app_argv[0]);
+	wp_debug("version: %s", WAYPIPE_VERSION);
 
 	struct sockaddr_un display_path;
 	memset(&display_path, 0, sizeof(display_path));
