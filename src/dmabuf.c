@@ -45,10 +45,10 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	(void)read_modifier;
 	return NULL;
 }
-bool is_dmabuf(int fd)
+int is_dmabuf(int fd)
 {
 	(void)fd;
-	return false;
+	return -1;
 }
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo)
