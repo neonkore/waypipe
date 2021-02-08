@@ -119,21 +119,21 @@ int main(int argc, char **argv)
 
 	struct message_tracker mt;
 	init_message_tracker(&mt);
-	struct wp_object *old_display = listset_get(&mt.objects, 1);
-	listset_remove(&mt.objects, old_display);
+	struct wp_object *old_display = tracker_get(&mt, 1);
+	tracker_remove(&mt, old_display);
 	destroy_wp_object(NULL, old_display);
 
 	struct wp_object xobj;
 	xobj.type = &intf_xtype;
 	xobj.is_zombie = false;
 	xobj.obj_id = 991;
-	listset_insert(NULL, &mt.objects, &xobj);
+	tracker_insert(NULL, &mt, &xobj);
 
 	struct wp_object yobj;
 	yobj.type = &intf_ytype;
 	yobj.is_zombie = false;
 	yobj.obj_id = 992;
-	listset_insert(NULL, &mt.objects, &yobj);
+	tracker_insert(NULL, &mt, &yobj);
 
 	struct context ctx = {.obj = &xobj, .g = NULL};
 
@@ -222,8 +222,8 @@ int main(int argc, char **argv)
 		}
 	}
 
-	listset_remove(&mt.objects, &xobj);
-	listset_remove(&mt.objects, &yobj);
+	tracker_remove(&mt, &xobj);
+	tracker_remove(&mt, &yobj);
 	cleanup_message_tracker(NULL, &mt);
 
 	printf("Net result: %s\n", all_success ? "pass" : "FAIL");

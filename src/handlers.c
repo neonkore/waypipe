@@ -338,10 +338,10 @@ void do_wl_display_evt_error(struct context *ctx, struct wp_object *object_id,
 }
 void do_wl_display_evt_delete_id(struct context *ctx, uint32_t id)
 {
-	struct wp_object *obj = listset_get(ctx->obj_list, id);
+	struct wp_object *obj = tracker_get(ctx->tracker, id);
 	/* ensure this isn't miscalled to have wl_display delete itself */
 	if (obj && obj != ctx->obj) {
-		listset_remove(ctx->obj_list, obj);
+		tracker_remove(ctx->tracker, obj);
 		destroy_wp_object(&ctx->g->map, obj);
 	}
 }
@@ -433,8 +433,8 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 				if (!new_object) {
 					return;
 				}
-				listset_replace_existing(
-						ctx->obj_list, new_object);
+				tracker_replace_existing(
+						ctx->tracker, new_object);
 				free(the_object);
 			}
 			return;
@@ -442,7 +442,7 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	}
 
 fail:
-	listset_remove(ctx->obj_list, the_object);
+	tracker_remove(ctx->tracker, the_object);
 	free(the_object);
 
 	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface,
@@ -627,7 +627,7 @@ void do_wl_surface_req_commit(struct context *ctx)
 		return;
 	}
 	struct wp_object *obj =
-			listset_get(ctx->obj_list, surface->attached_buffer_id);
+			tracker_get(ctx->tracker, surface->attached_buffer_id);
 	if (!obj) {
 		wp_error("Attached buffer no longer exists");
 		return;
@@ -934,8 +934,8 @@ void do_zwlr_screencopy_frame_v1_evt_ready(struct context *ctx,
 		wp_error("frame has no copy target");
 		return;
 	}
-	struct wp_object *obj = (struct wp_object *)listset_get(
-			ctx->obj_list, frame->buffer_id);
+	struct wp_object *obj = (struct wp_object *)tracker_get(
+			ctx->tracker, frame->buffer_id);
 	if (!obj) {
 		wp_error("frame copy target no longer exists");
 		return;

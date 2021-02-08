@@ -37,112 +37,197 @@ static const char *get_type_name(struct wp_object *obj)
 	return obj->type ? obj->type->name : "<no type>";
 }
 
-int listset_insert(struct fd_translation_map *map, struct obj_list *lst,
-		struct wp_object *obj)
+static struct wp_object *tree_rotate_left(struct wp_object *n)
 {
-	if (!lst->size) {
-		lst->size = 0;
-		lst->nobj = 0;
-		lst->objs = NULL;
-	}
-	if (buf_ensure_size(lst->nobj + 1, sizeof(struct wp_object *),
-			    &lst->size, (void **)&lst->objs) == -1) {
-		return -1;
-	}
-	for (int i = 0; i < lst->nobj; i++) {
-		if (lst->objs[i]->obj_id == obj->obj_id) {
-			/* We /always/ replace the object, to ensure that map
-			 * elements are never duplicated and make the deletion
-			 * process cause crashes */
-			if (!lst->objs[i]->is_zombie) {
-				wp_error("Replacing object @%u that already exists: old type %s, new type %s",
-						obj->obj_id,
-						get_type_name(lst->objs[i]),
-						get_type_name(obj));
-			}
-			/* Zombie objects (server allocated, client deleted) are
-			 * only acknowledged destroyed by the server when they
-			 * are replaced. */
-			destroy_wp_object(map, lst->objs[i]);
-			lst->objs[i] = obj;
-			return 0;
-		}
-		if (lst->objs[i]->obj_id > obj->obj_id) {
-			memmove(lst->objs + i + 1, lst->objs + i,
-					(size_t)(lst->nobj - i) *
-							sizeof(struct wp_object *));
-			lst->objs[i] = obj;
-			lst->nobj++;
-			return 0;
-		}
-	}
-	lst->objs[lst->nobj++] = obj;
-	return 0;
+	struct wp_object *tmp = n->t_right;
+	n->t_right = tmp->t_left;
+	tmp->t_left = n;
+	return tmp;
 }
-void listset_replace_existing(struct obj_list *lst, struct wp_object *new_obj)
+static struct wp_object *tree_rotate_right(struct wp_object *n)
 {
-	for (int i = 0; i < lst->nobj; i++) {
-		if (lst->objs[i]->obj_id == new_obj->obj_id) {
-			lst->objs[i] = new_obj;
-		}
-	}
+	struct wp_object *tmp = n->t_left;
+	n->t_left = tmp->t_right;
+	tmp->t_right = n;
+	return tmp;
 }
-void listset_remove(struct obj_list *lst, struct wp_object *obj)
+static void tree_link_right(struct wp_object **cur, struct wp_object **rn)
 {
-	for (int i = 0; i < lst->nobj; i++) {
-		if (lst->objs[i]->obj_id == obj->obj_id) {
-			lst->nobj--;
-			if (i < lst->nobj) {
-				memmove(lst->objs + i, lst->objs + i + 1,
-						(size_t)(lst->nobj - i) *
-								sizeof(struct wp_object *));
-			}
-			return;
-		}
-	}
+	(*rn)->t_left = *cur;
+	*rn = *cur;
+	*cur = (*cur)->t_left;
+}
+static void tree_link_left(struct wp_object **cur, struct wp_object **ln)
+{
+	(*ln)->t_right = *cur;
+	*ln = *cur;
+	*cur = (*cur)->t_right;
+}
 
-	wp_error("Object not in list");
-	return;
-}
-struct wp_object *listset_get(struct obj_list *lst, uint32_t id)
+/* Splay operation, following Sleator+Tarjan, 1985 */
+static struct wp_object *tree_branch_splay(struct wp_object *root, uint32_t key)
 {
-	for (int i = 0; i < lst->nobj; i++) {
-		if (lst->objs[i]->obj_id > id) {
-			return NULL;
-		} else if (lst->objs[i]->obj_id == id) {
-			return lst->objs[i];
+	if (!root) {
+		return NULL;
+	}
+	struct wp_object bg = {.t_left = NULL, .t_right = NULL};
+	struct wp_object *ln = &bg;
+	struct wp_object *rn = &bg;
+	struct wp_object *cur = root;
+
+	while (key != cur->obj_id) {
+		if (key < cur->obj_id) {
+			if (cur->t_left && key < cur->t_left->obj_id) {
+				cur = tree_rotate_right(cur);
+			}
+			if (!cur->t_left) {
+				break;
+			}
+			tree_link_right(&cur, &rn);
+		} else {
+			if (cur->t_right && key > cur->t_right->obj_id) {
+				cur = tree_rotate_left(cur);
+			}
+			if (!cur->t_right) {
+				break;
+			}
+			tree_link_left(&cur, &ln);
 		}
+	}
+	ln->t_right = cur->t_left;
+	rn->t_left = cur->t_right;
+	cur->t_left = bg.t_right;
+	cur->t_right = bg.t_left;
+	return cur;
+}
+static void tree_insert(struct wp_object **tree, struct wp_object *new_node)
+{
+	/* Reset these, just in case */
+	new_node->t_left = NULL;
+	new_node->t_right = NULL;
+
+	struct wp_object *r = *tree;
+	if (!r) {
+		*tree = new_node;
+		return;
+	}
+	r = tree_branch_splay(r, new_node->obj_id);
+	if (new_node->obj_id < r->obj_id) {
+		new_node->t_left = r->t_left;
+		new_node->t_right = r;
+		r->t_left = NULL;
+		r = new_node;
+	} else if (new_node->obj_id > r->obj_id) {
+		new_node->t_right = r->t_right;
+		new_node->t_left = r;
+		r->t_right = NULL;
+		r = new_node;
+	} else {
+		/* already in tree, no effect? or do silent override */
+	}
+	*tree = r;
+}
+static void tree_remove(struct wp_object **tree, uint32_t key)
+{
+	struct wp_object *r = *tree;
+	r = tree_branch_splay(r, key);
+	if (!r || r->obj_id != key) {
+		/* wasn't in tree */
+		return;
+	}
+	struct wp_object *lbranch = r->t_left;
+	struct wp_object *rbranch = r->t_right;
+	if (!lbranch) {
+		*tree = rbranch;
+		return;
+	}
+	r = tree_branch_splay(lbranch, key);
+	r->t_right = rbranch;
+	*tree = r;
+}
+struct wp_object *tree_lookup(struct wp_object **tree, uint32_t key)
+{
+	*tree = tree_branch_splay(*tree, key);
+	if (*tree && (*tree)->obj_id == key) {
+		return *tree;
 	}
 	return NULL;
+}
+
+void tracker_insert(struct fd_translation_map *map, struct message_tracker *mt,
+		struct wp_object *obj)
+{
+	struct wp_object *old_obj = tree_lookup(&mt->objtree_root, obj->obj_id);
+	if (old_obj) {
+		/* We /always/ replace the object, to ensure that map
+		 * elements are never duplicated and make the deletion
+		 * process cause crashes */
+		if (!old_obj->is_zombie) {
+			wp_error("Replacing object @%u that already exists: old type %s, new type %s",
+					obj->obj_id, get_type_name(old_obj),
+					get_type_name(obj));
+		}
+		/* Zombie objects (server allocated, client deleted) are
+		 * only acknowledged destroyed by the server when they
+		 * are replaced. */
+		tree_remove(&mt->objtree_root, old_obj->obj_id);
+		destroy_wp_object(map, old_obj);
+	}
+
+	tree_insert(&mt->objtree_root, obj);
+}
+void tracker_replace_existing(
+		struct message_tracker *mt, struct wp_object *new_obj)
+{
+	tree_remove(&mt->objtree_root, new_obj->obj_id);
+	tree_insert(&mt->objtree_root, new_obj);
+}
+void tracker_remove(struct message_tracker *mt, struct wp_object *obj)
+{
+	tree_remove(&mt->objtree_root, obj->obj_id);
+}
+struct wp_object *tracker_get(struct message_tracker *mt, uint32_t id)
+{
+	return tree_lookup(&mt->objtree_root, id);
 }
 struct wp_object *get_object(struct message_tracker *mt, uint32_t id,
 		const struct wp_interface *intf)
 {
 	(void)intf;
-	return listset_get(&mt->objects, id);
+	return tracker_get(mt, id);
 }
 
 int init_message_tracker(struct message_tracker *mt)
 {
 	memset(mt, 0, sizeof(*mt));
 
+	/* heap allocate this, so we don't need to protect against adversarial
+	 * replacement */
 	struct wp_object *disp = create_wp_object(1, the_display_interface);
 	if (!disp) {
 		return -1;
 	}
-	if (listset_insert(NULL, &mt->objects, disp) == -1) {
-		wp_error("Failed to allocate space for display object");
-		return -1;
-	}
+	tracker_insert(NULL, mt, disp);
 	return 0;
+}
+static void recursive_destroy_object(
+		struct fd_translation_map *map, struct wp_object *obj)
+{
+	if (obj->t_left) {
+		recursive_destroy_object(map, obj->t_left);
+	}
+	if (obj->t_right) {
+		recursive_destroy_object(map, obj->t_right);
+	}
+	destroy_wp_object(map, obj);
 }
 void cleanup_message_tracker(
 		struct fd_translation_map *map, struct message_tracker *mt)
 {
-	for (int i = 0; i < mt->objects.nobj; i++) {
-		destroy_wp_object(map, mt->objects.objs[i]);
+	if (mt->objtree_root) {
+		recursive_destroy_object(map, mt->objtree_root);
 	}
-	free(mt->objects.objs);
+	mt->objtree_root = NULL;
 }
 
 static bool word_has_empty_bytes(uint32_t v)
@@ -229,13 +314,7 @@ static bool build_new_objects(const struct msg_data *data,
 			if (!new_obj) {
 				return false;
 			}
-			if (listset_insert(map, &mt->objects, new_obj) == -1) {
-				wp_error("Failed to allocate space for new object id=%u type=%s",
-						new_id,
-						data->new_obj_types[k]->name);
-				destroy_wp_object(map, new_obj);
-				return false;
-			}
+			tracker_insert(map, mt, new_obj);
 		}
 	}
 	return true;
@@ -264,7 +343,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		return PARSE_ERROR;
 	}
 	// display: object = 0?
-	struct wp_object *objh = listset_get(&g->tracker.objects, obj);
+	struct wp_object *objh = tracker_get(&g->tracker, obj);
 	if (!objh || !objh->type) {
 		wp_debug("Unidentified object %d with %s", obj,
 				from_client ? "request" : "event");
@@ -318,7 +397,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	int fds_used = 0;
 	struct context ctx = {
 			.g = g,
-			.obj_list = &g->tracker.objects,
+			.tracker = &g->tracker,
 			.obj = objh,
 			.on_display_side = display_side,
 			.drop_this_msg = false,

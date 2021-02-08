@@ -37,21 +37,14 @@ struct wp_interface;
 /** An object used by the wayland protocol. Specific types may extend
  * this struct, using the following data as a header */
 struct wp_object {
-	const struct wp_interface *type; // Use to lookup the message handler
+	struct wp_object *t_left, *t_right; // inline tree implementation
+	const struct wp_interface *type;    // Use to lookup the message handler
 	uint32_t obj_id;
 	bool is_zombie; // object deleted but not yet acknowledged remotely
 };
-/** List of all Wayland protocol objects */
-struct obj_list {
-	struct wp_object **objs;
-	int nobj;
-	int size;
-};
 struct message_tracker {
-	// objects all have a 'type'
-	// creating a new type <-> binding it in the 'interface' list, via
-	// registry. each type produces 'callbacks'
-	struct obj_list objects;
+	/* Tree containing all objects that are currently alive or zombie */
+	struct wp_object *objtree_root;
 	/* sequence number to discriminate between wl_buffer objects; object ids
 	 * and pointers are not guaranteed to be unique */
 	uint64_t buffer_seqno;
@@ -59,7 +52,7 @@ struct message_tracker {
 /** Context object, to be passed to the protocol handler functions */
 struct context {
 	struct globals *const g;
-	struct obj_list *const obj_list;
+	struct message_tracker *const tracker;
 	struct wp_object *obj;
 	bool drop_this_msg;
 	/* If true, running as waypipe client, and interfacing with compositor's
@@ -78,13 +71,14 @@ struct context {
 
 /** Add a protocol object to the list, replacing any preceding object with
  * the same id. Returns -1 on allocation failure. */
-int listset_insert(struct fd_translation_map *map, struct obj_list *lst,
+void tracker_insert(struct fd_translation_map *map, struct message_tracker *mt,
 		struct wp_object *obj);
-void listset_remove(struct obj_list *lst, struct wp_object *obj);
+void tracker_remove(struct message_tracker *mt, struct wp_object *obj);
 /** Replace an object that is already in the protocol list with a new object
  * that has the same id; will silently fail if id not present */
-void listset_replace_existing(struct obj_list *lst, struct wp_object *obj);
-struct wp_object *listset_get(struct obj_list *lst, uint32_t id);
+void tracker_replace_existing(
+		struct message_tracker *mt, struct wp_object *obj);
+struct wp_object *tracker_get(struct message_tracker *mt, uint32_t id);
 
 int init_message_tracker(struct message_tracker *mt);
 void cleanup_message_tracker(
