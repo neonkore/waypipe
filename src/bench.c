@@ -364,6 +364,8 @@ int run_bench(float bandwidth_mBps, uint32_t test_size, int n_worker_threads)
 	void *text_image = create_text_like_image(test_size);
 	void *vid_image = create_video_like_image(test_size);
 	if (!text_image || !vid_image) {
+		free(text_image);
+		free(vid_image);
 		wp_error("Failed to allocate test images");
 		return EXIT_FAILURE;
 	}
