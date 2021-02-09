@@ -154,8 +154,7 @@ struct wp_object *tree_lookup(struct wp_object **tree, uint32_t key)
 	return NULL;
 }
 
-void tracker_insert(struct fd_translation_map *map, struct message_tracker *mt,
-		struct wp_object *obj)
+void tracker_insert(struct message_tracker *mt, struct wp_object *obj)
 {
 	struct wp_object *old_obj = tree_lookup(&mt->objtree_root, obj->obj_id);
 	if (old_obj) {
@@ -171,7 +170,7 @@ void tracker_insert(struct fd_translation_map *map, struct message_tracker *mt,
 		 * only acknowledged destroyed by the server when they
 		 * are replaced. */
 		tree_remove(&mt->objtree_root, old_obj->obj_id);
-		destroy_wp_object(map, old_obj);
+		destroy_wp_object(old_obj);
 	}
 
 	tree_insert(&mt->objtree_root, obj);
@@ -207,25 +206,23 @@ int init_message_tracker(struct message_tracker *mt)
 	if (!disp) {
 		return -1;
 	}
-	tracker_insert(NULL, mt, disp);
+	tracker_insert(mt, disp);
 	return 0;
 }
-static void recursive_destroy_object(
-		struct fd_translation_map *map, struct wp_object *obj)
+static void recursive_destroy_object(struct wp_object *obj)
 {
 	if (obj->t_left) {
-		recursive_destroy_object(map, obj->t_left);
+		recursive_destroy_object(obj->t_left);
 	}
 	if (obj->t_right) {
-		recursive_destroy_object(map, obj->t_right);
+		recursive_destroy_object(obj->t_right);
 	}
-	destroy_wp_object(map, obj);
+	destroy_wp_object(obj);
 }
-void cleanup_message_tracker(
-		struct fd_translation_map *map, struct message_tracker *mt)
+void cleanup_message_tracker(struct message_tracker *mt)
 {
 	if (mt->objtree_root) {
-		recursive_destroy_object(map, mt->objtree_root);
+		recursive_destroy_object(mt->objtree_root);
 	}
 	mt->objtree_root = NULL;
 }
@@ -289,8 +286,8 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
  * overwritten by accident/corrupt input.
  */
 static bool build_new_objects(const struct msg_data *data,
-		const uint32_t *payload, struct fd_translation_map *map,
-		struct message_tracker *mt, const struct wp_object *caller_obj)
+		const uint32_t *payload, struct message_tracker *mt,
+		const struct wp_object *caller_obj)
 {
 	unsigned int pos = 0;
 	int gap_no = 0;
@@ -314,7 +311,7 @@ static bool build_new_objects(const struct msg_data *data,
 			if (!new_obj) {
 				return false;
 			}
-			tracker_insert(map, mt, new_obj);
+			tracker_insert(mt, new_obj);
 		}
 	}
 	return true;
@@ -390,7 +387,7 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 		return PARSE_UNKNOWN;
 	}
 
-	if (!build_new_objects(msg, payload, &g->map, &g->tracker, objh)) {
+	if (!build_new_objects(msg, payload, &g->tracker, objh)) {
 		return PARSE_UNKNOWN;
 	}
 

@@ -70,9 +70,8 @@ struct context {
 };
 
 /** Add a protocol object to the list, replacing any preceding object with
- * the same id. Returns -1 on allocation failure. */
-void tracker_insert(struct fd_translation_map *map, struct message_tracker *mt,
-		struct wp_object *obj);
+ * the same id. */
+void tracker_insert(struct message_tracker *mt, struct wp_object *obj);
 void tracker_remove(struct message_tracker *mt, struct wp_object *obj);
 /** Replace an object that is already in the protocol list with a new object
  * that has the same id; will silently fail if id not present */
@@ -81,8 +80,7 @@ void tracker_replace_existing(
 struct wp_object *tracker_get(struct message_tracker *mt, uint32_t id);
 
 int init_message_tracker(struct message_tracker *mt);
-void cleanup_message_tracker(
-		struct fd_translation_map *map, struct message_tracker *mt);
+void cleanup_message_tracker(struct message_tracker *mt);
 
 /** Read message size from header; the 8 bytes beyond data must exist */
 int peek_message_size(const void *data);
@@ -129,8 +127,7 @@ void parse_and_prune_messages(struct globals *g, bool on_display_side,
 struct wp_object *create_wp_object(
 		uint32_t it, const struct wp_interface *type);
 /** Type-specific destruction routines, also dereferencing linked shadow_fds */
-void destroy_wp_object(
-		struct fd_translation_map *map, struct wp_object *object);
+void destroy_wp_object(struct wp_object *object);
 
 extern const struct wp_interface *the_display_interface;
 

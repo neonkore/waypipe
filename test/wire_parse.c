@@ -121,19 +121,19 @@ int main(int argc, char **argv)
 	init_message_tracker(&mt);
 	struct wp_object *old_display = tracker_get(&mt, 1);
 	tracker_remove(&mt, old_display);
-	destroy_wp_object(NULL, old_display);
+	destroy_wp_object(old_display);
 
 	struct wp_object xobj;
 	xobj.type = &intf_xtype;
 	xobj.is_zombie = false;
 	xobj.obj_id = 991;
-	tracker_insert(NULL, &mt, &xobj);
+	tracker_insert(&mt, &xobj);
 
 	struct wp_object yobj;
 	yobj.type = &intf_ytype;
 	yobj.is_zombie = false;
 	yobj.obj_id = 992;
-	tracker_insert(NULL, &mt, &yobj);
+	tracker_insert(&mt, &yobj);
 
 	struct context ctx = {.obj = &xobj, .g = NULL};
 
@@ -224,7 +224,7 @@ int main(int argc, char **argv)
 
 	tracker_remove(&mt, &xobj);
 	tracker_remove(&mt, &yobj);
-	cleanup_message_tracker(NULL, &mt);
+	cleanup_message_tracker(&mt);
 
 	printf("Net result: %s\n", all_success ? "pass" : "FAIL");
 	return all_success ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -216,23 +216,22 @@ static const struct wp_interface *const non_global_interfaces[] = {
 		&intf_zwp_primary_selection_source_v1,
 };
 
-void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
+void destroy_wp_object(struct wp_object *object)
 {
 	if (object->type == &intf_wl_shm_pool) {
 		struct obj_wl_shm_pool *r = (struct obj_wl_shm_pool *)object;
 		if (r->owned_buffer) {
-			shadow_decref_protocol(map, r->owned_buffer);
+			shadow_decref_protocol(r->owned_buffer);
 		}
 	} else if (object->type == &intf_wl_buffer) {
 		struct obj_wl_buffer *r = (struct obj_wl_buffer *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->dmabuf_buffers[i]) {
-				shadow_decref_protocol(
-						map, r->dmabuf_buffers[i]);
+				shadow_decref_protocol(r->dmabuf_buffers[i]);
 			}
 		}
 		if (r->shm_buffer) {
-			shadow_decref_protocol(map, r->shm_buffer);
+			shadow_decref_protocol(r->shm_buffer);
 		}
 	} else if (object->type == &intf_wl_surface) {
 		struct obj_wl_surface *r = (struct obj_wl_surface *)object;
@@ -250,7 +249,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 				(struct obj_zwp_linux_dmabuf_params *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->add[i].buffer) {
-				shadow_decref_protocol(map, r->add[i].buffer);
+				shadow_decref_protocol(r->add[i].buffer);
 			}
 			// Sometimes multiple entries point to the same buffer
 			if (r->add[i].fd != -1) {
@@ -271,8 +270,7 @@ void destroy_wp_object(struct fd_translation_map *map, struct wp_object *object)
 				(struct obj_wlr_export_dmabuf_frame *)object;
 		for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 			if (r->objects[i].buffer) {
-				shadow_decref_protocol(
-						map, r->objects[i].buffer);
+				shadow_decref_protocol(r->objects[i].buffer);
 			}
 		}
 	}
@@ -342,7 +340,7 @@ void do_wl_display_evt_delete_id(struct context *ctx, uint32_t id)
 	/* ensure this isn't miscalled to have wl_display delete itself */
 	if (obj && obj != ctx->obj) {
 		tracker_remove(ctx->tracker, obj);
-		destroy_wp_object(&ctx->g->map, obj);
+		destroy_wp_object(obj);
 	}
 }
 void do_wl_display_req_get_registry(

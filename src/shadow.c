@@ -70,8 +70,7 @@ struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
 	}
 	return NULL;
 }
-static void destroy_unlinked_sfd(
-		struct fd_translation_map *map, struct shadow_fd *sfd)
+static void destroy_unlinked_sfd(struct shadow_fd *sfd)
 {
 	wp_debug("Destroying %s RID=%d", fdcat_to_str(sfd->type),
 			sfd->remote_id);
@@ -100,7 +99,6 @@ static void destroy_unlinked_sfd(
 		checked_close(sfd->fd_local);
 	}
 	free(sfd);
-	(void)map;
 }
 static void cleanup_thread_local(struct thread_data *data)
 {
@@ -151,13 +149,12 @@ void cleanup_translation_map(struct fd_translation_map *map)
 				   *lnxt = lcur->l_next;
 			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
 		struct shadow_fd *cur = (struct shadow_fd *)lcur;
-		destroy_unlinked_sfd(map, cur);
+		destroy_unlinked_sfd(cur);
 	}
 	map->link.l_next = &map->link;
 	map->link.l_prev = &map->link;
 }
-bool destroy_shadow_if_unreferenced(
-		struct fd_translation_map *map, struct shadow_fd *sfd)
+bool destroy_shadow_if_unreferenced(struct shadow_fd *sfd)
 {
 	bool autodelete = sfd->has_owner;
 	if (sfd->type == FDC_PIPE && !sfd->pipe.can_read &&
@@ -173,7 +170,7 @@ bool destroy_shadow_if_unreferenced(
 		sfd->link.l_next = NULL;
 		sfd->link.l_prev = NULL;
 
-		destroy_unlinked_sfd(map, sfd);
+		destroy_unlinked_sfd(sfd);
 		return true;
 	} else if (sfd->refcount.protocol < 0 || sfd->refcount.transfer < 0) {
 		wp_error("Negative refcount for rid=%d: %d protocol references, %d transfer references",
@@ -2001,15 +1998,13 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 	/* all returns should happen inside switch, so none here */
 }
 
-bool shadow_decref_protocol(
-		struct fd_translation_map *map, struct shadow_fd *sfd)
+bool shadow_decref_protocol(struct shadow_fd *sfd)
 {
 	sfd->refcount.protocol--;
-	return destroy_shadow_if_unreferenced(map, sfd);
+	return destroy_shadow_if_unreferenced(sfd);
 }
 
-bool shadow_decref_transfer(
-		struct fd_translation_map *map, struct shadow_fd *sfd)
+bool shadow_decref_transfer(struct shadow_fd *sfd)
 {
 	sfd->refcount.transfer--;
 	if (sfd->refcount.transfer == 0 && sfd->type == FDC_PIPE) {
@@ -2021,7 +2016,7 @@ bool shadow_decref_transfer(
 			sfd->fd_local = sfd->pipe.fd;
 		}
 	}
-	return destroy_shadow_if_unreferenced(map, sfd);
+	return destroy_shadow_if_unreferenced(sfd);
 }
 struct shadow_fd *shadow_incref_protocol(struct shadow_fd *sfd)
 {
@@ -2042,7 +2037,7 @@ void decref_transferred_fds(struct fd_translation_map *map, int nfds, int fds[])
 {
 	for (int i = 0; i < nfds; i++) {
 		struct shadow_fd *sfd = get_shadow_for_local_fd(map, fds[i]);
-		shadow_decref_transfer(map, sfd);
+		shadow_decref_transfer(sfd);
 	}
 }
 void decref_transferred_rids(
@@ -2050,7 +2045,7 @@ void decref_transferred_rids(
 {
 	for (int i = 0; i < nids; i++) {
 		struct shadow_fd *sfd = get_shadow_for_rid(map, ids[i]);
-		shadow_decref_transfer(map, sfd);
+		shadow_decref_transfer(sfd);
 	}
 }
 
@@ -2180,7 +2175,7 @@ void flush_writable_pipes(struct fd_translation_map *map)
 				   *lnxt = lcur->l_next;
 			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
 		struct shadow_fd *cur = (struct shadow_fd *)lcur;
-		destroy_shadow_if_unreferenced(map, cur);
+		destroy_shadow_if_unreferenced(cur);
 	}
 }
 void read_readable_pipes(struct fd_translation_map *map)
@@ -2232,7 +2227,7 @@ void read_readable_pipes(struct fd_translation_map *map)
 				   *lnxt = lcur->l_next;
 			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
 		struct shadow_fd *cur = (struct shadow_fd *)lcur;
-		destroy_shadow_if_unreferenced(map, cur);
+		destroy_shadow_if_unreferenced(cur);
 	}
 }
 

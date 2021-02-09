@@ -736,7 +736,7 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 			/* Note: finish_update() may delete `cur` */
 			struct shadow_fd *cur = (struct shadow_fd *)lcur;
 			finish_update(cur);
-			destroy_shadow_if_unreferenced(&g->map, cur);
+			destroy_shadow_if_unreferenced(cur);
 		}
 
 		/* Reset work queue */
@@ -868,7 +868,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 				g->config->old_video_mode);
 		/* collecting updates can reset `pipe.remote_can_X` state, so
 		 * garbage collect the sfd immediately after */
-		destroy_shadow_if_unreferenced(&g->map, cur);
+		destroy_shadow_if_unreferenced(cur);
 	}
 
 	int num_mt_tasks = start_parallel_work(
@@ -1455,7 +1455,7 @@ init_failure_cleanup:
 	}
 
 	cleanup_thread_pool(&g.threads);
-	cleanup_message_tracker(&g.map, &g.tracker);
+	cleanup_message_tracker(&g.tracker);
 	cleanup_translation_map(&g.map);
 	cleanup_render_data(&g.render);
 	cleanup_hwcontext(&g.render);

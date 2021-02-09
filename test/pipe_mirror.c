@@ -52,7 +52,7 @@ static int shadow_sync(struct fd_translation_map *src_map,
 		collect_update(NULL, sfd, &queue, false);
 		/* collecting updates can reset `remote_can_X` state, so
 		 * garbage collect the sfd */
-		destroy_shadow_if_unreferenced(src_map, sfd);
+		destroy_shadow_if_unreferenced(sfd);
 	}
 	for (int i = 0; i < queue.end; i++) {
 		if (queue.vecs[i].iov_len < 8) {
@@ -170,7 +170,7 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 	/* Step 1: replicate */
 	struct shadow_fd *src_shadow = translate_fd(&src_map, NULL, spec_end,
 			FDC_PIPE, 0, NULL, false, interpret_as_force_iw);
-	shadow_decref_transfer(&src_map, src_shadow);
+	shadow_decref_transfer(src_shadow);
 	int rid = src_shadow->remote_id;
 	if (shadow_sync(&src_map, &dst_map) == -1) {
 		success = false;
@@ -183,7 +183,7 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 		goto cleanup;
 	}
 	anti_end = dup(dst_shadow->fd_local);
-	shadow_decref_transfer(&dst_map, dst_shadow);
+	shadow_decref_transfer(dst_shadow);
 
 	if (set_nonblocking(anti_end) == -1 || set_nonblocking(opp_end) == -1) {
 		printf("Failed to make user fds nonblocking\n");

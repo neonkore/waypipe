@@ -320,16 +320,15 @@ void close_rclosed_pipes(struct fd_translation_map *map);
 /** Reduce the reference count for a shadow structure which is owned. The
  * structure should not be used by the caller after this point. Returns true if
  * pointer deleted. */
-bool shadow_decref_protocol(struct fd_translation_map *map, struct shadow_fd *);
-bool shadow_decref_transfer(struct fd_translation_map *map, struct shadow_fd *);
+bool shadow_decref_protocol(struct shadow_fd *);
+bool shadow_decref_transfer(struct shadow_fd *);
 /** Increase the reference count of a shadow structure, and mark it as being
  * owned. For convenience, returns the passed-in structure. */
 struct shadow_fd *shadow_incref_protocol(struct shadow_fd *);
 struct shadow_fd *shadow_incref_transfer(struct shadow_fd *);
 /** If the shadow structure has no references, destroy it and remove it from the
  * map */
-bool destroy_shadow_if_unreferenced(
-		struct fd_translation_map *map, struct shadow_fd *sfd);
+bool destroy_shadow_if_unreferenced(struct shadow_fd *sfd);
 /** Decrease reference count for all objects in the given list, deleting
  * iff they are owned by protocol objects and have refcount zero */
 void decref_transferred_fds(

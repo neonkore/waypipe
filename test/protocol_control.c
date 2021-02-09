@@ -140,7 +140,7 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		collect_update(&src->glob.threads, cur, &transfers,
 				src->config.old_video_mode);
-		destroy_shadow_if_unreferenced(&src->glob.map, cur);
+		destroy_shadow_if_unreferenced(cur);
 	}
 
 	decref_transferred_rids(
@@ -277,7 +277,7 @@ static void cleanup_state(struct test_state *s)
 {
 	cleanup_render_data(&s->glob.render);
 	cleanup_thread_pool(&s->glob.threads);
-	cleanup_message_tracker(&s->glob.map, &s->glob.tracker);
+	cleanup_message_tracker(&s->glob.tracker);
 	cleanup_translation_map(&s->glob.map);
 
 	for (int i = 0; i < s->nrcvd; i++) {
