@@ -48,7 +48,10 @@
 struct shadow_fd *get_shadow_for_local_fd(
 		struct fd_translation_map *map, int lfd)
 {
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		if (cur->fd_local == lfd) {
 			return cur;
 		}
@@ -57,7 +60,10 @@ struct shadow_fd *get_shadow_for_local_fd(
 }
 struct shadow_fd *get_shadow_for_rid(struct fd_translation_map *map, int rid)
 {
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		if (cur->remote_id == rid) {
 			return cur;
 		}
@@ -141,14 +147,14 @@ static void setup_thread_local(struct thread_data *data,
 }
 void cleanup_translation_map(struct fd_translation_map *map)
 {
-	struct shadow_fd *cur = map->list;
-	map->list = NULL;
-	while (cur) {
-		struct shadow_fd *tmp = cur;
-		cur = tmp->next;
-		tmp->next = NULL;
-		destroy_unlinked_sfd(map, tmp);
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
+		destroy_unlinked_sfd(map, cur);
 	}
+	map->link.l_next = &map->link;
+	map->link.l_prev = &map->link;
 }
 bool destroy_shadow_if_unreferenced(
 		struct fd_translation_map *map, struct shadow_fd *sfd)
@@ -161,17 +167,11 @@ bool destroy_shadow_if_unreferenced(
 	}
 	if (sfd->refcount.protocol == 0 && sfd->refcount.transfer == 0 &&
 			sfd->refcount.compute == false && autodelete) {
-		for (struct shadow_fd *cur = map->list, *prev = NULL; cur;
-				prev = cur, cur = cur->next) {
-			if (cur == sfd) {
-				if (!prev) {
-					map->list = cur->next;
-				} else {
-					prev->next = cur->next;
-				}
-				break;
-			}
-		}
+		/* remove shadowfd from list */
+		sfd->link.l_prev->l_next = sfd->link.l_next;
+		sfd->link.l_next->l_prev = sfd->link.l_prev;
+		sfd->link.l_next = NULL;
+		sfd->link.l_prev = NULL;
 
 		destroy_unlinked_sfd(map, sfd);
 		return true;
@@ -187,7 +187,8 @@ static void *worker_thread_main(void *arg);
 void setup_translation_map(struct fd_translation_map *map, bool display_side)
 {
 	map->local_sign = display_side ? -1 : 1;
-	map->list = NULL;
+	map->link.l_next = &map->link;
+	map->link.l_prev = &map->link;
 	map->max_local_id = 1;
 }
 
@@ -524,8 +525,11 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		wp_error("Failed to allocate shadow_fd structure");
 		return NULL;
 	}
-	sfd->next = map->list;
-	map->list = sfd;
+	sfd->link.l_prev = &map->link;
+	sfd->link.l_next = map->link.l_next;
+	sfd->link.l_prev->l_next = &sfd->link;
+	sfd->link.l_next->l_prev = &sfd->link;
+
 	sfd->fd_local = fd;
 	sfd->mem_local = NULL;
 	sfd->mem_mirror = NULL;
@@ -1375,8 +1379,11 @@ static int open_sfd(struct fd_translation_map *map, struct shadow_fd **sfd_ptr,
 				remote_id);
 		return ERR_FATAL;
 	}
-	sfd->next = map->list;
-	map->list = sfd;
+	sfd->link.l_prev = &map->link;
+	sfd->link.l_next = map->link.l_next;
+	sfd->link.l_prev->l_next = &sfd->link;
+	sfd->link.l_next->l_prev = &sfd->link;
+
 	sfd->remote_id = remote_id;
 	sfd->fd_local = -1;
 	sfd->is_dirty = false;
@@ -2050,7 +2057,10 @@ void decref_transferred_rids(
 int count_npipes(const struct fd_translation_map *map)
 {
 	int np = 0;
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		if (cur->type == FDC_PIPE) {
 			np++;
 		}
@@ -2061,7 +2071,10 @@ int fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds,
 		bool check_read)
 {
 	int np = 0;
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		if (cur->type == FDC_PIPE && cur->pipe.fd != -1) {
 			pfds[np].fd = cur->pipe.fd;
 			pfds[np].events = 0;
@@ -2080,7 +2093,10 @@ int fill_with_pipes(const struct fd_translation_map *map, struct pollfd *pfds,
 static struct shadow_fd *get_shadow_for_pipe_fd(
 		struct fd_translation_map *map, int pipefd)
 {
-	for (struct shadow_fd *cur = map->list; cur; cur = cur->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		if (cur->type == FDC_PIPE && cur->pipe.fd == pipefd) {
 			return cur;
 		}
@@ -2111,7 +2127,10 @@ void mark_pipe_object_statuses(
 
 void flush_writable_pipes(struct fd_translation_map *map)
 {
-	for (struct shadow_fd *sfd = map->list; sfd; sfd = sfd->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *sfd = (struct shadow_fd *)lcur;
 		if (sfd->type != FDC_PIPE || !sfd->pipe.writable ||
 				sfd->pipe.send.used <= 0) {
 			continue;
@@ -2157,14 +2176,19 @@ void flush_writable_pipes(struct fd_translation_map *map)
 		}
 	}
 	/* Destroy any new unreferenced objects */
-	for (struct shadow_fd *cur = map->list, *nxt = NULL; cur; cur = nxt) {
-		nxt = cur->next;
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		destroy_shadow_if_unreferenced(map, cur);
 	}
 }
 void read_readable_pipes(struct fd_translation_map *map)
 {
-	for (struct shadow_fd *sfd = map->list; sfd; sfd = sfd->next) {
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *sfd = (struct shadow_fd *)lcur;
 		if (sfd->type != FDC_PIPE || !sfd->pipe.readable) {
 			continue;
 		}
@@ -2204,8 +2228,10 @@ void read_readable_pipes(struct fd_translation_map *map)
 	}
 
 	/* Destroy any new unreferenced objects */
-	for (struct shadow_fd *cur = map->list, *nxt = NULL; cur; cur = nxt) {
-		nxt = cur->next;
+	for (struct shadow_fd_link *lcur = map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &map->link; lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		destroy_shadow_if_unreferenced(map, cur);
 	}
 }

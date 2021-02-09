@@ -133,9 +133,11 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		}
 	}
 
-	for (struct shadow_fd *cur = src->glob.map.list, *nxt = NULL; cur;
-			cur = nxt) {
-		nxt = cur->next;
+	for (struct shadow_fd_link *lcur = src->glob.map.link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &src->glob.map.link;
+			lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		collect_update(&src->glob.threads, cur, &transfers,
 				src->config.old_video_mode);
 		destroy_shadow_if_unreferenced(&src->glob.map, cur);
@@ -311,7 +313,7 @@ static void msg_fd(const struct msgtransfer tx, uint32_t id, uint32_t msgno,
 		size_t arglen, const uint32_t *args, int fd)
 {
 	struct msg m;
-	m.fds = calloc(1, sizeof(uint32_t));
+	m.fds = calloc(1, sizeof(int));
 	/* duplicate fd, so it stays alive even if shadowfd holding it dies */
 	m.fds[0] = dup(fd);
 	m.nfds = 1;

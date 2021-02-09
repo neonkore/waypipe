@@ -43,9 +43,12 @@ static int shadow_sync(struct fd_translation_map *src_map,
 	pthread_mutex_init(&queue.async_recv_queue.lock, NULL);
 
 	read_readable_pipes(src_map);
-	for (struct shadow_fd *sfd = src_map->list, *nxt = NULL; sfd;
-			sfd = nxt) {
-		nxt = sfd->next;
+
+	for (struct shadow_fd_link *lcur = src_map->link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &src_map->link;
+			lcur = lnxt, lnxt = lcur->l_next) {
+		struct shadow_fd *sfd = (struct shadow_fd *)lcur;
 		collect_update(NULL, sfd, &queue, false);
 		/* collecting updates can reset `remote_can_X` state, so
 		 * garbage collect the sfd */
@@ -286,11 +289,11 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 		goto cleanup;
 	}
 	bool deleted_shadows = true;
-	if (dst_map.list != NULL) {
+	if (dst_map.link.l_next != &dst_map.link) {
 		print_pipe_state("dst", &dst_shadow->pipe);
 		deleted_shadows = false;
 	}
-	if (src_map.list != NULL) {
+	if (src_map.link.l_next != &src_map.link) {
 		print_pipe_state("src", &src_shadow->pipe);
 		deleted_shadows = false;
 	}

@@ -58,8 +58,13 @@ enum compression_mode {
 #endif
 };
 
+struct shadow_fd_link {
+	struct shadow_fd_link *l_prev, *l_next; /* Doubly linked list */
+};
+
 struct fd_translation_map {
-	struct shadow_fd *list;
+	struct shadow_fd_link link; /* store in first position */
+
 	int max_local_id;
 	int local_sign;
 };
@@ -186,7 +191,8 @@ enum video_coding_fmt {
  * Wayland protocol.
  */
 struct shadow_fd {
-	struct shadow_fd *next; // singly-linked list // TODO: make double?
+	struct shadow_fd_link link; /* part of doubly linked list */
+
 	enum fdcat type;
 	int remote_id; // + if created serverside; - if created clientside
 	int fd_local;

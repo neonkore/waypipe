@@ -729,13 +729,16 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 	}
 
 	if (wmsg->transfers.start == wmsg->transfers.end && is_done) {
-		for (struct shadow_fd *cur = g->map.list, *nxt = NULL; cur;
-				cur = nxt) {
+		for (struct shadow_fd_link *lcur = g->map.link.l_next,
+					   *lnxt = lcur->l_next;
+				lcur != &g->map.link;
+				lcur = lnxt, lnxt = lcur->l_next) {
 			/* Note: finish_update() may delete `cur` */
-			nxt = cur->next;
+			struct shadow_fd *cur = (struct shadow_fd *)lcur;
 			finish_update(cur);
 			destroy_shadow_if_unreferenced(&g->map, cur);
 		}
+
 		/* Reset work queue */
 		pthread_mutex_lock(&g->threads.work_mutex);
 		if (g->threads.stack_count > 0 ||
@@ -855,8 +858,12 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	ackmsg_fail:;
 	}
 
-	for (struct shadow_fd *cur = g->map.list, *nxt = NULL; cur; cur = nxt) {
-		nxt = cur->next;
+	for (struct shadow_fd_link *lcur = g->map.link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &g->map.link;
+			lcur = lnxt, lnxt = lcur->l_next) {
+		/* Note: finish_update() may delete `cur` */
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
 		collect_update(&g->threads, cur, &wmsg->transfers,
 				g->config->old_video_mode);
 		/* collecting updates can reset `pipe.remote_can_X` state, so

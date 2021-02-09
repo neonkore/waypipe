@@ -554,8 +554,12 @@ void parse_and_prune_messages(struct globals *g, bool on_display_side,
 		// (Note that in some cases, a new protocol could imply
 		// a change for an existing buffer; it may make sense to
 		// mark everything dirty, then.)
-		for (struct shadow_fd *cur = g->map.list; cur;
-				cur = cur->next) {
+
+		for (struct shadow_fd_link *lcur = g->map.link.l_next,
+					   *lnxt = lcur->l_next;
+				lcur != &g->map.link;
+				lcur = lnxt, lnxt = lcur->l_next) {
+			struct shadow_fd *cur = (struct shadow_fd *)lcur;
 			if (!cur->has_owner) {
 				cur->is_dirty = true;
 			}
