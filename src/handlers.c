@@ -407,7 +407,7 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 		return;
 	}
 	/* The object has already been created, but its type is NULL */
-	struct wp_object *the_object = (struct wp_object *)id;
+	struct wp_object *the_object = id;
 	uint32_t obj_id = the_object->obj_id;
 
 	for (size_t i = 0; i < sizeof(non_global_interfaces) /
@@ -442,11 +442,12 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	}
 
 fail:
+	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface,
+			the_object->obj_id, version);
+
 	tracker_remove(ctx->tracker, the_object);
 	free(the_object);
 
-	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface,
-			id->obj_id, version);
 	(void)name;
 	(void)version;
 }
