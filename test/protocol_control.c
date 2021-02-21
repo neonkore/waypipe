@@ -275,10 +275,10 @@ static int setup_state(struct test_state *s, bool display_side)
 }
 static void cleanup_state(struct test_state *s)
 {
-	cleanup_render_data(&s->glob.render);
-	cleanup_thread_pool(&s->glob.threads);
 	cleanup_message_tracker(&s->glob.tracker);
 	cleanup_translation_map(&s->glob.map);
+	cleanup_render_data(&s->glob.render);
+	cleanup_thread_pool(&s->glob.threads);
 
 	for (int i = 0; i < s->nrcvd; i++) {
 		free(s->rcvd[i].data);
@@ -397,6 +397,17 @@ static int get_only_fd_from_msg(const struct test_state *s)
 		return -1;
 	}
 }
+static int get_fd_from_nth_to_last_msg(const struct test_state *s, int nth)
+{
+	if (!s->rcvd || s->nrcvd < nth) {
+		return -1;
+	}
+	const struct msg *m = &s->rcvd[s->nrcvd - nth];
+	if (m->nfds != 1) {
+		return -1;
+	}
+	return m->fds[0];
+}
 
 static bool test_fixed_shm_buffer_copy()
 {
@@ -511,10 +522,129 @@ end:
 	return pass;
 }
 
+#define DMABUF_FORMAT 875713112
+
+static int create_dmabuf(void)
+{
+	struct render_data rd;
+	memset(&rd, 0, sizeof(rd));
+	rd.drm_fd = -1;
+	rd.av_disabled = true;
+
+	const size_t test_width = 256;
+	const size_t test_height = 384;
+	const size_t test_cpp = 4;
+	const size_t test_size = test_width * test_height * test_cpp;
+	const struct dmabuf_slice_data slice_data = {
+			.width = (uint32_t)test_width,
+			.height = (uint32_t)test_height,
+			.format = DMABUF_FORMAT,
+			.num_planes = 1,
+			.modifier = 0,
+			.offsets = {0, 0, 0, 0},
+			.strides = {(uint32_t)(test_width * test_cpp), 0, 0, 0},
+			.using_planes = {true, false, false, false},
+	};
+
+	int dmafd = -1;
+	if (init_render_data(&rd) == -1) {
+		return -1;
+	}
+	struct gbm_bo *bo = make_dmabuf(&rd, test_size, &slice_data);
+	if (!bo) {
+		goto end;
+	}
+
+	void *map_handle = NULL;
+	void *data = map_dmabuf(bo, true, &map_handle);
+	if (!data) {
+		destroy_dmabuf(bo);
+		goto end;
+	}
+	/* TODO: the best test pattern is a colored gradient, so we can
+	 * check whether the copy flips things or not */
+	memset(data, 0x80, test_size);
+	unmap_dmabuf(bo, map_handle);
+
+	dmafd = export_dmabuf(bo);
+	if (dmafd == -1) {
+		goto end;
+	}
+	destroy_dmabuf(bo);
+
+end:
+	cleanup_render_data(&rd);
+
+	return dmafd;
+}
+
 static bool test_fixed_dmabuf_copy()
 {
-	/* todo: back out if no dmabuf support */
-	return true;
+	fprintf(stdout, "\n DMABUF test\n");
+
+	int dmabufd = create_dmabuf();
+	if (dmabufd == -1) {
+		return true;
+	}
+	struct test_state comp; /* compositor */
+	struct test_state app;  /* application */
+	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+	struct msgtransfer CA = {.src = &comp, .dst = &app};
+	struct msgtransfer AC = {.src = &app, .dst = &comp};
+	int ret_fd = -1;
+
+	// -> wl_display@1.get_registry(new id wl_registry@2)
+	msg(AC, 0x1, 1, 1, (uint32_t[]){0x2});
+	// wl_registry@2.global(1, "zwp_linux_dmabuf_v1", 1)
+	// wl_registry@2.global(2, "wl_compositor", 1)
+	global_msg(CA, 0x2, 1, "zwp_linux_dmabuf_v1", 1);
+	global_msg(CA, 0x2, 2, "wl_compositor", 1);
+	// -> wl_registry@2.bind(1, "zwp_linux_dmabuf_v1", 1, new id
+	// [unknown]@3)
+	// -> wl_registry@2.bind(2, "wl_compositor", 3, new id [unknown]@4)
+	bind_msg(AC, 0x2, 1, "zwp_linux_dmabuf_v1", 1, 0x3);
+	bind_msg(AC, 0x2, 2, "wl_compositor", 1, 0x4);
+	// zwp_linux_dmabuf_v1@3.modifier(875713112, 0, 0)
+	msg(CA, 0x3, 1, 3, (uint32_t[]){DMABUF_FORMAT, 0, 0});
+	// -> zwp_linux_dmabuf_v1@3.create_params(new id
+	// zwp_linux_buffer_params_v1@5)
+	// -> zwp_linux_buffer_params_v1@5.add(fd 41, 0, 0, 1024, 0, 0)
+	// -> zwp_linux_buffer_params_v1@5.create_immed(new id wl_buffer@6, 256,
+	// 256, 875713112, 0)
+	// -> zwp_linux_buffer_params_v1@5.destroy()
+	msg(AC, 0x3, 1, 1, (uint32_t[]){0x5});
+	msg_fd(AC, 0x5, 1, 5, (uint32_t[]){0, 0, 256 * 4, 0, 0}, dmabufd);
+	msg(AC, 0x5, 3, 5, (uint32_t[]){0x6, 256, 384, DMABUF_FORMAT, 0});
+	/* this message + previous, after reordering, are treated as one
+	 * bundle; if that is fixed, this will break, and 1 should become 2 */
+	ret_fd = get_fd_from_nth_to_last_msg(&comp, 1);
+	msg(AC, 0x5, 0, 0, NULL);
+
+	// -> wl_compositor@4.create_surface(new id wl_surface@7)
+	msg(AC, 0x4, 0, 1, (uint32_t[]){0x7});
+	// -> wl_surface@7.attach(wl_buffer@6, 0, 0)
+	msg(AC, 0x7, 1, 3, (uint32_t[]){0x6, 0, 0});
+	// -> wl_surface@7.damage(0, 0, 64, 64)
+	msg(AC, 0x7, 2, 4, (uint32_t[]){0, 0, 64, 64});
+	// -> wl_surface@7.commit()
+	msg(AC, 0x7, 6, 0, NULL);
+
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	// TODO: verify that the FD contents are correct
+
+end:
+	checked_close(dmabufd);
+	cleanup_state(&comp);
+	cleanup_state(&app);
+	return pass;
 }
 
 /* Check whether the video encoding feature can replicate a uniform
