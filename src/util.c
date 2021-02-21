@@ -368,7 +368,7 @@ int buf_ensure_size(int count, size_t obj_size, int *space, void **data)
 	return 0;
 }
 
-static const char *wmsg_types[] = {
+static const char *const wmsg_types[] = {
 		"WMSG_PROTOCOL",
 		"WMSG_INJECT_RIDS",
 		"WMSG_OPEN_FILE",
