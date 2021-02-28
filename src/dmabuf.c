@@ -215,7 +215,6 @@ static ssize_t get_dmabuf_fd_size(int fd)
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		struct dmabuf_slice_data *info, bool read_modifier)
 {
-
 	struct gbm_bo *bo;
 	if (!info) {
 		/* No protocol info, so guess the dimensions */
@@ -250,6 +249,12 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		data.modifier = info->modifier;
 		data.num_fds = 0;
 		uint32_t simple_format = 0;
+		if (info->num_planes > 4) {
+			wp_error("Failed to import dmabuf: too many planes (%d)",
+					info->num_planes);
+			return NULL;
+		}
+
 		for (int i = 0; i < info->num_planes; i++) {
 			if (info->using_planes[i]) {
 				data.fds[data.num_fds] = fd;
