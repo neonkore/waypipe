@@ -272,7 +272,11 @@ int setup_thread_pool(struct thread_pool *pool,
 		}
 	}
 
-	setup_thread_local(&pool->threads[0], compression, comp_level);
+	/* Setup thread local data from the main thread, to avoid requiring
+	 * the worker threads to allocate pools, for a few fixed buffers */
+	for (int i = 0; i < pool->nthreads; i++) {
+		setup_thread_local(&pool->threads[i], compression, comp_level);
+	}
 
 	int fds[2];
 	if (pipe(fds) == -1) {
@@ -290,7 +294,9 @@ void cleanup_thread_pool(struct thread_pool *pool)
 {
 	shutdown_threads(pool);
 	if (pool->threads) {
-		cleanup_thread_local(&pool->threads[0]);
+		for (int i = 0; i < pool->nthreads; i++) {
+			cleanup_thread_local(&pool->threads[i]);
+		}
 	}
 
 	pthread_mutex_destroy(&pool->work_mutex);
@@ -2324,8 +2330,6 @@ static void *worker_thread_main(void *arg)
 	struct thread_data *data = arg;
 	struct thread_pool *pool = data->pool;
 
-	setup_thread_local(data, pool->compression, pool->compression_level);
-
 	/* The loop is globally locked by default, and only unlocked in
 	 * pthread_cond_wait. Yes, there are fancier and faster schemes.
 	 */
@@ -2361,6 +2365,5 @@ static void *worker_thread_main(void *arg)
 	}
 	pthread_mutex_unlock(&pool->work_mutex);
 
-	cleanup_thread_local(data);
 	return NULL;
 }
