@@ -286,6 +286,7 @@ static int setup_state(struct test_state *s, bool display_side)
 
 	return 0;
 }
+
 static void cleanup_state(struct test_state *s)
 {
 	cleanup_message_tracker(&s->glob.tracker);
@@ -379,21 +380,36 @@ static void msg_send_handler(struct transfer_states *ts, struct test_state *src,
 	memset(ts->msg_space, 0, sizeof(ts->msg_space));
 	memset(ts->fd_space, 0, sizeof(ts->fd_space));
 }
+static int setup_tstate(struct transfer_states *ts)
+{
+	memset(ts, 0, sizeof(*ts));
+	ts->comp = calloc(1, sizeof(struct test_state));
+	ts->app = calloc(1, sizeof(struct test_state));
+	if (setup_state(ts->comp, true) == -1 ||
+			setup_state(ts->app, false) == -1) {
+		return -1;
+	}
+	ts->send = msg_send_handler;
+	return 0;
+}
+static void cleanup_tstate(struct transfer_states *ts)
+{
+	cleanup_state(ts->comp);
+	cleanup_state(ts->app);
+	free(ts->comp);
+	free(ts->app);
+}
 
 static bool test_fixed_shm_buffer_copy()
 {
 	fprintf(stdout, "\n  shm_pool+buffer test\n");
 
-	struct test_state comp; /* compositor */
-	struct test_state app;  /* application */
-	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
 		wp_error("Test setup failed");
 		return true;
 	}
 	bool pass = true;
-
-	struct transfer_states T = {
-			.app = &app, .comp = &comp, .send = msg_send_handler};
 
 	char *testpat = make_filled_pattern(16384, 0xFEDCBA98);
 	int fd = make_filled_file(16384, testpat);
@@ -410,7 +426,7 @@ static bool test_fixed_shm_buffer_copy()
 	send_wl_registry_req_bind(
 			&T, registry, 2, "wl_compositor", 1, compositor);
 	send_wl_shm_req_create_pool(&T, shm, pool, fd, 16384);
-	ret_fd = get_only_fd_from_msg(&comp);
+	ret_fd = get_only_fd_from_msg(T.comp);
 	send_wl_shm_pool_req_create_buffer(
 			&T, pool, buffer, 0, 64, 64, 256, 0x30334258);
 	send_wl_compositor_req_create_surface(&T, compositor, surface);
@@ -432,8 +448,7 @@ static bool test_fixed_shm_buffer_copy()
 end:
 	free(testpat);
 	checked_close(fd);
-	cleanup_state(&comp);
-	cleanup_state(&app);
+	cleanup_tstate(&T);
 
 	print_pass(pass);
 	return pass;
@@ -442,9 +457,8 @@ end:
 static bool test_fixed_keymap_copy()
 {
 	fprintf(stdout, "\n  Keymap test\n");
-	struct test_state comp; /* compositor */
-	struct test_state app;  /* application */
-	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
 		wp_error("Test setup failed");
 		return true;
 	}
@@ -454,8 +468,6 @@ static bool test_fixed_keymap_copy()
 	int fd = make_filled_file(16384, testpat);
 	int ret_fd = -1;
 
-	struct transfer_states T = {
-			.app = &app, .comp = &comp, .send = msg_send_handler};
 	struct wp_objid display = {0x1}, registry = {0x2}, seat = {0x3},
 			keyboard = {0x4};
 
@@ -465,7 +477,7 @@ static bool test_fixed_keymap_copy()
 	send_wl_seat_evt_capabilities(&T, seat, 3);
 	send_wl_seat_req_get_keyboard(&T, seat, keyboard);
 	send_wl_keyboard_evt_keymap(&T, keyboard, 1, fd, 16384);
-	ret_fd = get_only_fd_from_msg(&app);
+	ret_fd = get_only_fd_from_msg(T.app);
 
 	/* confirm receipt of fd with the correct contents; if not,
 	 * reject */
@@ -482,8 +494,7 @@ static bool test_fixed_keymap_copy()
 end:
 	free(testpat);
 	checked_close(fd);
-	cleanup_state(&comp);
-	cleanup_state(&app);
+	cleanup_tstate(&T);
 
 	print_pass(pass);
 	return pass;
@@ -553,17 +564,14 @@ static bool test_fixed_dmabuf_copy()
 	if (dmabufd == -1) {
 		return true;
 	}
-	struct test_state comp; /* compositor */
-	struct test_state app;  /* application */
-	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
 		wp_error("Test setup failed");
 		return true;
 	}
 	bool pass = true;
 	int ret_fd = -1;
 
-	struct transfer_states T = {
-			.app = &app, .comp = &comp, .send = msg_send_handler};
 	struct wp_objid display = {0x1}, registry = {0x2}, linux_dmabuf = {0x3},
 			compositor = {0x4}, params = {0x5}, buffer = {0x6},
 			surface = {0x7};
@@ -584,7 +592,7 @@ static bool test_fixed_dmabuf_copy()
 			&T, params, buffer, 256, 384, DMABUF_FORMAT, 0);
 	/* this message + previous, after reordering, are treated as one
 	 * bundle; if that is fixed, this will break, and 1 should become 2 */
-	ret_fd = get_fd_from_nth_to_last_msg(&comp, 1);
+	ret_fd = get_fd_from_nth_to_last_msg(T.comp, 1);
 	send_zwp_linux_buffer_params_v1_req_destroy(&T, params);
 	send_wl_compositor_req_create_surface(&T, compositor, surface);
 	send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
@@ -601,8 +609,7 @@ static bool test_fixed_dmabuf_copy()
 end:
 	checked_close(dmabufd);
 	/* todo: the drm_fd may be dup'd by libgbm but not freed */
-	cleanup_state(&comp);
-	cleanup_state(&app);
+	cleanup_tstate(&T);
 
 	print_pass(pass);
 	return pass;
@@ -623,8 +630,8 @@ static bool test_data_offer(enum data_device_type type)
 {
 	fprintf(stdout, "\n  Data offer test: %s\n",
 			data_device_type_strs[type]);
-	struct test_state comp, app;
-	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
 		wp_error("Test setup failed");
 		return true;
 	}
@@ -634,8 +641,6 @@ static bool test_data_offer(enum data_device_type type)
 	pipe(src_pipe);
 	int ret_fd = -1;
 
-	struct transfer_states T = {
-			.app = &app, .comp = &comp, .send = msg_send_handler};
 	struct wp_objid display = {0x1}, registry = {0x2}, ddman = {0x3},
 			seat = {0x4}, ddev = {0x5}, offer = {0xff000001};
 
@@ -707,7 +712,7 @@ static bool test_data_offer(enum data_device_type type)
 				"text/plain;charset=utf-8", src_pipe[1]);
 		break;
 	}
-	ret_fd = get_only_fd_from_msg(&comp);
+	ret_fd = get_only_fd_from_msg(T.comp);
 
 	/* confirm receipt of fd with the correct contents; if not,
 	 * reject */
@@ -726,8 +731,7 @@ end:
 
 	checked_close(src_pipe[0]);
 	checked_close(src_pipe[1]);
-	cleanup_state(&comp);
-	cleanup_state(&app);
+	cleanup_tstate(&T);
 
 	print_pass(pass);
 	return pass;
@@ -738,8 +742,8 @@ static bool test_data_source(enum data_device_type type)
 {
 	fprintf(stdout, "\n  Data source test: %s\n",
 			data_device_type_strs[type]);
-	struct test_state comp, app;
-	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
 		wp_error("Test setup failed");
 		return true;
 	}
@@ -749,8 +753,6 @@ static bool test_data_source(enum data_device_type type)
 	pipe(dst_pipe);
 	int ret_fd = -1;
 
-	struct transfer_states T = {
-			.app = &app, .comp = &comp, .send = msg_send_handler};
 	struct wp_objid display = {0x1}, registry = {0x2}, ddman = {0x3},
 			seat = {0x4}, ddev = {0x5}, dsource = {0x6};
 
@@ -824,7 +826,7 @@ static bool test_data_source(enum data_device_type type)
 				"text/plain;charset=utf-8", dst_pipe[0]);
 		break;
 	}
-	ret_fd = get_only_fd_from_msg(&app);
+	ret_fd = get_only_fd_from_msg(T.app);
 
 	/* confirm receipt of fd with the correct contents; if not,
 	 * reject */
@@ -838,8 +840,7 @@ end:
 
 	checked_close(dst_pipe[0]);
 	checked_close(dst_pipe[1]);
-	cleanup_state(&comp);
-	cleanup_state(&app);
+	cleanup_tstate(&T);
 
 	print_pass(pass);
 	return pass;
@@ -849,8 +850,8 @@ end:
 static bool test_gamma_control()
 {
 	fprintf(stdout, "\n  Gamma control test\n");
-	struct test_state comp, app;
-	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
 		wp_error("Test setup failed");
 		return true;
 	}
@@ -861,8 +862,6 @@ static bool test_gamma_control()
 	char *testpat = make_filled_pattern(1024, 0x12345678);
 	int fd = make_filled_file(1024, testpat);
 
-	struct transfer_states T = {
-			.app = &app, .comp = &comp, .send = msg_send_handler};
 	struct wp_objid display = {0x1}, registry = {0x2},
 			gamma_manager = {0x3}, output = {0x4},
 			gamma_control = {0x5};
@@ -879,7 +878,7 @@ static bool test_gamma_control()
 	send_zwlr_gamma_control_v1_evt_gamma_size(&T, gamma_control, 1024);
 	send_zwlr_gamma_control_v1_req_set_gamma(&T, gamma_control, fd);
 
-	ret_fd = get_only_fd_from_msg(&comp);
+	ret_fd = get_only_fd_from_msg(T.comp);
 
 	/* confirm receipt of fd with the correct contents; if not,
 	 * reject */
@@ -896,8 +895,7 @@ end:
 
 	free(testpat);
 	checked_close(fd);
-	cleanup_state(&comp);
-	cleanup_state(&app);
+	cleanup_tstate(&T);
 
 	print_pass(pass);
 	return pass;
