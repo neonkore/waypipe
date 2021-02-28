@@ -86,6 +86,9 @@ static void destroy_unlinked_sfd(struct shadow_fd *sfd)
 		zeroed_aligned_free(sfd->mem_mirror, &sfd->mem_mirror_handle);
 	} else if (sfd->type == FDC_DMABUF || sfd->type == FDC_DMAVID_IR ||
 			sfd->type == FDC_DMAVID_IW) {
+		if (sfd->dmabuf_map_handle) {
+			unmap_dmabuf(sfd->dmabuf_bo, sfd->dmabuf_map_handle);
+		}
 		destroy_dmabuf(sfd->dmabuf_bo);
 		zeroed_aligned_free(sfd->mem_mirror, &sfd->mem_mirror_handle);
 	} else if (sfd->type == FDC_PIPE) {

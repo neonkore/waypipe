@@ -165,6 +165,16 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		(void)transfer_load_async(&transfers);
 	}
 
+	for (struct shadow_fd_link *lcur = src->glob.map.link.l_next,
+				   *lnxt = lcur->l_next;
+			lcur != &src->glob.map.link;
+			lcur = lnxt, lnxt = lcur->l_next) {
+		/* Note: finish_update() may delete `cur` */
+		struct shadow_fd *cur = (struct shadow_fd *)lcur;
+		finish_update(cur);
+		destroy_shadow_if_unreferenced(cur);
+	}
+
 	/* On destination side, a bit easier; process transfers, and
 	 * then deliver all messages */
 
@@ -721,7 +731,7 @@ static bool test_data_offer(enum data_device_type type)
 		pass = false;
 		goto end;
 	}
-	uint8_t tmp;
+	uint8_t tmp = 0xab;
 	if (write(ret_fd, &tmp, 1) != 1) {
 		wp_error("Fd not writable");
 		pass = false;
