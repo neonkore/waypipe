@@ -304,6 +304,7 @@ static int run_recon(const char *control_path, const char *recon_path)
 	return EXIT_SUCCESS;
 }
 
+#ifdef HAS_VIDEO
 static int parse_video_string(const char *str, struct main_config *config)
 {
 
@@ -339,6 +340,7 @@ static int parse_video_string(const char *str, struct main_config *config)
 	}
 	return 0;
 }
+#endif
 
 #define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
@@ -499,7 +501,7 @@ int main(int argc, char **argv)
 #ifdef HAS_LZ4
 				config.compression = COMP_LZ4;
 #else
-				fprintf(stderr, "LZ4 compression not available: is the library installed?\n");
+				fprintf(stderr, "Compression method lz4 not available: this copy of Waypipe was not built with LZ4 compression support.\n");
 				return EXIT_FAILURE;
 #endif
 			} else if (!strncmp(optarg, "zstd", 4) &&
@@ -509,7 +511,7 @@ int main(int argc, char **argv)
 #ifdef HAS_ZSTD
 				config.compression = COMP_ZSTD;
 #else
-				fprintf(stderr, "ZSTD compression not available: is the library installed?\n");
+				fprintf(stderr, "Compression method zstd not available: this copy of Waypipe was not built with Zstd compression support.\n");
 				return EXIT_FAILURE;
 #endif
 			} else {
@@ -556,6 +558,7 @@ int main(int argc, char **argv)
 		case ARG_ALLOW_TILED:
 			config.only_linear_dmabuf = false;
 			break;
+#ifdef HAS_VIDEO
 		case ARG_VIDEO:
 			config.video_if_possible = true;
 			if (optarg) {
@@ -564,12 +567,18 @@ int main(int argc, char **argv)
 				}
 				config.old_video_mode = false;
 			}
-			// video_bpf
 			break;
 		case ARG_HWVIDEO:
 			config.video_if_possible = true;
 			config.prefer_hwvideo = true;
 			break;
+#else
+		case ARG_VIDEO:
+		case ARG_HWVIDEO:
+			fprintf(stderr, "Option --%s not allowed: this copy of Waypipe was not built with video support.\n",
+					options[option_index].name);
+			return EXIT_FAILURE;
+#endif
 		case ARG_THREADS: {
 			uint32_t nthreads;
 			if (parse_uint32(optarg, &nthreads) == -1 ||

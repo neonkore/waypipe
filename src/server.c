@@ -379,7 +379,7 @@ static int run_multi_server(int control_pipe,
 				// If SIGINT, the loop ends
 				continue;
 			}
-			fprintf(stderr, "Poll failed: %s", strerror(errno));
+			wp_error("Poll failed: %s", strerror(errno));
 			retcode = EXIT_FAILURE;
 			break;
 		} else if (r == 0) {
