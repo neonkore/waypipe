@@ -27,6 +27,8 @@
 #include "parsing.h"
 #include "util.h"
 
+#include "protocol_functions.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -278,6 +280,7 @@ static void cleanup_state(struct test_state *s)
 	cleanup_message_tracker(&s->glob.tracker);
 	cleanup_translation_map(&s->glob.map);
 	cleanup_render_data(&s->glob.render);
+	cleanup_hwcontext(&s->glob.render);
 	cleanup_thread_pool(&s->glob.threads);
 
 	for (int i = 0; i < s->nrcvd; i++) {
@@ -288,72 +291,6 @@ static void cleanup_state(struct test_state *s)
 		free(s->rcvd[i].fds);
 	}
 	free(s->rcvd);
-}
-
-static void msg(const struct msgtransfer tx, uint32_t id, uint32_t msgno,
-		size_t arglen, const uint32_t *args)
-{
-	struct msg m;
-	m.fds = NULL;
-	m.nfds = 0;
-	m.data = calloc(arglen + 2, sizeof(uint32_t));
-	m.data[0] = id;
-	m.data[1] = (uint32_t)(((arglen + 2) * 4) << 16) | msgno;
-	if (arglen > 0) {
-		memcpy(&m.data[2], args, arglen * sizeof(uint32_t));
-	}
-
-	m.len = (int)arglen + 2;
-
-	send_protocol_msg(tx.src, tx.dst, m);
-	free(m.data);
-}
-
-static void msg_fd(const struct msgtransfer tx, uint32_t id, uint32_t msgno,
-		size_t arglen, const uint32_t *args, int fd)
-{
-	struct msg m;
-	m.fds = calloc(1, sizeof(int));
-	/* duplicate fd, so it stays alive even if shadowfd holding it dies */
-	m.fds[0] = dup(fd);
-	m.nfds = 1;
-	m.data = calloc(arglen + 2, sizeof(uint32_t));
-	m.data[0] = id;
-	m.data[1] = (uint32_t)(((arglen + 2) * 4) << 16) | msgno;
-	if (arglen > 0) {
-		memcpy(&m.data[2], args, arglen * sizeof(uint32_t));
-	}
-
-	m.len = (int)arglen + 2;
-
-	send_protocol_msg(tx.src, tx.dst, m);
-	free(m.data);
-	free(m.fds);
-}
-static void global_msg(const struct msgtransfer tx, uint32_t id, int globnum,
-		const char *type, int version)
-{
-	size_t typesz = (strlen(type) + 3) / 4;
-	uint32_t *args = calloc(3 + typesz, sizeof(uint32_t));
-	args[0] = (uint32_t)globnum;
-	args[1] = (uint32_t)strlen(type);
-	memcpy(args + 2, type, strlen(type));
-	args[2 + typesz] = (uint32_t)version;
-	msg(tx, id, 0, 3 + typesz, args);
-	free(args);
-}
-static void bind_msg(const struct msgtransfer tx, uint32_t id, int globnum,
-		const char *type, int version, uint32_t new_id)
-{
-	size_t typesz = (strlen(type) + 3) / 4;
-	uint32_t *args = calloc(4 + typesz, sizeof(uint32_t));
-	args[0] = (uint32_t)globnum;
-	args[1] = (uint32_t)strlen(type);
-	memcpy(args + 2, type, strlen(type));
-	args[2 + typesz] = (uint32_t)version;
-	args[3 + typesz] = new_id;
-	msg(tx, id, 0, 4 + typesz, args);
-	free(args);
 }
 
 static char *make_filled_pattern(size_t size, uint32_t contents)
@@ -409,6 +346,25 @@ static int get_fd_from_nth_to_last_msg(const struct test_state *s, int nth)
 	return m->fds[0];
 }
 
+static void msg_send_handler(struct transfer_states *ts, struct test_state *src,
+		struct test_state *dst)
+{
+	struct msg m;
+	m.data = ts->msg_space;
+	m.fds = ts->fd_space;
+	m.len = (int)ts->msg_size;
+	m.nfds = (int)ts->fd_size;
+	for (int i = 0; i < m.nfds; i++) {
+		m.fds[i] = dup(m.fds[i]);
+		if (m.fds[i] == -1) {
+			wp_error("Invalid fd provided");
+		}
+	}
+	send_protocol_msg(src, dst, m);
+	memset(ts->msg_space, 0, sizeof(ts->msg_space));
+	memset(ts->fd_space, 0, sizeof(ts->fd_space));
+}
+
 static bool test_fixed_shm_buffer_copy()
 {
 	fprintf(stdout, "\nshm_pool+buffer test\n");
@@ -420,37 +376,32 @@ static bool test_fixed_shm_buffer_copy()
 		return true;
 	}
 	bool pass = true;
-	struct msgtransfer CA = {.src = &comp, .dst = &app};
-	struct msgtransfer AC = {.src = &app, .dst = &comp};
+
+	struct transfer_states T = {
+			.app = &app, .comp = &comp, .send = msg_send_handler};
 
 	char *testpat = make_filled_pattern(16384, 0xFEDCBA98);
 	int fd = make_filled_file(16384, testpat);
 	int ret_fd = -1;
 
-	// -> wl_display@1.get_registry(new id wl_registry@2)
-	msg(AC, 0x1, 1, 1, (uint32_t[]){0x2});
-	// wl_registry@2.global(1, "wl_shm", 1)
-	// wl_registry@2.global(2, "wl_compositor", 1)
-	global_msg(CA, 0x2, 1, "wl_shm", 1);
-	global_msg(CA, 0x2, 2, "wl_compositor", 1);
-	// -> wl_registry@2.bind(1, "wl_shm", 1, new id [unknown]@3)
-	// -> wl_registry@2.bind(2, "wl_compositor", 3, new id [unknown]@4)
-	bind_msg(AC, 0x2, 1, "wl_shm", 1, 0x3);
-	bind_msg(AC, 0x2, 2, "wl_compositor", 1, 0x4);
-	// -> wl_shm@3.create_pool(new id wl_shm_pool@5, fd ?, 16384)
-	msg_fd(AC, 0x3, 0, 2, (uint32_t[]){0x5, 16384}, fd);
+	struct wp_objid display = {0x1}, registry = {0x2}, shm = {0x3},
+			compositor = {0x4}, pool = {0x5}, buffer = {0x6},
+			surface = {0x7};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(&T, registry, 1, "wl_shm", 1);
+	send_wl_registry_evt_global(&T, registry, 2, "wl_compositor", 1);
+	send_wl_registry_req_bind(&T, registry, 1, "wl_shm", 1, shm);
+	send_wl_registry_req_bind(
+			&T, registry, 2, "wl_compositor", 1, compositor);
+	send_wl_shm_req_create_pool(&T, shm, pool, fd, 16384);
 	ret_fd = get_only_fd_from_msg(&comp);
-	// -> wl_shm_pool@5.create_buffer(new id wl_buffer@6, 0, 64, 64,
-	// 256, 0x30334258)
-	msg(AC, 0x5, 0, 6, (uint32_t[]){0x6, 0, 64, 64, 256, 0x30334258});
-	// -> wl_compositor@4.create_surface(new id wl_surface@7)
-	msg(AC, 0x4, 0, 1, (uint32_t[]){0x7});
-	// -> wl_surface@7.attach(wl_buffer@6, 0, 0)
-	msg(AC, 0x7, 1, 3, (uint32_t[]){0x6, 0, 0});
-	// -> wl_surface@7.damage(0, 0, 64, 64)
-	msg(AC, 0x7, 2, 4, (uint32_t[]){0, 0, 64, 64});
-	// -> wl_surface@7.commit()
-	msg(AC, 0x7, 6, 0, NULL);
+	send_wl_shm_pool_req_create_buffer(
+			&T, pool, buffer, 0, 64, 64, 256, 0x30334258);
+	send_wl_compositor_req_create_surface(&T, compositor, surface);
+	send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
+	send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
+	send_wl_surface_req_commit(&T, surface);
 
 	/* confirm receipt of fd with the correct contents; if not,
 	 * reject */
@@ -481,25 +432,22 @@ static bool test_fixed_keymap_copy()
 		return true;
 	}
 	bool pass = true;
-	struct msgtransfer CA = {.src = &comp, .dst = &app};
-	struct msgtransfer AC = {.src = &app, .dst = &comp};
 
 	char *testpat = make_filled_pattern(16384, 0xFEDCBA98);
 	int fd = make_filled_file(16384, testpat);
 	int ret_fd = -1;
 
-	// -> wl_display@1.get_registry(new id wl_registry@2)
-	msg(AC, 0x1, 1, 1, (uint32_t[]){0x2});
-	// wl_registry@2.global(1, "wl_seat", 7)
-	global_msg(CA, 0x2, 1, "wl_seat", 7);
-	// -> wl_registry@2.bind(1, "wl_seat", 7, new id [unknown]@3)
-	bind_msg(AC, 0x2, 1, "wl_seat", 7, 0x3);
-	// wl_seat@3.capabilities(3)
-	msg(CA, 0x3, 0, 1, (uint32_t[]){3});
-	// -> wl_seat@3.get_keyboard(new id wl_keyboard@4)
-	msg(AC, 0x3, 1, 1, (uint32_t[]){0x4});
-	// wl_keyboard@4.keymap(1, fd ?, 16384)
-	msg_fd(CA, 0x4, 0, 2, (uint32_t[]){1, 16384}, fd);
+	struct transfer_states T = {
+			.app = &app, .comp = &comp, .send = msg_send_handler};
+	struct wp_objid display = {0x1}, registry = {0x2}, seat = {0x3},
+			keyboard = {0x4};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(&T, registry, 1, "wl_seat", 7);
+	send_wl_registry_req_bind(&T, registry, 1, "wl_seat", 7, seat);
+	send_wl_seat_evt_capabilities(&T, seat, 3);
+	send_wl_seat_req_get_keyboard(&T, seat, keyboard);
+	send_wl_keyboard_evt_keymap(&T, keyboard, 1, fd, 16384);
 	ret_fd = get_only_fd_from_msg(&app);
 
 	/* confirm receipt of fd with the correct contents; if not,
@@ -570,9 +518,9 @@ static int create_dmabuf(void)
 	if (dmafd == -1) {
 		goto end;
 	}
-	destroy_dmabuf(bo);
 
 end:
+	destroy_dmabuf(bo);
 	cleanup_render_data(&rd);
 
 	return dmafd;
@@ -593,45 +541,37 @@ static bool test_fixed_dmabuf_copy()
 		return true;
 	}
 	bool pass = true;
-	struct msgtransfer CA = {.src = &comp, .dst = &app};
-	struct msgtransfer AC = {.src = &app, .dst = &comp};
 	int ret_fd = -1;
 
-	// -> wl_display@1.get_registry(new id wl_registry@2)
-	msg(AC, 0x1, 1, 1, (uint32_t[]){0x2});
-	// wl_registry@2.global(1, "zwp_linux_dmabuf_v1", 1)
-	// wl_registry@2.global(2, "wl_compositor", 1)
-	global_msg(CA, 0x2, 1, "zwp_linux_dmabuf_v1", 1);
-	global_msg(CA, 0x2, 2, "wl_compositor", 1);
-	// -> wl_registry@2.bind(1, "zwp_linux_dmabuf_v1", 1, new id
-	// [unknown]@3)
-	// -> wl_registry@2.bind(2, "wl_compositor", 3, new id [unknown]@4)
-	bind_msg(AC, 0x2, 1, "zwp_linux_dmabuf_v1", 1, 0x3);
-	bind_msg(AC, 0x2, 2, "wl_compositor", 1, 0x4);
-	// zwp_linux_dmabuf_v1@3.modifier(875713112, 0, 0)
-	msg(CA, 0x3, 1, 3, (uint32_t[]){DMABUF_FORMAT, 0, 0});
-	// -> zwp_linux_dmabuf_v1@3.create_params(new id
-	// zwp_linux_buffer_params_v1@5)
-	// -> zwp_linux_buffer_params_v1@5.add(fd 41, 0, 0, 1024, 0, 0)
-	// -> zwp_linux_buffer_params_v1@5.create_immed(new id wl_buffer@6, 256,
-	// 256, 875713112, 0)
-	// -> zwp_linux_buffer_params_v1@5.destroy()
-	msg(AC, 0x3, 1, 1, (uint32_t[]){0x5});
-	msg_fd(AC, 0x5, 1, 5, (uint32_t[]){0, 0, 256 * 4, 0, 0}, dmabufd);
-	msg(AC, 0x5, 3, 5, (uint32_t[]){0x6, 256, 384, DMABUF_FORMAT, 0});
+	struct transfer_states T = {
+			.app = &app, .comp = &comp, .send = msg_send_handler};
+	struct wp_objid display = {0x1}, registry = {0x2}, linux_dmabuf = {0x3},
+			compositor = {0x4}, params = {0x5}, buffer = {0x6},
+			surface = {0x7};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(&T, registry, 1, "zwp_linux_dmabuf_v1", 1);
+	send_wl_registry_evt_global(&T, registry, 2, "wl_compositor", 1);
+	send_wl_registry_req_bind(&T, registry, 1, "zwp_linux_dmabuf_v1", 1,
+			linux_dmabuf);
+	send_wl_registry_req_bind(
+			&T, registry, 12, "wl_compositor", 1, compositor);
+	send_zwp_linux_dmabuf_v1_evt_modifier(
+			&T, linux_dmabuf, DMABUF_FORMAT, 0, 0);
+	send_zwp_linux_dmabuf_v1_req_create_params(&T, linux_dmabuf, params);
+	send_zwp_linux_buffer_params_v1_req_add(
+			&T, params, dmabufd, 0, 0, 256 * 4, 0, 0);
+	send_zwp_linux_buffer_params_v1_req_create_immed(
+			&T, params, buffer, 256, 384, DMABUF_FORMAT, 0);
 	/* this message + previous, after reordering, are treated as one
 	 * bundle; if that is fixed, this will break, and 1 should become 2 */
 	ret_fd = get_fd_from_nth_to_last_msg(&comp, 1);
-	msg(AC, 0x5, 0, 0, NULL);
+	send_zwp_linux_buffer_params_v1_req_destroy(&T, params);
 
-	// -> wl_compositor@4.create_surface(new id wl_surface@7)
-	msg(AC, 0x4, 0, 1, (uint32_t[]){0x7});
-	// -> wl_surface@7.attach(wl_buffer@6, 0, 0)
-	msg(AC, 0x7, 1, 3, (uint32_t[]){0x6, 0, 0});
-	// -> wl_surface@7.damage(0, 0, 64, 64)
-	msg(AC, 0x7, 2, 4, (uint32_t[]){0, 0, 64, 64});
-	// -> wl_surface@7.commit()
-	msg(AC, 0x7, 6, 0, NULL);
+	send_wl_compositor_req_create_surface(&T, compositor, surface);
+	send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
+	send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
+	send_wl_surface_req_commit(&T, surface);
 
 	if (ret_fd == -1) {
 		wp_error("Fd not passed through");

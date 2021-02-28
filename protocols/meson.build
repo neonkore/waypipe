@@ -1,5 +1,6 @@
 
 symgen_path = join_paths(meson.current_source_dir(), 'symgen.py')
+sendgen_path = join_paths(meson.current_source_dir(), 'sendgen.py')
 fn_list = join_paths(meson.current_source_dir(), 'function_list.txt')
 
 # Include a copy of these protocols in the repository, rather than looking
@@ -52,3 +53,9 @@ protos = declare_dependency(
 	link_with: lib_protocols,
 	sources: protocols_headers,
 )
+
+# For use in test
+abs_protocols = []
+foreach xml : protocols
+        abs_protocols += join_paths(meson.current_source_dir(), xml)
+endforeach

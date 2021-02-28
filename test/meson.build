@@ -23,13 +23,20 @@ test_mirror = executable(
 )
 # disable leak checking, because library code is often responsible
 test('How well buffers are replicated', test_mirror, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 40)
+test_proto_functions = files('protocol_functions.txt')
+proto_send_src = custom_target(
+	'protocol_control message serialization',
+	output: 'protocol_functions.h',
+	depend_files: [test_proto_functions, sendgen_path] + abs_protocols,
+	command: [python3, sendgen_path, test_proto_functions, '@OUTPUT@'] + abs_protocols,
+)
 test_protocol = executable(
 	'protocol_control',
-	['protocol_control.c'],
+	['protocol_control.c', proto_send_src],
 	include_directories: waypipe_includes,
 	link_with: lib_waypipe_src
 )
-test('That common Wayland message patterns work', test_protocol, timeout: 20)
+test('That common Wayland message patterns work', test_protocol, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 20)
 test_pipe = executable(
 	'pipe_mirror',
 	['pipe_mirror.c'],
