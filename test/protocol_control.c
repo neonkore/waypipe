@@ -587,6 +587,115 @@ end:
 	return pass;
 }
 
+/* Confirm that wl_data_offer.receive creates a pipe matching the input */
+static bool test_data_offer()
+{
+	fprintf(stdout, "\n Data offer test\n");
+	struct test_state comp, app;
+	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+
+	int src_pipe[2];
+	pipe(src_pipe);
+	int ret_fd = -1;
+
+	struct transfer_states T = {
+			.app = &app, .comp = &comp, .send = msg_send_handler};
+	struct wp_objid display = {0x1}, registry = {0x2}, ddman = {0x3},
+			seat = {0x4}, ddev = {0x5}, offer = {0xff000001};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(
+			&T, registry, 1, "wl_data_device_manager", 3);
+	send_wl_registry_evt_global(&T, registry, 1, "wl_seat", 7);
+	send_wl_registry_req_bind(
+			&T, registry, 1, "wl_data_device_manager", 3, ddman);
+	send_wl_registry_req_bind(&T, registry, 1, "wl_seat", 7, seat);
+	send_wl_data_device_manager_req_get_data_device(&T, ddman, ddev, seat);
+	send_wl_data_device_evt_data_offer(&T, ddev, offer);
+	send_wl_data_offer_evt_offer(&T, offer, "text/plain;charset=utf-8");
+	send_wl_data_device_evt_selection(&T, ddev, offer);
+	send_wl_data_offer_req_receive(
+			&T, offer, "text/plain;charset=utf-8", src_pipe[1]);
+	ret_fd = get_only_fd_from_msg(&comp);
+
+	/* confirm receipt of fd with the correct contents; if not,
+	 * reject */
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	uint8_t tmp;
+	if (write(ret_fd, &tmp, 1) != 1) {
+		wp_error("Fd not writable");
+		pass = false;
+		goto end;
+	}
+end:
+
+	checked_close(src_pipe[0]);
+	checked_close(src_pipe[1]);
+	cleanup_state(&comp);
+	cleanup_state(&app);
+	return pass;
+}
+
+/* Confirm that wl_data_source.data_offer creates a pipe matching the input */
+static bool test_data_source()
+{
+	fprintf(stdout, "\n Data source test\n");
+	struct test_state comp, app;
+	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+
+	int dst_pipe[2];
+	pipe(dst_pipe);
+	int ret_fd = -1;
+
+	struct transfer_states T = {
+			.app = &app, .comp = &comp, .send = msg_send_handler};
+	struct wp_objid display = {0x1}, registry = {0x2}, ddman = {0x3},
+			seat = {0x4}, ddev = {0x5}, dsource = {0x6};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(
+			&T, registry, 1, "wl_data_device_manager", 3);
+	send_wl_registry_evt_global(&T, registry, 1, "wl_seat", 7);
+	send_wl_registry_req_bind(
+			&T, registry, 1, "wl_data_device_manager", 3, ddman);
+	send_wl_registry_req_bind(&T, registry, 1, "wl_seat", 7, seat);
+	send_wl_data_device_manager_req_get_data_device(&T, ddman, ddev, seat);
+	send_wl_data_device_manager_req_create_data_source(&T, ddman, dsource);
+	send_wl_data_source_req_offer(&T, dsource, "text/plain;charset=utf-8");
+	send_wl_data_device_req_set_selection(&T, ddev, dsource, 9999);
+	send_wl_data_source_evt_send(
+			&T, dsource, "text/plain;charset=utf-8", dst_pipe[0]);
+	ret_fd = get_only_fd_from_msg(&app);
+
+	/* confirm receipt of fd with the correct contents; if not,
+	 * reject */
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	/* todo: check readable */
+end:
+
+	checked_close(dst_pipe[0]);
+	checked_close(dst_pipe[1]);
+	cleanup_state(&comp);
+	cleanup_state(&app);
+	return pass;
+}
+
 /* Check whether the video encoding feature can replicate a uniform
  * color image */
 static bool test_fixed_video_color_copy(enum video_coding_fmt fmt, bool hw)
@@ -605,11 +714,13 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
-	int ntest = 6;
+	int ntest = 8;
 	int nsuccess = 0;
 	nsuccess += test_fixed_shm_buffer_copy();
 	nsuccess += test_fixed_keymap_copy();
 	nsuccess += test_fixed_dmabuf_copy();
+	nsuccess += test_data_offer();
+	nsuccess += test_data_source();
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, false);
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, true);
 	nsuccess += test_fixed_video_color_copy(VIDEO_VP9, false);
