@@ -189,9 +189,15 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	fd_window.zone_end = fd_window.zone_start;
 	fd_window.zone_start = 0;
 	for (int i = fd_window.zone_start; i < fd_window.zone_end; i++) {
-		fd_window.data[i] = get_shadow_for_rid(
-				&dst->glob.map, fd_window.data[i])
-						    ->fd_local;
+		struct shadow_fd *sfd = get_shadow_for_rid(
+				&dst->glob.map, fd_window.data[i]);
+		if (sfd) {
+			fd_window.data[i] = sfd->fd_local;
+		} else {
+			fd_window.data[i] = -1;
+			wp_error("Failed to get shadow_fd for RID=%d",
+					fd_window.data[i]);
+		}
 	}
 
 	parse_and_prune_messages(&dst->glob, dst->display_side,
@@ -326,6 +332,10 @@ static bool check_file_contents(int fd, size_t size, const char *contents)
 	}
 	uint32_t *mem = (uint32_t *)mmap(
 			NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (mem == MAP_FAILED) {
+		wp_error("Failed to map file");
+		return -1;
+	}
 	bool match = memcmp(mem, contents, size) == 0;
 	munmap(mem, size);
 	return match;
@@ -372,7 +382,7 @@ static void msg_send_handler(struct transfer_states *ts, struct test_state *src,
 
 static bool test_fixed_shm_buffer_copy()
 {
-	fprintf(stdout, "\nshm_pool+buffer test\n");
+	fprintf(stdout, "\n  shm_pool+buffer test\n");
 
 	struct test_state comp; /* compositor */
 	struct test_state app;  /* application */
@@ -431,7 +441,7 @@ end:
 
 static bool test_fixed_keymap_copy()
 {
-	fprintf(stdout, "\nKeymap test\n");
+	fprintf(stdout, "\n  Keymap test\n");
 	struct test_state comp; /* compositor */
 	struct test_state app;  /* application */
 	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
@@ -537,7 +547,7 @@ end:
 
 static bool test_fixed_dmabuf_copy()
 {
-	fprintf(stdout, "\n DMABUF test\n");
+	fprintf(stdout, "\n  DMABUF test\n");
 
 	int dmabufd = create_dmabuf();
 	if (dmabufd == -1) {
@@ -611,7 +621,7 @@ static const char *const data_device_type_strs[] = {"wayland main",
 /* Confirm that wl_data_offer.receive creates a pipe matching the input */
 static bool test_data_offer(enum data_device_type type)
 {
-	fprintf(stdout, "\n Data offer test: %s\n",
+	fprintf(stdout, "\n  Data offer test: %s\n",
 			data_device_type_strs[type]);
 	struct test_state comp, app;
 	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
@@ -726,7 +736,7 @@ end:
 /* Confirm that wl_data_source.data_offer creates a pipe matching the input */
 static bool test_data_source(enum data_device_type type)
 {
-	fprintf(stdout, "\n Data source test: %s\n",
+	fprintf(stdout, "\n  Data source test: %s\n",
 			data_device_type_strs[type]);
 	struct test_state comp, app;
 	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
@@ -835,6 +845,64 @@ end:
 	return pass;
 }
 
+/* Check that gamma_control copies the input file */
+static bool test_gamma_control()
+{
+	fprintf(stdout, "\n  Gamma control test\n");
+	struct test_state comp, app;
+	if (setup_state(&comp, true) == -1 || setup_state(&app, false) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+
+	int ret_fd = -1;
+
+	char *testpat = make_filled_pattern(1024, 0x12345678);
+	int fd = make_filled_file(1024, testpat);
+
+	struct transfer_states T = {
+			.app = &app, .comp = &comp, .send = msg_send_handler};
+	struct wp_objid display = {0x1}, registry = {0x2},
+			gamma_manager = {0x3}, output = {0x4},
+			gamma_control = {0x5};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(
+			&T, registry, 1, "zwlr_gamma_control_manager_v1", 1);
+	send_wl_registry_req_bind(&T, registry, 1,
+			"zwlr_gamma_control_manager_v1", 1, gamma_manager);
+	send_wl_registry_evt_global(&T, registry, 1, "wl_output", 3);
+	send_wl_registry_req_bind(&T, registry, 1, "wl_output", 3, output);
+	send_zwlr_gamma_control_manager_v1_req_get_gamma_control(
+			&T, gamma_manager, gamma_control, output);
+	send_zwlr_gamma_control_v1_evt_gamma_size(&T, gamma_control, 1024);
+	send_zwlr_gamma_control_v1_req_set_gamma(&T, gamma_control, fd);
+
+	ret_fd = get_only_fd_from_msg(&comp);
+
+	/* confirm receipt of fd with the correct contents; if not,
+	 * reject */
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	pass = check_file_contents(ret_fd, 1024, testpat);
+	if (!pass) {
+		wp_error("Failed to transfer file");
+	}
+end:
+
+	free(testpat);
+	checked_close(fd);
+	cleanup_state(&comp);
+	cleanup_state(&app);
+
+	print_pass(pass);
+	return pass;
+}
+
 /* Check whether the video encoding feature can replicate a uniform
  * color image */
 static bool test_fixed_video_color_copy(enum video_coding_fmt fmt, bool hw)
@@ -853,7 +921,7 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
-	int ntest = 14;
+	int ntest = 15;
 	int nsuccess = 0;
 	nsuccess += test_fixed_shm_buffer_copy();
 	nsuccess += test_fixed_keymap_copy();
@@ -866,11 +934,15 @@ int main(int argc, char **argv)
 	nsuccess += test_data_source(DDT_PRIMARY);
 	nsuccess += test_data_source(DDT_GTK_PRIMARY);
 	nsuccess += test_data_source(DDT_WLR);
+	nsuccess += test_gamma_control();
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, false);
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, true);
 	nsuccess += test_fixed_video_color_copy(VIDEO_VP9, false);
-	// TODO: add a copy-paste test, and screencapture
-	fprintf(stdout, "%d of %d cases passed\n", nsuccess, ntest);
+	// TODO: add a copy-paste test, and screencapture.
+	// TODO: add tests for handling of common errors, e.g. invalid fd,
+	// or type confusion
+
+	fprintf(stdout, "\n%d of %d cases passed\n", nsuccess, ntest);
 
 	check_unclosed_fds();
 
