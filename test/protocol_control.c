@@ -567,7 +567,6 @@ static bool test_fixed_dmabuf_copy()
 	 * bundle; if that is fixed, this will break, and 1 should become 2 */
 	ret_fd = get_fd_from_nth_to_last_msg(&comp, 1);
 	send_zwp_linux_buffer_params_v1_req_destroy(&T, params);
-
 	send_wl_compositor_req_create_surface(&T, compositor, surface);
 	send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
 	send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
@@ -582,6 +581,7 @@ static bool test_fixed_dmabuf_copy()
 
 end:
 	checked_close(dmabufd);
+	/* todo: the drm_fd may be dup'd by libgbm but not freed */
 	cleanup_state(&comp);
 	cleanup_state(&app);
 	return pass;
@@ -603,6 +603,8 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
+	set_initial_fds();
+
 	int ntest = 6;
 	int nsuccess = 0;
 	nsuccess += test_fixed_shm_buffer_copy();
@@ -613,5 +615,8 @@ int main(int argc, char **argv)
 	nsuccess += test_fixed_video_color_copy(VIDEO_VP9, false);
 	// TODO: add a copy-paste test, and screencapture
 	fprintf(stdout, "%d of %d cases passed\n", nsuccess, ntest);
+
+	check_unclosed_fds();
+
 	return (nsuccess == ntest) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
