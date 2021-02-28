@@ -122,7 +122,9 @@ compressible as images containing pictures.
 	Set the number of total threads (including the main thread) which a *waypipe*
 	instance will create. These threads will be used to parallelize compression
 	operations. This flag is passed on to *waypipe server* when given to *waypipe
-	ssh*. The flag also controls the thread count for *waypipe bench*.
+	ssh*. The flag also controls the thread count for *waypipe bench*. The default
+	behavior (choosable by setting *T* to _0_) is to use half as many threads
+	as the computer has hardware threads available.
 
 *--unlink-socket*
 	Only for server mode; on shutdown, unlink the Unix socket that waypipe connects to.
