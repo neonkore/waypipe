@@ -106,7 +106,6 @@ def write_func(ostream, iface_name, func, is_request, func_no, export_list):
     W("\tts->msg_size = 2;")
 
     tmp_names = ["ctx"]
-    nstr = 0
     for i, (arg_name, arg_type, arg_interface) in enumerate(w_args):
         if arg_type == "array":
             raise NotImplementedError()
@@ -115,19 +114,7 @@ def write_func(ostream, iface_name, func, is_request, func_no, export_list):
             W("\tts->fd_space[ts->fd_size++] = {};".format(arg_name))
             continue
         elif arg_type == "string":
-            W("\tif ({}) {{".format(arg_name))
-            W("\t\tsize_t slen{} = strlen({}) + 1;".format(nstr, arg_name))
-            W("\t\tts->msg_space[ts->msg_size] = (uint32_t)slen{};".format(nstr))
-            W(
-                "\t\tmemcpy(&ts->msg_space[ts->msg_size + 1], {}, slen{});".format(
-                    arg_name, nstr
-                )
-            )
-            W("\t\tts->msg_size += ((uint32_t)slen{} + 0x7) >> 2;".format(nstr))
-            W("\t} else {")
-            W("\t\tts->msg_space[ts->msg_size++] = 0;")
-            W("\t}")
-            nstr += 1
+            W("\tserialize_string(ts, {});".format(arg_name))
             continue
         elif arg_type == "object" or arg_type == "new_id":
             W("\tts->msg_space[ts->msg_size++] = {}.id;".format(arg_name))
@@ -166,16 +153,27 @@ if __name__ == "__main__":
         W("struct test_state;")
         W("struct wp_objid { uint32_t id; };")
         W("struct transfer_states {")
-        W("     uint32_t msg_space[256];")
-        W("     int fd_space[16];")
-        W("     unsigned int msg_size;")
-        W("     unsigned int fd_size;")
-        W("     struct test_state *app;")
-        W("     struct test_state *comp;")
+        W("\tuint32_t msg_space[256];")
+        W("\tint fd_space[16];")
+        W("\tunsigned int msg_size;")
+        W("\tunsigned int fd_size;")
+        W("\tstruct test_state *app;")
+        W("\tstruct test_state *comp;")
         W(
-            "     void (*send)(struct transfer_states *, struct test_state* src, struct test_state *dst);"
+            "\tvoid (*send)(struct transfer_states *, struct test_state *src, struct test_state *dst);"
         )
         W("};")
+        # note: this script assumes that serialize_string will be used
+        W("static void serialize_string(struct transfer_states *ts, const char *str) {")
+        W("\tif (str) {")
+        W("\t\tsize_t slen = strlen(str) + 1;")
+        W("\t\tts->msg_space[ts->msg_size] = (uint32_t)slen;")
+        W("\t\tmemcpy(&ts->msg_space[ts->msg_size + 1], str, slen);")
+        W("\t\tts->msg_size += ((uint32_t)slen + 0x7) >> 2;")
+        W("\t} else {")
+        W("\t\tts->msg_space[ts->msg_size++] = 0;")
+        W("\t}")
+        W("}")
 
         for source in sorted(sources):
             tree = ET.parse(source)
