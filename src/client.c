@@ -296,7 +296,7 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 
 		pid_t reco_pid = fork();
 		if (reco_pid == -1) {
-			wp_debug("Fork failure");
+			wp_error("Fork failure: %s", strerror(errno));
 			checked_close(chanclient);
 			return EXIT_FAILURE;
 		} else if (reco_pid == 0) {
@@ -380,7 +380,7 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 		check_unclosed_fds();
 		exit(rc);
 	} else if (npid == -1) {
-		wp_debug("Fork failure");
+		wp_error("Fork failure: %s", strerror(errno));
 		goto fail_ps;
 	}
 	// Remove connection from this process

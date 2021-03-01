@@ -25,6 +25,7 @@
 
 #include "main.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
@@ -744,7 +745,7 @@ int main(int argc, char **argv)
 
 		pid_t conn_pid = fork();
 		if (conn_pid == -1) {
-			wp_error("Fork failure");
+			wp_error("Fork failure: %s", strerror(errno));
 			return EXIT_FAILURE;
 		} else if (conn_pid == 0) {
 			char linkage[256];

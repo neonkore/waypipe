@@ -191,7 +191,7 @@ static int run_single_server(int control_pipe,
 
 		pid_t reco_pid = fork();
 		if (reco_pid == -1) {
-			wp_debug("Fork failure");
+			wp_error("Fork failure: %s", strerror(errno));
 			checked_close(linkfds[0]);
 			checked_close(linkfds[1]);
 			goto fail_cfd;
@@ -275,7 +275,7 @@ static int handle_new_server_connection(
 		check_unclosed_fds();
 		exit(rc);
 	} else if (npid == -1) {
-		wp_debug("Fork failure");
+		wp_error("Fork failure: %s", strerror(errno));
 		if (reconnectable) {
 			checked_close(linksocks[0]);
 			checked_close(linksocks[1]);
@@ -544,7 +544,7 @@ int run_server(const struct sockaddr_un *socket_addr,
 	// Launch program
 	pid_t pid = fork();
 	if (pid == -1) {
-		wp_error("Fork failed");
+		wp_error("Fork failure: %s", strerror(errno));
 		if (!oneshot) {
 			unlink(display_path.sun_path);
 		}
