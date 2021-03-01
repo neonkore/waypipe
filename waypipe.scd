@@ -270,6 +270,13 @@ with return code 1 if there has been an error.
 
 File bug reports at: https://gitlab.freedesktop.org/mstoeckl/waypipe/
 
+Some programs (gnome-terminal, firefox, kate, among others) have special
+mechanisms to ensure that only one process is running at a time. Starting
+those programs under Waypipe while they are running under a different
+Wayland compositor may silently open a window or tab in the original
+instance of the program. Such programs may have a command line argument
+to create a new instance.
+
 # SEE ALSO
 
 *weston*(1), *ssh*(1), *socat(1)*, *ncat(1)*
