@@ -773,7 +773,7 @@ int main(int argc, char **argv)
 					sizeof(char *));
 
 			int offset = 0;
-			arglist[offset++] = "/usr/bin/ssh";
+			arglist[offset++] = "ssh";
 			if (needs_login_shell) {
 				/* Force tty allocation, if we are attempting
 				 * a login shell. The user-override is a -T
@@ -854,7 +854,8 @@ int main(int argc, char **argv)
 
 			// execvp effectively frees arglist
 			execvp(arglist[0], arglist);
-			wp_error("Fork failed");
+			wp_error("Failed to execvp \'%s\': %s", arglist[0],
+					strerror(errno));
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
