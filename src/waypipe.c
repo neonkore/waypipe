@@ -81,7 +81,7 @@ static const char usage_string[] =
 		"                         server default: /tmp/waypipe-server.sock\n"
 		"                         client default: /tmp/waypipe-client.sock\n"
 		"                         ssh: sets the prefix for the socket path\n"
-		"  -v, --version        print waypipe version and exit\n"
+		"      --version        print waypipe version and exit\n"
 		"      --allow-tiled    allow gpu buffers (DMABUFs) with format modifiers\n"
 		"      --control C      server,ssh: set control pipe to reconnect server\n"
 		"      --display D      server,ssh: the Wayland display name or path\n"
@@ -343,6 +343,7 @@ static int parse_video_string(const char *str, struct main_config *config)
 }
 #endif
 
+#define ARG_VERSION 1000
 #define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
 #define ARG_ALLOW_TILED 1003
@@ -363,7 +364,7 @@ static const struct option options[] = {
 		{"no-gpu", no_argument, NULL, 'n'},
 		{"oneshot", no_argument, NULL, 'o'},
 		{"socket", required_argument, NULL, 's'},
-		{"version", no_argument, NULL, 'v'},
+		{"version", no_argument, NULL, ARG_VERSION},
 		{"allow-tiled", no_argument, NULL, ARG_ALLOW_TILED},
 		{"unlink-socket", no_argument, NULL, ARG_UNLINK},
 		{"drm-node", required_argument, NULL, ARG_DRMNODE},
@@ -385,11 +386,11 @@ struct arg_permissions {
 static const struct arg_permissions arg_permissions[] = {
 		{'c', MODE_SSH | MODE_CLIENT | MODE_SERVER},
 		{'d', ALL_MODES},
-		{'h', ALL_MODES},
+		{'h', MODE_FAIL},
 		{'n', MODE_SSH | MODE_CLIENT | MODE_SERVER},
 		{'o', MODE_SSH | MODE_CLIENT | MODE_SERVER},
 		{'s', MODE_SSH | MODE_CLIENT | MODE_SERVER},
-		{'v', ALL_MODES},
+		{ARG_VERSION, MODE_FAIL},
 		{ARG_ALLOW_TILED, MODE_SSH | MODE_CLIENT | MODE_SERVER},
 		{ARG_UNLINK, MODE_SERVER},
 		{ARG_DRMNODE, MODE_SERVER},
@@ -463,9 +464,9 @@ int main(int argc, char **argv)
 	}
 
 	while (true) {
-		int option_index;
-		int opt = getopt_long(mode_argc, argv, "c:dhnos:v", options,
-				&option_index);
+		/* todo: set opterr to 0 and use custom error handler */
+		int opt = getopt_long(
+				mode_argc, argv, "c:dhnos:", options, NULL);
 
 		if (opt == -1) {
 			break;
@@ -485,8 +486,7 @@ int main(int argc, char **argv)
 		}
 		if (!(mode & perms->mode_mask) && mode != MODE_FAIL) {
 			fprintf(stderr, "Option %s is not allowed in mode %s\n",
-					options[option_index].name,
-					argv[mode_argc]);
+					argv[optind - 1], argv[mode_argc]);
 			return EXIT_FAILURE;
 		}
 
@@ -535,7 +535,7 @@ int main(int argc, char **argv)
 		case 's':
 			socketpath = optarg;
 			break;
-		case 'v':
+		case ARG_VERSION:
 			version = true;
 			break;
 		case ARG_DISPLAY:

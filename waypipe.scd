@@ -12,7 +12,7 @@ waypipe - A transparent proxy for Wayland applications
 *waypipe* [options...] *server* -- _command..._++
 *waypipe* *recon* _control_pipe_ _new_socket_path_++
 *waypipe* *bench* _bandwidth_++
-*waypipe* [*-v*, *--version*] [*-h*, *--help*]
+*waypipe* [*--version*] [*-h*, *--help*]
 
 \[options...\] = [*-c*, *--compress* C] [*-d*, *--debug*] [*-n*, *--no-gpu*] [*-o*, *--oneshot*] [*-s*, *--socket* S] [*--allow-tiled*] [*--control* C] [*--display* D] [*--drm-node* R] [*--remote-node* R] [*--remote-bin* R] [*--login-shell*] [*--threads* T] [*--unlink-socket*] [*--video*[=V]]
 
@@ -78,7 +78,7 @@ compressible as images containing pictures.
 	_/tmp/waypipe-client.sock_; and in ssh mode, *S* gives the prefix used by
 	both the client and the server for their socket paths.
 
-*-v, --version*
+*--version*
 	Print the version number and quit.
 
 *--allow-tiled*
