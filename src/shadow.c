@@ -590,7 +590,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 					sfd->remote_id, strerror(errno));
 			return sfd;
 		}
-		// This will be created at the first transfer
+		// This will be created at the first transfer.
+		// todo: why not create it now?
 		sfd->mem_mirror = NULL;
 	} break;
 	case FDC_PIPE: {
@@ -1319,17 +1320,20 @@ static void increase_buffer_sizes(struct shadow_fd *sfd,
 				sfd->remote_id, strerror(errno));
 		return;
 	}
-	// todo: handle allocation failures
-
-	size_t alignment = 1u << threads->diff_alignment_bits;
-	void *new_mirror = zeroed_aligned_realloc(alignz(old_size, alignment),
-			alignz(sfd->buffer_size, alignment), alignment,
-			sfd->mem_mirror, &sfd->mem_mirror_handle);
-	if (!new_mirror) {
-		wp_error("Failed to reallocate mirror");
-		return;
+	/* if resize happens before any transfers, mirror may still be zero */
+	if (sfd->mem_mirror) {
+		// todo: handle allocation failures
+		size_t alignment = 1u << threads->diff_alignment_bits;
+		void *new_mirror = zeroed_aligned_realloc(
+				alignz(old_size, alignment),
+				alignz(sfd->buffer_size, alignment), alignment,
+				sfd->mem_mirror, &sfd->mem_mirror_handle);
+		if (!new_mirror) {
+			wp_error("Failed to reallocate mirror");
+			return;
+		}
+		sfd->mem_mirror = new_mirror;
 	}
-	sfd->mem_mirror = new_mirror;
 }
 
 static void pipe_close_write(struct shadow_fd *sfd)
@@ -2148,7 +2152,7 @@ void flush_writable_pipes(struct fd_translation_map *map)
 
 		if (changed == -1 &&
 				(errno == EAGAIN || errno == EWOULDBLOCK)) {
-			wp_debug("Writing to pipe RID=%d would block\n",
+			wp_debug("Writing to pipe RID=%d would block",
 					sfd->remote_id);
 			continue;
 		} else if (changed == -1 &&
@@ -2216,7 +2220,7 @@ void read_readable_pipes(struct fd_translation_map *map)
 			} else if (changed == -1 &&
 					(errno == EAGAIN ||
 							errno == EWOULDBLOCK)) {
-				wp_debug("Reading from pipe RID=%d would block\n",
+				wp_debug("Reading from pipe RID=%d would block",
 						sfd->remote_id);
 				continue;
 			} else if (changed == -1) {
