@@ -576,8 +576,8 @@ int main(int argc, char **argv)
 #else
 		case ARG_VIDEO:
 		case ARG_HWVIDEO:
-			fprintf(stderr, "Option --%s not allowed: this copy of Waypipe was not built with video support.\n",
-					options[option_index].name);
+			fprintf(stderr, "Option %s not allowed: this copy of Waypipe was not built with video support.\n",
+					argv[optind - 1]);
 			return EXIT_FAILURE;
 #endif
 		case ARG_THREADS: {
