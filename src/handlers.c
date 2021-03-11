@@ -821,14 +821,18 @@ void do_wl_keyboard_evt_keymap(
 {
 	size_t fdsz = 0;
 	enum fdcat fdtype = get_fd_type(fd, &fdsz);
-	if (fdtype != FDC_UNKNOWN && !(fdtype == FDC_FILE && fdsz == size)) {
+	if (fdtype == FDC_UNKNOWN) {
+		fdtype = FDC_FILE;
+		fdsz = (size_t)size;
+	}
+	if (fdtype != FDC_FILE || fdsz != size) {
 		wp_error("keymap candidate fd %d was not file-like (type=%s), and with size=%zu did not match %u",
 				fd, fdcat_to_str(fdtype), fdsz, size);
 		return;
 	}
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_FILE, size, NULL, false, false);
+			FDC_FILE, fdsz, NULL, false, false);
 	if (!sfd) {
 		wp_error("Failed to create shadow for keymap fd=%d", fd);
 		return;
@@ -852,13 +856,16 @@ void do_wl_shm_req_create_pool(
 
 	size_t fdsz = 0;
 	enum fdcat fdtype = get_fd_type(fd, &fdsz);
+	if (fdtype == FDC_UNKNOWN) {
+		fdtype = FDC_FILE;
+		fdsz = (size_t)size;
+	}
 	/* It may be valid for the file descriptor size to be larger
 	 * than the immediately advertised size, since the call to
 	 * wl_shm.create_pool may be followed by wl_shm_pool.resize,
 	 * which then increases the size
 	 */
-	if (fdtype != FDC_UNKNOWN &&
-			!(fdtype == FDC_FILE && (int32_t)fdsz >= size)) {
+	if (fdtype != FDC_FILE || (int32_t)fdsz < size) {
 		wp_error("File type or size mismatch for fd %d with claimed: %s %s | %zu %u",
 				fd, fdcat_to_str(fdtype),
 				fdcat_to_str(FDC_FILE), fdsz, size);
@@ -866,7 +873,7 @@ void do_wl_shm_req_create_pool(
 	}
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_FILE, size, NULL, false, false);
+			FDC_FILE, fdsz, NULL, false, false);
 	if (!sfd) {
 		return;
 	}
@@ -1560,9 +1567,13 @@ void do_zwlr_gamma_control_v1_req_set_gamma(struct context *ctx, int fd)
 {
 	size_t fdsz = 0;
 	enum fdcat fdtype = get_fd_type(fd, &fdsz);
+	if (fdtype == FDC_UNKNOWN) {
+		fdtype = FDC_FILE;
+		/* fdsz fallback? */
+	}
 	// TODO: use file size from earlier in the protocol, because some
 	// systems may send file-like objects not supporting fstat
-	if (!(fdtype == FDC_FILE || fdtype == FDC_UNKNOWN)) {
+	if (fdtype != FDC_FILE) {
 		wp_error("gamma ramp fd %d was not file-like (type=%s)", fd,
 				fdcat_to_str(fdtype));
 		return;
