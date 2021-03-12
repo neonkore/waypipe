@@ -4,3 +4,4 @@ Doxyfile
 html
 latex
 doc
+test/matrix
