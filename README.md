@@ -92,3 +92,38 @@ it segfaults, file a bug report!
 
 [0] [https://mstoeckl.com/notes/gsoc/blog.html](https://mstoeckl.com/notes/gsoc/blog.html)
 [1] [https://gitlab.freedesktop.org/mstoeckl/waypipe/](https://gitlab.freedesktop.org/mstoeckl/waypipe/)
+
+## Limitations
+
+Waypipe does not have a full view of the Wayland protocol. It includes a
+compiled form of the base protocol and several extension protocols, but is not
+able to parse all messages that the programs it connects send. Fortunately, the
+Wayland wire protocol is partially self-describing, so Waypipe can parse the
+messages it needs (those related to resources shared with file descriptors)
+while ignoring the rest. This makes Waypipe partially forward-compatible: if a
+future protocol comes out concerns details (for example, about window
+positioning) which require that file descriptors be sent, then applications
+will be able to use that protocol even with older versions of Waypipe. The
+tradeoff to allowing messages that Waypipe can not parse is that Waypipe can
+only make minor modifications to the wire protocol. In particular, adding or
+removing any Wayland protocol objects would require changing all messages that
+refer to them, including those messages that Waypipe does not parse. This
+precludes, for example, global object deduplication tricks that could reduce
+startup time for complicated applications.
+
+Shared memory buffer updates, including those for the contents of windows, are
+tracked by keeping a "mirror" copy of the buffer the represents the view which
+the opposing instance of Waypipe has. This way, Waypipe can send only the
+regions of the buffer that have changed relative to the remote copy. This is
+more efficient than resending the entire buffer on every update, which is good
+for applications with reasonably static user interfaces (like a text editor or
+email client). However, with programs with animations where the interaction
+latency matters (like games or certain audio tools), major window updates will
+unavoidably produce a lag spike. The additional memory cost of keeping mirrors
+is moderate.
+
+The video encoding option for DMABUFs currently maintains a video stream for
+each buffer that is used by a window surface. Since surfaces typically rotate
+between a small number of buffers, a video encoded window will appear to
+flicker as it switches rapidly between the underlying buffers, each of whose
+video streams has different encoding artifacts.
