@@ -1059,7 +1059,8 @@ void collect_video_from_mirror(
 	if (sfd->video_color_context) {
 		/* If using software encoding, need to convert to YUV */
 		void *handle = NULL;
-		void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle);
+		void *data = map_dmabuf(
+				sfd->dmabuf_bo, false, &handle, NULL, NULL);
 		if (!data) {
 			return;
 		}
@@ -1232,7 +1233,8 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 			}
 			/* Copy data onto DMABUF */
 			void *handle = NULL;
-			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle);
+			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle,
+					NULL, NULL);
 			if (!data) {
 				return;
 			}

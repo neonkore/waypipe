@@ -410,7 +410,8 @@ void destroy_dmabuf(struct gbm_bo *bo)
 	}
 }
 
-void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle)
+void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
+		uint32_t *exp_stride, uint32_t *exp_height)
 {
 	/* With i965, the map handle MUST initially point to a NULL pointer;
 	 * otherwise the handler silently exits, sometimes with misleading errno
@@ -426,6 +427,12 @@ void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle)
 	if (!data) {
 		// errno is useless here
 		wp_error("Failed to map dmabuf");
+	}
+	if (exp_stride) {
+		*exp_stride = stride;
+	}
+	if (exp_height) {
+		*exp_height = height;
 	}
 	return data;
 }

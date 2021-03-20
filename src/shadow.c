@@ -1169,7 +1169,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		}
 		if (!sfd->mem_local) {
 			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, false,
-					&sfd->dmabuf_map_handle);
+					&sfd->dmabuf_map_handle, NULL, NULL);
 			if (!sfd->mem_local) {
 				return;
 			}
@@ -1836,8 +1836,19 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		void *handle = NULL;
 		bool already_mapped = sfd->mem_local != NULL;
 		if (sfd->type == FDC_DMABUF && !already_mapped) {
-			sfd->mem_local = map_dmabuf(
-					sfd->dmabuf_bo, true, &handle);
+			uint32_t stride = 0, height = 0;
+			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
+					&handle, &stride, &height);
+			if (stride * height < sfd->buffer_size) {
+				wp_error("DMABUF mapped with stride %" PRIu32
+					 " height %" PRIu32
+					 ", but expected ize=%zu>%zu, ignoring overlarge update",
+						stride, height,
+						sfd->buffer_size,
+						(size_t)(stride * height));
+				unmap_dmabuf(sfd->dmabuf_bo, handle);
+				return 0;
+			}
 		}
 		if (!sfd->mem_local) {
 			wp_error("Failed to fill RID=%d, fd not mapped",
@@ -1901,8 +1912,19 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		void *handle = NULL;
 		bool already_mapped = sfd->mem_local != NULL;
 		if (sfd->type == FDC_DMABUF && !already_mapped) {
-			sfd->mem_local = map_dmabuf(
-					sfd->dmabuf_bo, true, &handle);
+			uint32_t stride = 0, height = 0;
+			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
+					&handle, &stride, &height);
+			if (stride * height < sfd->buffer_size) {
+				wp_error("DMABUF mapped with stride %" PRIu32
+					 " height %" PRIu32
+					 ", but expected size=%zu>%zu, ignoring overlarge update",
+						stride, height,
+						sfd->buffer_size,
+						(size_t)(stride * height));
+				unmap_dmabuf(sfd->dmabuf_bo, handle);
+				return 0;
+			}
 		}
 		if (!sfd->mem_local) {
 			wp_error("Failed to apply diff to RID=%d, fd not mapped",
