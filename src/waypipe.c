@@ -343,6 +343,41 @@ static int parse_video_string(const char *str, struct main_config *config)
 }
 #endif
 
+static const char *feature_names[] = {
+		"lz4",
+		"zstd",
+		"dmabuf",
+		"video",
+		"vaapi",
+};
+static const bool feature_flags[] = {
+#ifdef HAS_LZ4
+		true,
+#else
+		false,
+#endif
+#ifdef HAS_ZSTD
+		true,
+#else
+		false,
+#endif
+#ifdef HAS_DMABUF
+		true,
+#else
+		false,
+#endif
+#ifdef HAS_VIDEO
+		true,
+#else
+		false,
+#endif
+#ifdef HAS_VAAPI
+		true,
+#else
+		false,
+#endif
+};
+
 #define ARG_VERSION 1000
 #define ARG_DISPLAY 1001
 #define ARG_DRMNODE 1002
@@ -610,6 +645,24 @@ int main(int argc, char **argv)
 		return usage(EXIT_FAILURE);
 	} else if (version) {
 		fprintf(stdout, "waypipe " WAYPIPE_VERSION "\n");
+		fprintf(stdout, "features:");
+		for (size_t i = 0; i < sizeof(feature_flags) /
+						       sizeof(feature_flags[0]);
+				i++) {
+			if (feature_flags[i]) {
+				fprintf(stdout, " %s", feature_names[i]);
+			}
+		}
+		fprintf(stdout, "\n");
+		fprintf(stdout, "unavailable:");
+		for (size_t i = 0; i < sizeof(feature_flags) /
+						       sizeof(feature_flags[0]);
+				i++) {
+			if (!feature_flags[i]) {
+				fprintf(stdout, " %s", feature_names[i]);
+			}
+		}
+		fprintf(stdout, "\n");
 		return EXIT_SUCCESS;
 	} else if (argc < 1) {
 		return usage(EXIT_FAILURE);
