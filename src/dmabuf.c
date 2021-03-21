@@ -72,11 +72,14 @@ int export_dmabuf(struct gbm_bo *bo)
 	return -1;
 }
 void destroy_dmabuf(struct gbm_bo *bo) { (void)bo; }
-void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle)
+void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
+		uint32_t *exp_stride, uint32_t *exp_height)
 {
 	(void)bo;
 	(void)write;
 	(void)map_handle;
+	(void)exp_stride;
+	(void)exp_height;
 	return NULL;
 }
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle)
