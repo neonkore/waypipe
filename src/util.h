@@ -27,7 +27,6 @@
 
 #include <assert.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +34,6 @@
 #include <sys/uio.h>
 
 #include "config-waypipe.h"
-#include "dmabuf.h"
-#include "kernel.h"
 
 #ifdef HAS_USDT
 #include <sys/sdt.h>

@@ -23,6 +23,7 @@
  * SOFTWARE.
  */
 
+#include "kernel.h"
 #include "interval.h"
 #include "util.h"
 
