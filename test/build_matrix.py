@@ -65,6 +65,22 @@ setups = [
         {"CC": "gcc", "CFLAGS": "-Wunused-result -std=c11 -pedantic -ggdb3 -O1"},
     ),
 ]
+main_options = ["video", "dmabuf", "lz4", "zstd", "vaapi"]
+bool_map = {True: "enabled", False: "disabled"}
+for compiler in ["gcc", "clang"]:
+    for flags in range(2 ** len(main_options)):
+        bool_options = [(2 ** i) & flags != 0 for i in range(len(main_options))]
+        name = "-".join(
+            ["poly", compiler] + [m for m, b in zip(main_options, bool_options) if b]
+        )
+        flag_values = [
+            "-Dwith_{}={}".format(m, bool_map[b])
+            for m, b in zip(main_options, bool_options)
+        ]
+        setups.append(
+            (name, ["--buildtype", "debugoptimized"] + flag_values, {"CC": compiler})
+        )
+
 if len(sys.argv) >= 4:
     setups = [(s, c, e) for s, c, e in setups if s == sys.argv[3]]
 
