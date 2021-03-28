@@ -145,13 +145,26 @@ static void tree_remove(struct wp_object **tree, uint32_t key)
 	r->t_right = rbranch;
 	*tree = r;
 }
-struct wp_object *tree_lookup(struct wp_object **tree, uint32_t key)
+static struct wp_object *tree_lookup(struct wp_object **tree, uint32_t key)
 {
 	*tree = tree_branch_splay(*tree, key);
 	if (*tree && (*tree)->obj_id == key) {
 		return *tree;
 	}
 	return NULL;
+}
+static void tree_clear(struct wp_object **tree,
+		void (*node_free)(struct wp_object *object))
+{
+	struct wp_object *root = *tree;
+	while (root) {
+		root = tree_branch_splay(root, 0);
+		struct wp_object *right = root->t_right;
+		root->t_right = NULL;
+		node_free(root);
+		root = right;
+	}
+	*tree = NULL;
 }
 
 void tracker_insert(struct message_tracker *mt, struct wp_object *obj)
@@ -209,22 +222,9 @@ int init_message_tracker(struct message_tracker *mt)
 	tracker_insert(mt, disp);
 	return 0;
 }
-static void recursive_destroy_object(struct wp_object *obj)
-{
-	if (obj->t_left) {
-		recursive_destroy_object(obj->t_left);
-	}
-	if (obj->t_right) {
-		recursive_destroy_object(obj->t_right);
-	}
-	destroy_wp_object(obj);
-}
 void cleanup_message_tracker(struct message_tracker *mt)
 {
-	if (mt->objtree_root) {
-		recursive_destroy_object(mt->objtree_root);
-	}
-	mt->objtree_root = NULL;
+	tree_clear(&mt->objtree_root, destroy_wp_object);
 }
 
 static bool word_has_empty_bytes(uint32_t v)
