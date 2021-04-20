@@ -50,11 +50,34 @@ struct test_state {
 	/* messages received from the other side */
 	int nrcvd;
 	struct msg *rcvd;
+	uint64_t local_time_offset;
 };
 struct msgtransfer {
 	struct test_state *src;
 	struct test_state *dst;
 };
+
+static uint64_t time_value = 0;
+static uint64_t local_time_offset = 0;
+
+/* Override the libc clock_gettime, so we can test presentation-time
+ * protocol. Note: the video drivers sometimes call this function. */
+int clock_gettime(clockid_t clock_id, struct timespec *tp)
+{
+	/* Assume every call costs 1ns */
+	time_value += 1;
+
+	if (clock_id == CLOCK_REALTIME) {
+		tp->tv_sec = (int64_t)(time_value / 1000000000uLL);
+		tp->tv_nsec = (int64_t)(time_value % 1000000000uLL);
+	} else {
+		tp->tv_sec = (int64_t)((time_value + local_time_offset) /
+				       1000000000uLL);
+		tp->tv_nsec = (int64_t)((time_value + local_time_offset) %
+					1000000000uLL);
+	}
+	return 0;
+}
 
 static void print_pass(bool pass)
 {
@@ -70,6 +93,9 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		wp_error("at least one side broken, skipping msg");
 		return;
 	}
+
+	/* assume every message uses up 1usec */
+	time_value += 1000;
 
 	struct char_window proto_src;
 	proto_src.data = calloc(16384, 1);
@@ -108,6 +134,7 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 	}
 	fd_window.zone_end = msg.nfds;
 
+	local_time_offset = src->local_time_offset;
 	parse_and_prune_messages(&src->glob, src->display_side,
 			!src->display_side, &proto_src, &proto_mid, &fd_window);
 
@@ -210,6 +237,7 @@ static void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		}
 	}
 
+	local_time_offset = dst->local_time_offset;
 	parse_and_prune_messages(&dst->glob, dst->display_side,
 			dst->display_side, &proto_mid, &proto_end, &fd_window);
 
@@ -911,6 +939,61 @@ end:
 	return pass;
 }
 
+/* Check that gamma_control copies the input file */
+static bool test_presentation_time()
+{
+	fprintf(stdout, "\n  Presentation time test\n");
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+
+	struct wp_objid display = {0x1}, registry = {0x2}, presentation = {0x3},
+			compositor = {0x4}, surface = {0x5}, feedback = {0x6};
+	T.app->local_time_offset = 500;
+	T.comp->local_time_offset = 600;
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(&T, registry, 1, "wp_presentation", 1);
+	send_wl_registry_evt_global(&T, registry, 2, "wl_compositor", 1);
+	send_wl_registry_req_bind(
+			&T, registry, 1, "wp_presentation", 1, presentation);
+	/* todo: run another branch with CLOCK_REALTIME */
+	send_wp_presentation_evt_clock_id(&T, presentation, CLOCK_MONOTONIC);
+	send_wl_registry_req_bind(
+			&T, registry, 12, "wl_compositor", 1, compositor);
+	send_wl_compositor_req_create_surface(&T, compositor, surface);
+
+	send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
+
+	send_wp_presentation_req_feedback(&T, presentation, surface, feedback);
+	send_wl_surface_req_commit(&T, surface);
+	send_wp_presentation_feedback_evt_presented(
+			&T, feedback, 0, 30, 120000, 16666666, 0, 0, 7);
+	const struct msg *const last_msg = &T.app->rcvd[T.app->nrcvd - 1];
+	uint32_t tv_sec_hi = last_msg->data[2], tv_sec_lo = last_msg->data[3],
+		 tv_nsec = last_msg->data[4];
+	if (tv_nsec != 120000 + T.app->local_time_offset -
+					T.comp->local_time_offset) {
+		wp_error("Time translation failed %d %d %d", tv_sec_hi,
+				tv_sec_lo, tv_nsec);
+		pass = false;
+		goto end;
+	}
+
+	/* look at timestamp */
+	if (!pass) {
+		goto end;
+	}
+end:
+	cleanup_tstate(&T);
+
+	print_pass(pass);
+	return pass;
+}
+
 /* Check whether the video encoding feature can replicate a uniform
  * color image */
 static bool test_fixed_video_color_copy(enum video_coding_fmt fmt, bool hw)
@@ -929,7 +1012,7 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
-	int ntest = 15;
+	int ntest = 16;
 	int nsuccess = 0;
 	nsuccess += test_fixed_shm_buffer_copy();
 	nsuccess += test_fixed_keymap_copy();
@@ -943,6 +1026,7 @@ int main(int argc, char **argv)
 	nsuccess += test_data_source(DDT_GTK_PRIMARY);
 	nsuccess += test_data_source(DDT_WLR);
 	nsuccess += test_gamma_control();
+	nsuccess += test_presentation_time();
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, false);
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, true);
 	nsuccess += test_fixed_video_color_copy(VIDEO_VP9, false);
