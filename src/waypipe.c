@@ -639,8 +639,14 @@ int main(int argc, char **argv)
 		}
 	}
 
-	argv += optind;
-	argc -= optind;
+	if (optind < mode_argc) {
+		fprintf(stderr, "unexpected argument: %s\n", argv[optind]);
+		/* there is an extra parameter before the mode argument */
+		fail = true;
+	}
+
+	argv += mode_argc;
+	argc -= mode_argc;
 	if (fail) {
 		return usage(EXIT_FAILURE);
 	} else if (version) {
