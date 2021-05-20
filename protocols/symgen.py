@@ -177,75 +177,53 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
     if is_header:
         msg_data_args = None
     else:
-        gaps = [0]
-        nta = []
-        newvec_idxs = []
-        newvec_types = []
+        new_objs = []
         for arg_name, arg_type, arg_interface in w_args:
-            if arg_type == "fd":
-                continue
-            ## New type string uses offsets relative last stretch end
             if arg_type == "new_id":
-                newvec_idxs.append(str(gaps[-1]))
-                newvec_types.append(
+                new_objs.append(
                     "&intf_" + arg_interface if arg_interface is not None else "NULL"
                 )
 
-            # Every non-fd element begins with at least one word
+        # gap coding: 0=end,1=new_obj,2=array,3=string
+        gaps = [0]
+        gap_ends = []
+        for arg_name, arg_type, arg_interface in w_args:
+            if arg_type == "fd":
+                continue
+
             gaps[-1] += 1
-            if arg_type in ("string", "array"):
+            if arg_type in ("new_id", "string", "array"):
+                gap_ends.append({"new_id": 1, "string": 3, "array": 2}[arg_type])
                 gaps.append(0)
-                nta.append("true" if arg_type == "string" else "false")
-                newvec_idxs.append("(unsigned int)-1")
-                newvec_types.append("NULL")
+        gap_ends.append(0)
 
-        base_g = str(gaps[0])
-        nts = [str(x) for x in gaps[1:]]
-
-        if len(nts) > 0:
-            W("static const bool sis_" + func_name + "[] = {")
-            W("\t" + ", ".join(nta))
-            W("};")
-            W("static const unsigned int gap_" + func_name + "[] = {")
-            W("\t" + ", ".join(nts))
+        if len(new_objs) > 0:
+            W("static const struct wp_interface *objt_" + func_name + "[] = {")
+            W("\t" + ", ".join(new_objs))
             W("};")
 
-        if num_new_args > 0:
-            W("static const unsigned int noi_" + func_name + "[] = {")
-            W("\t" + ", ".join(newvec_idxs))
-            W("};")
-            W("static const struct wp_interface *not_" + func_name + "[] = {")
-            W("\t" + ", ".join(newvec_types))
-            W("};")
+        gap_codes = [str(g * 4 + e) for g, e in zip(gaps, gap_ends)]
+        W("static const uint16_t gaps_" + func_name + "[] = {")
+        W("\t" + ", ".join(gap_codes))
+        W("};")
 
         # Write message metadata, for length check/new object initialization
         msg_data_args = []
-        msg_data_args.append('"{}"'.format(func.attrib["name"]))
-        msg_data_args.append(str(num_stretch_args))
-        msg_data_args.append(str(base_g))
-        if len(nts) > 0:
-            msg_data_args.append("gap_{}".format(func_name))
-            msg_data_args.append("sis_{}".format(func_name))
+
+        msg_data_args.append("gaps_{}".format(func_name))
+        if len(new_objs) > 0:
+            msg_data_args.append("objt_{}".format(func_name))
         else:
             msg_data_args.append("NULL")
-            msg_data_args.append("NULL")
-        msg_data_args.append(str(num_fd_args))
-        if num_new_args > 0:
-            msg_data_args.append(str(len(newvec_types)))
-            msg_data_args.append("noi_{}".format(func_name))
-            msg_data_args.append("not_{}".format(func_name))
-        else:
-            msg_data_args.append("0")
-            msg_data_args.append("NULL")
-            msg_data_args.append("NULL")
-        if "type" in func.attrib and func.attrib["type"] == "destructor":
-            msg_data_args.append("true")
-        else:
-            msg_data_args.append("false")
         if for_export:
             msg_data_args.append("call_" + func_name)
         else:
             msg_data_args.append("NULL")
+        msg_data_args.append(str(num_fd_args))
+        if "type" in func.attrib and func.attrib["type"] == "destructor":
+            msg_data_args.append("true")
+        else:
+            msg_data_args.append("false")
 
     return (is_request, func_name, func.attrib["name"], msg_data_args)
 
@@ -261,23 +239,24 @@ def write_interface(is_header, ostream, iface_name, func_data):
     W = lambda *x: print(*x, file=ostream)
 
     if not is_header:
-        rcn, ecn = "NULL", "NULL"
-        if len(reqs) > 0:
-            W("static const struct msg_data reqs_" + iface_name + "[] = {")
-            for name, short_name, mda in reqs:
+        mcn = "NULL"
+        if len(reqs) > 0 or len(evts) > 0:
+            W("static const struct msg_data msgs_" + iface_name + "[] = {")
+            for name, short_name, mda in reqs + evts:
                 W("\t{" + ", ".join(mda) + "},")
             W("};")
-            rcn = "reqs_" + iface_name
-        if len(evts) > 0:
-            W("static const struct msg_data evts_" + iface_name + "[] = {")
-            for name, short_name, mda in evts:
-                W("\t{" + ", ".join(mda) + "},")
-            W("};")
-            ecn = "evts_" + iface_name
+            mcn = "msgs_" + iface_name
+
+        msg_names = []
+        for name, short_name, mda in reqs + evts:
+            msg_names.append(short_name)
+
         W("const struct wp_interface intf_" + iface_name + " = {")
+        W("\t" + mcn + ",")
+        W("\t" + str(len(reqs)) + ",")
+        W("\t" + str(len(evts)) + ",")
         W('\t"{}",'.format(iface_name))
-        W("\t{" + rcn + ", " + ecn + "},")
-        W("\t{" + str(len(reqs)) + ", " + str(len(evts)) + "},")
+        W('\t"{}",'.format("\\0".join(msg_names)))
         W("};")
 
 

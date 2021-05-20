@@ -84,6 +84,7 @@ void cleanup_message_tracker(struct message_tracker *mt);
 
 /** Read message size from header; the 8 bytes beyond data must exist */
 int peek_message_size(const void *data);
+const char *get_nth_packed_string(const char *pack, int n);
 enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
 /**
  * The return value is false iff the given message should be dropped.

@@ -36,6 +36,13 @@ static const char *get_type_name(struct wp_object *obj)
 {
 	return obj->type ? obj->type->name : "<no type>";
 }
+const char *get_nth_packed_string(const char *pack, int n)
+{
+	for (int i = 0; i < n; i++) {
+		pack += strlen(pack);
+	}
+	return pack;
+}
 
 static struct wp_object *tree_rotate_left(struct wp_object *n)
 {
@@ -242,40 +249,42 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
 		return false;
 	}
 
-	unsigned int len = data->base_gap;
-	if (len > true_length) {
-		wp_error("Msg overflow, not enough words %d > %d", len,
-				true_length);
-		return false;
-	}
-
-	for (int i = 0; i < data->n_stretch; i++) {
-		/* For strings, the string length /includes/ the null terminator
-		 */
-		uint32_t x_words = (payload[len - 1] + 3) / 4;
-		/* string termination validation */
-		if (data->stretch_is_string[i] && x_words) {
-			unsigned int end_idx = len + x_words - 1;
+	const uint16_t *gaps = data->gaps;
+	uint32_t pos = 0;
+	for (;; gaps++) {
+		uint16_t g = (*gaps >> 2);
+		uint16_t e = (*gaps & 0x3);
+		pos += g;
+		if (pos > true_length) {
+			wp_error("Msg overflow, not enough words %d > %d", pos,
+					true_length);
+			return false;
+		}
+		switch (e) {
+		case GAP_CODE_STR: {
+			uint32_t x_words = (payload[pos - 1] + 3) / 4;
+			uint32_t end_idx = pos + x_words - 1;
 			if (end_idx < true_length &&
 					!word_has_empty_bytes(
 							payload[end_idx])) {
 				wp_error("Msg overflow, string termination %d < %d, %d, %x %d",
-						len, true_length, x_words,
+						pos, true_length, x_words,
 						payload[end_idx],
 						word_has_empty_bytes(
 								payload[end_idx]));
 				return false;
 			}
-		}
-		len += x_words;
-		len += data->trail_gap[i];
-		if (len > true_length) {
-			wp_error("Msg overflow, post string %d %d > %d", i, len,
-					true_length);
-			return false;
+			pos += x_words;
+		} break;
+		case GAP_CODE_ARR:
+			pos += (payload[pos - 1] + 3) / 4;
+			break;
+		case GAP_CODE_OBJ:
+			break;
+		case GAP_CODE_END:
+			return true;
 		}
 	}
-	return true;
 }
 
 /* Given a size-checked request, try to construct all the new objects
@@ -287,34 +296,43 @@ bool size_check(const struct msg_data *data, const uint32_t *payload,
  */
 static bool build_new_objects(const struct msg_data *data,
 		const uint32_t *payload, struct message_tracker *mt,
-		const struct wp_object *caller_obj)
+		const struct wp_object *caller_obj, int msg_offset)
 {
-	unsigned int pos = 0;
-	int gap_no = 0;
-	for (int k = 0; k < data->new_vec_len; k++) {
-		if (data->new_obj_idxs[k] == (unsigned int)-1) {
-			pos += gap_no == 0 ? data->base_gap
-					   : data->trail_gap[gap_no - 1];
+	const uint16_t *gaps = data->gaps;
+	uint32_t pos = 0;
+	uint32_t objno = 0;
+	for (;; gaps++) {
+		uint16_t g = (*gaps >> 2);
+		uint16_t e = (*gaps & 0x3);
+		pos += g;
+		switch (e) {
+		case GAP_CODE_STR:
+		case GAP_CODE_ARR:
 			pos += (payload[pos - 1] + 3) / 4;
-			gap_no++;
-		} else {
-			uint32_t new_id = payload[pos + data->new_obj_idxs[k]];
+			break;
+		case GAP_CODE_OBJ: {
+			uint32_t new_id = payload[pos - 1];
 			if (new_id == caller_obj->obj_id) {
 				wp_error("In %s.%s, tried to create object id=%u conflicting with object being called, also id=%u",
 						caller_obj->type->name,
-						data->name, new_id,
-						caller_obj->obj_id);
+						get_nth_packed_string(
+								caller_obj->type->msg_names,
+								msg_offset),
+						new_id, caller_obj->obj_id);
 				return false;
 			}
 			struct wp_object *new_obj = create_wp_object(
-					new_id, data->new_obj_types[k]);
+					new_id, data->new_objs[objno]);
 			if (!new_obj) {
 				return false;
 			}
 			tracker_insert(mt, new_obj);
+			objno++;
+		} break;
+		case GAP_CODE_END:
+			return true;
 		}
 	}
-	return true;
 }
 
 int peek_message_size(const void *data)
@@ -365,29 +383,26 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	const struct wp_interface *intf = objh->type;
-	int type_idx = from_client ? 0 : 1;
-	const struct msg_data *msg = NULL;
-	if (meth < intf->nfuncs[type_idx] && meth >= 0) {
-		msg = &intf->funcs[type_idx][meth];
-	} else {
+	int nmsgs = from_client ? intf->nreq : intf->nevt;
+	if (meth < 0 || meth >= nmsgs) {
 		wp_debug("Unidentified request #%d (of %d) on interface %s",
-				meth, intf->nfuncs[type_idx], intf->name);
-	}
-	if (!msg) {
-		wp_debug("Unidentified %s from known object",
-				from_client ? "request" : "event");
+				meth, nmsgs, intf->name);
 		return PARSE_UNKNOWN;
 	}
+	int meth_offset = from_client ? meth : meth + intf->nreq;
+	const struct msg_data *msg = &intf->msgs[meth_offset];
 
 	const uint32_t *payload = header + 2;
 	if (!size_check(msg, payload, (unsigned int)len / 4 - 2,
 			    fds->zone_end - fds->zone_start)) {
 		wp_error("Message %x %s@%u.%s parse length overflow", payload,
-				intf->name, objh->obj_id, msg->name);
+				intf->name, objh->obj_id,
+				get_nth_packed_string(
+						intf->msg_names, meth_offset));
 		return PARSE_UNKNOWN;
 	}
 
-	if (!build_new_objects(msg, payload, &g->tracker, objh)) {
+	if (!build_new_objects(msg, payload, &g->tracker, objh, meth_offset)) {
 		return PARSE_UNKNOWN;
 	}
 
@@ -443,7 +458,9 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 	}
 
 	if (ctx.drop_this_msg) {
-		wp_debug("Dropping %s.%s, with %d fds", intf->name, msg->name,
+		wp_debug("Dropping %s.%s, with %d fds", intf->name,
+				get_nth_packed_string(
+						intf->msg_names, meth_offset),
 				fds_used);
 		chars->zone_end = chars->zone_start;
 		int nmoved = fds->zone_end - fds->zone_start - fds_used;
@@ -478,8 +495,10 @@ enum parse_state handle_message(struct globals *g, bool display_side,
 
 	if (fds->zone_end < fds->zone_start) {
 		wp_error("Handler error after %s.%s: fdzs = %d > %d = fdze",
-				intf->name, msg->name, fds->zone_start,
-				fds->zone_end);
+				intf->name,
+				get_nth_packed_string(
+						intf->msg_names, meth_offset),
+				fds->zone_start, fds->zone_end);
 	}
 	// Move the end, in case there were changes
 	chars->zone_end = chars->zone_start + ctx.message_length;
