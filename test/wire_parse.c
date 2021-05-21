@@ -90,7 +90,6 @@ void do_ytype_evt_red(struct context *ctx, struct wp_object *a, int32_t b,
 }
 
 struct wire_test {
-	const wp_callfn_t func;
 	const struct wp_interface *intf;
 	int msg_offset;
 	int fds[4];
@@ -139,7 +138,7 @@ int main(int argc, char **argv)
 	struct context ctx = {.obj = &xobj, .g = NULL};
 
 	struct wire_test tests[] = {
-			{call_xtype_req_blue, &intf_xtype, 0, {7771},
+			{&intf_xtype, 0, {7771},
 					{8, pack_u32(0x62, 0x61, 0x62, 0x61),
 							pack_u32(0x63, 0x62,
 									0x61,
@@ -148,9 +147,8 @@ int main(int argc, char **argv)
 							4442, xobj.obj_id, 0,
 							4443},
 					1, 10},
-			{call_xtype_evt_yellow, &intf_xtype, 1, {0}, {4441}, 0,
-					1},
-			{call_ytype_req_green, &intf_ytype, 0, {7771},
+			{&intf_xtype, 1, {0}, {4441}, 0, 1},
+			{&intf_ytype, 0, {7771},
 					{4441, 4, pack_u32(0x62, 0x65, 0x61, 0),
 							0, 5,
 							pack_u32(0x63, 0x62,
@@ -166,7 +164,7 @@ int main(int argc, char **argv)
 									0x99,
 									0x99)},
 					1, 11},
-			{call_ytype_evt_red, &intf_ytype, 1, {8881, 8882, 8883},
+			{&intf_ytype, 1, {8881, 8882, 8883},
 					{7770, 33330, 7771, 33331, 33332, 7773,
 							33333, 44440, 6,
 							pack_u32(0x62, 0x63,
@@ -187,7 +185,9 @@ int main(int argc, char **argv)
 		struct wire_test *wt = &tests[t];
 
 		ctx.drop_this_msg = false;
-		(*wt->func)(&ctx, wt->words, wt->fds, &mt);
+		wp_callfn_t func = wt->intf->msgs[wt->msg_offset].call;
+
+		(*func)(&ctx, wt->words, wt->fds, &mt);
 		if (ctx.drop_this_msg) {
 			all_success = false;
 		}

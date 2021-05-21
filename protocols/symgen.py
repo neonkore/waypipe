@@ -18,6 +18,76 @@ wltype_to_ctypes = {
 }
 
 
+def superstring(a, b):
+    na, nb = len(a), len(b)
+    if nb > na:
+        b, a, nb, na = a, b, na, nb
+    # A contains B
+    for i in range(na - nb + 1):
+        if a[i : nb + i] == b:
+            return a
+
+    # suffix of B is prefix of A
+    ba_overlap = 0
+    for i in range(1, nb):
+        if b[-i:] == a[:i]:
+            ba_overlap = i
+
+    # suffix of A is prefix of B
+    ab_overlap = 0
+    for i in range(1, nb):
+        if a[-i:] == b[:i]:
+            ab_overlap = i
+
+    if ba_overlap > ab_overlap:
+        return b + a[ba_overlap:]
+    else:
+        return a + b[ab_overlap:]
+
+
+def get_offset(haystack, needle):
+    for i in range(len(haystack) - len(needle) + 1):
+        if haystack[i : i + len(needle)] == needle:
+            return i
+    return None
+
+
+def shortest_superstring(strings):
+    """
+    Given strings L_1,...L_n over domain U, report an approximation
+    of the shortest superstring of the lists, and offsets of the
+    L_i into this string. Has O(n^3) runtime; O(n^2 polylog) is possible.
+    """
+    if not len(strings):
+        return None
+
+    pool = []
+    for s in strings:
+        if s not in pool:
+            pool.append(s)
+
+    while len(pool) > 1:
+        max_overlap = 0
+        best = None
+        for i in range(len(pool)):
+            for j in range(i):
+                d = len(pool[i]) + len(pool[j]) - len(superstring(pool[i], pool[j]))
+                if d >= max_overlap:
+                    max_overlap = d
+                    best = (j, i)
+
+        s = superstring(pool[best[0]], pool[best[1]])
+        del pool[best[1]]
+        del pool[best[0]]
+        pool.append(s)
+
+    sstring = pool[0]
+    for s in strings:
+        assert get_offset(sstring, s) != None, ("substring property", sstring, s)
+
+    return sstring
+
+
 def write_enum(is_header, ostream, iface_name, enum):
     if not is_header:
         return
@@ -42,13 +112,7 @@ def is_exportable(func_name, export_list):
     return False
 
 
-def write_func(is_header, ostream, iface_name, func, is_request, export_list):
-    func_name = (
-        iface_name + "_" + ("req" if is_request else "evt") + "_" + func.attrib["name"]
-    )
-
-    for_export = is_exportable(func_name, export_list)
-
+def write_func(is_header, ostream, func_name, func):
     c_sig = ["struct context *ctx"]
     w_args = []
 
@@ -96,17 +160,16 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
             num_stretch_args += 1
 
     do_signature = "void do_{}({});".format(func_name, ", ".join(c_sig))
-    handle_signature = "void call_{}(struct context *ctx, const uint32_t *payload, const int *fds, struct message_tracker *mt)".format(
+    handle_signature = "static void call_{}(struct context *ctx, const uint32_t *payload, const int *fds, struct message_tracker *mt)".format(
         func_name
     )
 
     W = lambda *x: print(*x, file=ostream)
-    if for_export:
+    if is_header:
         W(do_signature)
-    if is_header and for_export:
-        W(handle_signature + ";")
-    elif for_export:
+    if not is_header:
         # Write function definition
+        W(do_signature)
         W(handle_signature + " {")
         if num_reg_args > 0:
             W("\tunsigned int i = 0;")
@@ -174,90 +237,119 @@ def write_func(is_header, ostream, iface_name, func, is_request, export_list):
 
         W("}")
 
-    if is_header:
-        msg_data_args = None
-    else:
-        new_objs = []
-        for arg_name, arg_type, arg_interface in w_args:
-            if arg_type == "new_id":
-                new_objs.append(
-                    "&intf_" + arg_interface if arg_interface is not None else "NULL"
-                )
 
-        # gap coding: 0=end,1=new_obj,2=array,3=string
-        gaps = [0]
-        gap_ends = []
-        for arg_name, arg_type, arg_interface in w_args:
-            if arg_type == "fd":
-                continue
-
-            gaps[-1] += 1
-            if arg_type in ("new_id", "string", "array"):
-                gap_ends.append({"new_id": 1, "string": 3, "array": 2}[arg_type])
-                gaps.append(0)
-        gap_ends.append(0)
-
-        if len(new_objs) > 0:
-            W("static const struct wp_interface *objt_" + func_name + "[] = {")
-            W("\t" + ", ".join(new_objs))
-            W("};")
-
-        gap_codes = [str(g * 4 + e) for g, e in zip(gaps, gap_ends)]
-        W("static const uint16_t gaps_" + func_name + "[] = {")
-        W("\t" + ", ".join(gap_codes))
-        W("};")
-
-        # Write message metadata, for length check/new object initialization
-        msg_data_args = []
-
-        msg_data_args.append("gaps_{}".format(func_name))
-        if len(new_objs) > 0:
-            msg_data_args.append("objt_{}".format(func_name))
+def load_msg_data(func_name, func, for_export):
+    w_args = []
+    for arg in func:
+        if arg.tag != "arg":
+            continue
+        arg_name = arg.attrib["name"]
+        arg_type = arg.attrib["type"]
+        arg_interface = arg.attrib["interface"] if "interface" in arg.attrib else None
+        if arg_type == "new_id" and arg_interface is None:
+            w_args.append(("interface", "string", None))
+            w_args.append(("version", "uint", None))
+            w_args.append((arg_name, "new_id", None))
         else:
-            msg_data_args.append("NULL")
-        if for_export:
-            msg_data_args.append("call_" + func_name)
-        else:
-            msg_data_args.append("NULL")
-        msg_data_args.append(str(num_fd_args))
-        if "type" in func.attrib and func.attrib["type"] == "destructor":
-            msg_data_args.append("true")
-        else:
-            msg_data_args.append("false")
+            w_args.append((arg_name, arg_type, arg_interface))
 
-    return (is_request, func_name, func.attrib["name"], msg_data_args)
+    new_objs = []
+    for arg_name, arg_type, arg_interface in w_args:
+        if arg_type == "new_id":
+            new_objs.append(
+                "&intf_" + arg_interface if arg_interface is not None else "NULL"
+            )
+
+    # gap coding: 0=end,1=new_obj,2=array,3=string
+    num_fd_args = 0
+    gaps = [0]
+    gap_ends = []
+    for arg_name, arg_type, arg_interface in w_args:
+        if arg_type == "fd":
+            num_fd_args += 1
+            continue
+
+        gaps[-1] += 1
+        if arg_type in ("new_id", "string", "array"):
+            gap_ends.append({"new_id": 1, "string": 3, "array": 2}[arg_type])
+            gaps.append(0)
+    gap_ends.append(0)
+    gap_codes = [str(g * 4 + e) for g, e in zip(gaps, gap_ends)]
+
+    is_destructor = ("type" in func.attrib and func.attrib["type"] == "destructor",)
+    is_request = item.tag == "request"
+    short_name = func.attrib["name"]
+
+    return (
+        is_request,
+        func_name,
+        short_name,
+        new_objs,
+        gap_codes,
+        is_destructor,
+        num_fd_args,
+        for_export,
+    )
 
 
-def write_interface(is_header, ostream, iface_name, func_data):
+def write_interface(
+    ostream, iface_name, func_data, gap_code_array, new_obj_array, proto_name
+):
     reqs, evts = [], []
-    for is_req, name, short_name, msg_data_args in func_data:
-        if is_req:
-            reqs.append((name, short_name, msg_data_args))
+    for x in func_data:
+        if x[0]:
+            reqs.append(x)
         else:
-            evts.append((name, short_name, msg_data_args))
+            evts.append(x)
 
     W = lambda *x: print(*x, file=ostream)
 
-    if not is_header:
-        mcn = "NULL"
-        if len(reqs) > 0 or len(evts) > 0:
-            W("static const struct msg_data msgs_" + iface_name + "[] = {")
-            for name, short_name, mda in reqs + evts:
-                W("\t{" + ", ".join(mda) + "},")
-            W("};")
-            mcn = "msgs_" + iface_name
+    if len(reqs) > 0 or len(evts) > 0:
+        W("static const struct msg_data msgs_" + iface_name + "[] = {")
 
-        msg_names = []
-        for name, short_name, mda in reqs + evts:
-            msg_names.append(short_name)
+    msg_names = []
+    for x in reqs + evts:
+        (
+            is_request,
+            func_name,
+            short_name,
+            new_objs,
+            gap_codes,
+            is_destructor,
+            num_fd_args,
+            for_export,
+        ) = x
+        msg_names.append(short_name)
 
-        W("const struct wp_interface intf_" + iface_name + " = {")
-        W("\t" + mcn + ",")
-        W("\t" + str(len(reqs)) + ",")
-        W("\t" + str(len(evts)) + ",")
-        W('\t"{}",'.format(iface_name))
-        W('\t"{}",'.format("\\0".join(msg_names)))
+        mda = []
+        mda.append(
+            "gaps_{} + {}".format(proto_name, get_offset(gap_code_array, gap_codes))
+        )
+        if len(new_objs) > 0:
+            mda.append(
+                "objt_{} + {}".format(proto_name, get_offset(new_obj_array, new_objs))
+            )
+        else:
+            mda.append("NULL")
+
+        mda.append(("call_" + func_name) if for_export else "NULL")
+        mda.append(str(num_fd_args))
+        mda.append("true" if is_destructor else "false")
+
+        W("\t{" + ", ".join(mda) + "},")
+
+    mcn = "NULL"
+    if len(reqs) > 0 or len(evts) > 0:
         W("};")
+        mcn = "msgs_" + iface_name
+
+    W("const struct wp_interface intf_" + iface_name + " = {")
+    W("\t" + mcn + ",")
+    W("\t" + str(len(reqs)) + ",")
+    W("\t" + str(len(evts)) + ",")
+    W('\t"{}",'.format(iface_name))
+    W('\t"{}",'.format("\\0".join(msg_names)))
+    W("};")
 
 
 if __name__ == "__main__":
@@ -277,8 +369,8 @@ if __name__ == "__main__":
     }
     for intf in root:
         if intf.tag == "interface":
-            for func in intf:
-                for arg in func:
+            for msg in intf:
+                for arg in msg:
                     if "interface" in arg.attrib:
                         intfset.add(arg.attrib["interface"])
     interfaces = sorted(intfset)
@@ -297,6 +389,10 @@ if __name__ == "__main__":
         for intf in interfaces:
             W("extern const struct wp_interface intf_{};".format(intf))
 
+        gap_code_list = []
+        new_obj_list = []
+
+        interface_data = []
         for interface in root:
             if interface.tag != "interface":
                 continue
@@ -307,22 +403,55 @@ if __name__ == "__main__":
                 if item.tag == "enum":
                     write_enum(is_header, ostream, iface_name, item)
                 elif item.tag == "request" or item.tag == "event":
-                    func_data.append(
-                        write_func(
-                            is_header,
-                            ostream,
-                            iface_name,
-                            item,
-                            item.tag == "request",
-                            export_list,
-                        )
+                    is_req = item.tag == "request"
+                    func_name = (
+                        iface_name
+                        + "_"
+                        + ("req" if is_req else "evt")
+                        + "_"
+                        + item.attrib["name"]
                     )
+
+                    for_export = is_exportable(func_name, export_list)
+                    if for_export:
+                        write_func(is_header, ostream, func_name, item)
+                    if not is_header:
+                        func_data.append(load_msg_data(func_name, item, for_export))
+
                 elif item.tag == "description":
                     pass
                 else:
                     raise Exception(item.tag)
 
-            write_interface(is_header, ostream, iface_name, func_data)
+            for x in func_data:
+                gap_code_list.append(x[4])
+                new_obj_list.append(x[3])
+
+            interface_data.append((iface_name, func_data))
+
+        gap_code_array = shortest_superstring(gap_code_list)
+        new_obj_array = shortest_superstring(new_obj_list)
+
+        if new_obj_array is not None:
+            W("static const struct wp_interface *objt_" + proto_name + "[] = {")
+            W("\t" + ",\n\t".join(new_obj_array))
+            W("};")
+
+        if gap_code_array is not None:
+            W("static const uint16_t gaps_" + proto_name + "[] = {")
+            W("\t" + ",\n\t".join(gap_code_array))
+            W("};")
+
+        for iface_name, func_data in interface_data:
+            if not is_header:
+                write_interface(
+                    ostream,
+                    iface_name,
+                    func_data,
+                    gap_code_array,
+                    new_obj_array,
+                    proto_name,
+                )
 
         if is_header:
             W()
