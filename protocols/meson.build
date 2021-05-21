@@ -27,22 +27,20 @@ protocols = [
 protocols_src = []
 protocols_headers = []
 protocols_headers += configure_file(input: 'symgen_types.h', copy: true, output: 'symgen_types.h')
-foreach xml : protocols
-	protocols_src += custom_target(
-		'@0@ code'.format(xml.underscorify()),
-		output: 'protocol-@BASENAME@.c',
-		input: xml,
-		depend_files: [fn_list, symgen_path],
-		command: [python3, symgen_path, 'data', fn_list, '@INPUT@', '@OUTPUT@'],
-	)
-	protocols_headers += custom_target(
-		'@0@ client-header'.format(xml.underscorify()),
-		output: 'protocol-@BASENAME@.h',
-		input: xml,
-		depend_files: [fn_list, symgen_path],
-		command: [python3, symgen_path, 'header', fn_list, '@INPUT@', '@OUTPUT@'],
-	)
-endforeach
+protocols_src += custom_target(
+	'protocol code',
+	output: 'protocols.c',
+	input: protocols,
+	depend_files: [fn_list, symgen_path],
+	command: [python3, symgen_path, 'data', fn_list, '@OUTPUT@', '@INPUT@'],
+)
+protocols_headers += custom_target(
+	'protocol header',
+	output: 'protocols.h',
+	input: protocols,
+	depend_files: [fn_list, symgen_path],
+	command: [python3, symgen_path, 'header', fn_list, '@OUTPUT@', '@INPUT@'],
+)
 
 # the src files do not require the headers
 lib_protocols = static_library(

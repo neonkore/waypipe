@@ -2,6 +2,7 @@
 
 import os, sys, fnmatch
 import xml.etree.ElementTree as ET
+import argparse
 
 """
 A static protocol code generator.
@@ -276,7 +277,7 @@ def load_msg_data(func_name, func, for_export):
     gap_ends.append(0)
     gap_codes = [str(g * 4 + e) for g, e in zip(gaps, gap_ends)]
 
-    is_destructor = ("type" in func.attrib and func.attrib["type"] == "destructor",)
+    is_destructor = "type" in func.attrib and func.attrib["type"] == "destructor"
     is_request = item.tag == "request"
     short_name = func.attrib["name"]
 
@@ -293,7 +294,7 @@ def load_msg_data(func_name, func, for_export):
 
 
 def write_interface(
-    ostream, iface_name, func_data, gap_code_array, new_obj_array, proto_name
+    ostream, iface_name, func_data, gap_code_array, new_obj_array, dest_name
 ):
     reqs, evts = [], []
     for x in func_data:
@@ -323,11 +324,11 @@ def write_interface(
 
         mda = []
         mda.append(
-            "gaps_{} + {}".format(proto_name, get_offset(gap_code_array, gap_codes))
+            "gaps_{} + {}".format(dest_name, get_offset(gap_code_array, gap_codes))
         )
         if len(new_objs) > 0:
             mda.append(
-                "objt_{} + {}".format(proto_name, get_offset(new_obj_array, new_objs))
+                "objt_{} + {}".format(dest_name, get_offset(new_obj_array, new_objs))
             )
         else:
             mda.append("NULL")
@@ -353,29 +354,39 @@ def write_interface(
 
 
 if __name__ == "__main__":
-    mode, req_file, source, dest = sys.argv[1:]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", help="Either 'header' or 'data'.")
+    parser.add_argument(
+        "export_list", help="List of events/requests which need parsing."
+    )
+    parser.add_argument("output_file", help="C file to create.")
+    parser.add_argument("protocols", nargs="+", help="XML protocol files to use.")
+    args = parser.parse_args()
 
-    export_list = open(req_file).read().split("\n")
+    is_header = {"data": False, "header": True}[args.mode]
+    if is_header:
+        assert args.output_file[-2:] == ".h"
+    else:
+        assert args.output_file[-2:] == ".c"
+    dest_name = os.path.basename(args.output_file)[:-2].replace("-", "_")
 
-    is_header = {"data": False, "header": True}[mode]
+    export_list = open(args.export_list).read().split("\n")
 
-    tree = ET.parse(source)
-    root = tree.getroot()
-    proto_name = root.attrib["name"]
-    header_guard = "PROTOCOL_{}_H".format(proto_name.upper())
-
-    intfset = {
-        interface.attrib["name"] for interface in root if interface.tag == "interface"
-    }
-    for intf in root:
-        if intf.tag == "interface":
-            for msg in intf:
-                for arg in msg:
-                    if "interface" in arg.attrib:
-                        intfset.add(arg.attrib["interface"])
+    intfset = set()
+    for source in args.protocols:
+        tree = ET.parse(source)
+        root = tree.getroot()
+        for intf in root:
+            if intf.tag == "interface":
+                intfset.add(intf.attrib["name"])
+                for msg in intf:
+                    for arg in msg:
+                        if "interface" in arg.attrib:
+                            intfset.add(arg.attrib["interface"])
     interfaces = sorted(intfset)
 
-    with open(dest, "w") as ostream:
+    header_guard = "{}_H".format(dest_name.upper())
+    with open(args.output_file, "w") as ostream:
         W = lambda *x: print(*x, file=ostream)
 
         if is_header:
@@ -393,64 +404,68 @@ if __name__ == "__main__":
         new_obj_list = []
 
         interface_data = []
-        for interface in root:
-            if interface.tag != "interface":
-                continue
-            iface_name = interface.attrib["name"]
 
-            func_data = []
-            for item in interface:
-                if item.tag == "enum":
-                    write_enum(is_header, ostream, iface_name, item)
-                elif item.tag == "request" or item.tag == "event":
-                    is_req = item.tag == "request"
-                    func_name = (
-                        iface_name
-                        + "_"
-                        + ("req" if is_req else "evt")
-                        + "_"
-                        + item.attrib["name"]
-                    )
+        for source in sorted(args.protocols):
+            tree = ET.parse(source)
+            root = tree.getroot()
+            for interface in root:
+                if interface.tag != "interface":
+                    continue
+                iface_name = interface.attrib["name"]
 
-                    for_export = is_exportable(func_name, export_list)
-                    if for_export:
-                        write_func(is_header, ostream, func_name, item)
-                    if not is_header:
-                        func_data.append(load_msg_data(func_name, item, for_export))
+                func_data = []
+                for item in interface:
+                    if item.tag == "enum":
+                        write_enum(is_header, ostream, iface_name, item)
+                    elif item.tag == "request" or item.tag == "event":
+                        is_req = item.tag == "request"
+                        func_name = (
+                            iface_name
+                            + "_"
+                            + ("req" if is_req else "evt")
+                            + "_"
+                            + item.attrib["name"]
+                        )
 
-                elif item.tag == "description":
-                    pass
-                else:
-                    raise Exception(item.tag)
+                        for_export = is_exportable(func_name, export_list)
+                        if for_export:
+                            write_func(is_header, ostream, func_name, item)
+                        if not is_header:
+                            func_data.append(load_msg_data(func_name, item, for_export))
 
-            for x in func_data:
-                gap_code_list.append(x[4])
-                new_obj_list.append(x[3])
+                    elif item.tag == "description":
+                        pass
+                    else:
+                        raise Exception(item.tag)
 
-            interface_data.append((iface_name, func_data))
+                for x in func_data:
+                    gap_code_list.append(x[4])
+                    new_obj_list.append(x[3])
 
-        gap_code_array = shortest_superstring(gap_code_list)
-        new_obj_array = shortest_superstring(new_obj_list)
+                interface_data.append((iface_name, func_data))
 
-        if new_obj_array is not None:
-            W("static const struct wp_interface *objt_" + proto_name + "[] = {")
-            W("\t" + ",\n\t".join(new_obj_array))
-            W("};")
+        if not is_header:
+            gap_code_array = shortest_superstring(gap_code_list)
+            new_obj_array = shortest_superstring(new_obj_list)
 
-        if gap_code_array is not None:
-            W("static const uint16_t gaps_" + proto_name + "[] = {")
-            W("\t" + ",\n\t".join(gap_code_array))
-            W("};")
+            if new_obj_array is not None:
+                W("static const struct wp_interface *objt_" + dest_name + "[] = {")
+                W("\t" + ",\n\t".join(new_obj_array))
+                W("};")
 
-        for iface_name, func_data in interface_data:
-            if not is_header:
+            if gap_code_array is not None:
+                W("static const uint16_t gaps_" + dest_name + "[] = {")
+                W("\t" + ",\n\t".join(gap_code_array))
+                W("};")
+
+            for iface_name, func_data in interface_data:
                 write_interface(
                     ostream,
                     iface_name,
                     func_data,
                     gap_code_array,
                     new_obj_array,
-                    proto_name,
+                    dest_name,
                 )
 
         if is_header:

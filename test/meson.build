@@ -50,14 +50,14 @@ testproto_src = custom_target(
 	output: 'protocol-@BASENAME@.c',
 	input: 'test-proto.xml',
 	depend_files: [test_fnlist, symgen_path],
-	command: [python3, symgen_path, 'data', test_fnlist, '@INPUT@', '@OUTPUT@'],
+	command: [python3, symgen_path, 'data', test_fnlist,  '@OUTPUT@', '@INPUT@'],
 )
 testproto_header = custom_target(
 	'test-proto client-header',
 	output: 'protocol-@BASENAME@.h',
 	input: 'test-proto.xml',
 	depend_files: [test_fnlist, symgen_path],
-	command: [python3, symgen_path, 'header', test_fnlist, '@INPUT@', '@OUTPUT@'],
+	command: [python3, symgen_path, 'header', test_fnlist,  '@OUTPUT@', '@INPUT@'],
 )
 test_parse = executable(
 	'wire_parse',

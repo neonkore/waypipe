@@ -33,19 +33,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <protocol-gtk-primary-selection.h>
-#include <protocol-input-method-unstable-v2.h>
-#include <protocol-linux-dmabuf-unstable-v1.h>
-#include <protocol-presentation-time.h>
-#include <protocol-primary-selection-unstable-v1.h>
-#include <protocol-virtual-keyboard-unstable-v1.h>
-#include <protocol-wayland-drm.h>
-#include <protocol-wayland.h>
-#include <protocol-wlr-data-control-unstable-v1.h>
-#include <protocol-wlr-export-dmabuf-unstable-v1.h>
-#include <protocol-wlr-gamma-control-unstable-v1.h>
-#include <protocol-wlr-screencopy-unstable-v1.h>
-#include <protocol-xdg-shell.h>
+#include <protocols.h>
 
 struct obj_wl_shm_pool {
 	struct wp_object base;
