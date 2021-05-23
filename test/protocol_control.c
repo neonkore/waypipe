@@ -369,6 +369,13 @@ static bool check_file_contents(int fd, size_t size, const char *contents)
 	if (fd == -1) {
 		return false;
 	}
+
+	off_t fsize = lseek(fd, 0, SEEK_END);
+	if (fsize != (off_t)size) {
+		wp_error("fd size mismatch: %zu %zu\n", fsize, size);
+		return -1;
+	}
+
 	uint32_t *mem = (uint32_t *)mmap(
 			NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
 	if (mem == MAP_FAILED) {
@@ -485,6 +492,78 @@ static bool test_fixed_shm_buffer_copy()
 	}
 end:
 	free(testpat);
+	checked_close(fd);
+	cleanup_tstate(&T);
+
+	print_pass(pass);
+	return pass;
+}
+
+static bool test_fixed_shm_screencopy_copy()
+{
+	fprintf(stdout, "\n screencopy test\n");
+
+	struct transfer_states T;
+	if (setup_tstate(&T) == -1) {
+		wp_error("Test setup failed");
+		return true;
+	}
+	bool pass = true;
+
+	char *testpat_orig = make_filled_pattern(16384, 0xFEDCBA98);
+	char *testpat_screen = make_filled_pattern(16384, 0x77557755);
+	int fd = make_filled_file(16384, testpat_orig);
+	int ret_fd = -1;
+
+	struct wp_objid display = {0x1}, registry = {0x2}, shm = {0x3},
+			output = {0x4}, pool = {0x5}, buffer = {0x6},
+			frame = {0x7}, screencopy = {0x8};
+
+	send_wl_display_req_get_registry(&T, display, registry);
+	send_wl_registry_evt_global(&T, registry, 1, "wl_shm", 1);
+	send_wl_registry_evt_global(&T, registry, 2, "wl_output", 1);
+	send_wl_registry_evt_global(
+			&T, registry, 3, "zwlr_screencopy_manager_v1", 1);
+	send_wl_registry_req_bind(&T, registry, 1, "wl_shm", 1, shm);
+	send_wl_registry_req_bind(&T, registry, 2, "wl_output", 1, output);
+	send_wl_registry_req_bind(&T, registry, 3, "zwlr_screencopy_manager_v1",
+			1, screencopy);
+	send_wl_shm_req_create_pool(&T, shm, pool, fd, 16384);
+	ret_fd = get_only_fd_from_msg(T.comp);
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	send_zwlr_screencopy_manager_v1_req_capture_output(
+			&T, screencopy, frame, 0, output);
+	send_zwlr_screencopy_frame_v1_evt_buffer(&T, frame, 0, 64, 64, 16384);
+	send_wl_shm_pool_req_create_buffer(
+			&T, pool, buffer, 0, 64, 64, 256, 0x30334258);
+	send_zwlr_screencopy_frame_v1_req_copy(&T, frame, buffer);
+
+	uint32_t *mem = (uint32_t *)mmap(NULL, 16384, PROT_READ | PROT_WRITE,
+			MAP_SHARED, ret_fd, 0);
+	memcpy(mem, testpat_screen, 16384);
+	munmap(mem, 16384);
+
+	send_zwlr_screencopy_frame_v1_evt_flags(&T, frame, 0);
+	send_zwlr_screencopy_frame_v1_evt_ready(&T, frame, 0, 12345, 600000000);
+
+	/* confirm receipt of fd with the correct contents; if not,
+	 * reject */
+	if (ret_fd == -1) {
+		wp_error("Fd not passed through");
+		pass = false;
+		goto end;
+	}
+	pass = check_file_contents(fd, 16384, testpat_screen);
+	if (!pass) {
+		wp_error("Failed to transfer file");
+	}
+end:
+	free(testpat_screen);
+	free(testpat_orig);
 	checked_close(fd);
 	cleanup_tstate(&T);
 
@@ -1012,9 +1091,10 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
-	int ntest = 16;
+	int ntest = 17;
 	int nsuccess = 0;
 	nsuccess += test_fixed_shm_buffer_copy();
+	nsuccess += test_fixed_shm_screencopy_copy();
 	nsuccess += test_fixed_keymap_copy();
 	nsuccess += test_fixed_dmabuf_copy();
 	nsuccess += test_data_offer(DDT_WAYLAND);
@@ -1030,7 +1110,6 @@ int main(int argc, char **argv)
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, false);
 	nsuccess += test_fixed_video_color_copy(VIDEO_H264, true);
 	nsuccess += test_fixed_video_color_copy(VIDEO_VP9, false);
-	// TODO: add a copy-paste test, and screencapture.
 	// TODO: add tests for handling of common errors, e.g. invalid fd,
 	// or type confusion
 
