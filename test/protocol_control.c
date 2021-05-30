@@ -673,11 +673,21 @@ end:
 	return dmafd;
 }
 
-static bool test_fixed_dmabuf_copy()
+enum dmabuf_copy_type {
+	COPY_LINUX_DMABUF,
+	COPY_LINUX_DMABUF_INDIR,
+	COPY_DRM_PRIME,
+	COPY_WLR_EXPORT,
+};
+
+static bool test_fixed_dmabuf_copy(enum dmabuf_copy_type type)
 {
-	fprintf(stdout, "\n  DMABUF test\n");
+	const char *const types[] = {"linux-dmabuf", "linux-dmabuf-indir",
+			"drm-prime", "wlr-export"};
+	fprintf(stdout, "\n  DMABUF test, %s\n", types[(int)type]);
 
 	int dmabufd = create_dmabuf();
+	const int width = 256, height = 384;
 	if (dmabufd == -1) {
 		return true;
 	}
@@ -689,32 +699,128 @@ static bool test_fixed_dmabuf_copy()
 	bool pass = true;
 	int ret_fd = -1;
 
-	struct wp_objid display = {0x1}, registry = {0x2}, linux_dmabuf = {0x3},
-			compositor = {0x4}, params = {0x5}, buffer = {0x6},
-			surface = {0x7};
+	switch (type) {
+	case COPY_LINUX_DMABUF: {
+		struct wp_objid display = {0x1}, registry = {0x2},
+				linux_dmabuf = {0x3}, compositor = {0x4},
+				params = {0x5}, buffer = {0x6}, surface = {0x7};
 
-	send_wl_display_req_get_registry(&T, display, registry);
-	send_wl_registry_evt_global(&T, registry, 1, "zwp_linux_dmabuf_v1", 1);
-	send_wl_registry_evt_global(&T, registry, 2, "wl_compositor", 1);
-	send_wl_registry_req_bind(&T, registry, 1, "zwp_linux_dmabuf_v1", 1,
-			linux_dmabuf);
-	send_wl_registry_req_bind(
-			&T, registry, 12, "wl_compositor", 1, compositor);
-	send_zwp_linux_dmabuf_v1_evt_modifier(
-			&T, linux_dmabuf, DMABUF_FORMAT, 0, 0);
-	send_zwp_linux_dmabuf_v1_req_create_params(&T, linux_dmabuf, params);
-	send_zwp_linux_buffer_params_v1_req_add(
-			&T, params, dmabufd, 0, 0, 256 * 4, 0, 0);
-	send_zwp_linux_buffer_params_v1_req_create_immed(
-			&T, params, buffer, 256, 384, DMABUF_FORMAT, 0);
-	/* this message + previous, after reordering, are treated as one
-	 * bundle; if that is fixed, this will break, and 1 should become 2 */
-	ret_fd = get_fd_from_nth_to_last_msg(T.comp, 1);
-	send_zwp_linux_buffer_params_v1_req_destroy(&T, params);
-	send_wl_compositor_req_create_surface(&T, compositor, surface);
-	send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
-	send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
-	send_wl_surface_req_commit(&T, surface);
+		send_wl_display_req_get_registry(&T, display, registry);
+		send_wl_registry_evt_global(
+				&T, registry, 1, "zwp_linux_dmabuf_v1", 1);
+		send_wl_registry_evt_global(
+				&T, registry, 2, "wl_compositor", 1);
+		send_wl_registry_req_bind(&T, registry, 1,
+				"zwp_linux_dmabuf_v1", 1, linux_dmabuf);
+		send_wl_registry_req_bind(&T, registry, 12, "wl_compositor", 1,
+				compositor);
+		send_zwp_linux_dmabuf_v1_evt_modifier(
+				&T, linux_dmabuf, DMABUF_FORMAT, 0, 0);
+		send_zwp_linux_dmabuf_v1_req_create_params(
+				&T, linux_dmabuf, params);
+		send_zwp_linux_buffer_params_v1_req_add(
+				&T, params, dmabufd, 0, 0, 256 * 4, 0, 0);
+		send_zwp_linux_buffer_params_v1_req_create_immed(
+				&T, params, buffer, 256, 384, DMABUF_FORMAT, 0);
+		/* this message + previous, after reordering, are treated as one
+		 * bundle; if that is fixed, this will break, and 1 should
+		 * become 2 */
+		ret_fd = get_fd_from_nth_to_last_msg(T.comp, 1);
+		send_zwp_linux_buffer_params_v1_req_destroy(&T, params);
+		send_wl_compositor_req_create_surface(&T, compositor, surface);
+		send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
+		send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
+		send_wl_surface_req_commit(&T, surface);
+	} break;
+	case COPY_LINUX_DMABUF_INDIR: {
+		struct wp_objid display = {0x1}, registry = {0x2},
+				linux_dmabuf = {0x3}, compositor = {0x4},
+				params = {0x5}, buffer = {0x6}, surface = {0x7};
+
+		send_wl_display_req_get_registry(&T, display, registry);
+		send_wl_registry_evt_global(
+				&T, registry, 1, "zwp_linux_dmabuf_v1", 1);
+		send_wl_registry_evt_global(
+				&T, registry, 2, "wl_compositor", 1);
+		send_wl_registry_req_bind(&T, registry, 1,
+				"zwp_linux_dmabuf_v1", 1, linux_dmabuf);
+		send_wl_registry_req_bind(&T, registry, 12, "wl_compositor", 1,
+				compositor);
+		send_zwp_linux_dmabuf_v1_evt_modifier(
+				&T, linux_dmabuf, DMABUF_FORMAT, 0, 0);
+		send_zwp_linux_dmabuf_v1_req_create_params(
+				&T, linux_dmabuf, params);
+		send_zwp_linux_buffer_params_v1_req_add(
+				&T, params, dmabufd, 0, 0, 256 * 4, 0, 0);
+		send_zwp_linux_buffer_params_v1_req_create(
+				&T, params, 256, 384, DMABUF_FORMAT, 0);
+		/* this message + previous, after reordering, are treated as one
+		 * bundle; if that is fixed, this will break, and 1 should
+		 * become 2 */
+		ret_fd = get_fd_from_nth_to_last_msg(T.comp, 1);
+		send_zwp_linux_buffer_params_v1_evt_created(&T, params, buffer);
+		send_zwp_linux_buffer_params_v1_req_destroy(&T, params);
+		send_wl_compositor_req_create_surface(&T, compositor, surface);
+		send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
+		send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
+		send_wl_surface_req_commit(&T, surface);
+	} break;
+	case COPY_DRM_PRIME: {
+		struct wp_objid display = {0x1}, registry = {0x2},
+				wl_drm = {0x3}, compositor = {0x4},
+				buffer = {0x5}, surface = {0x6};
+
+		send_wl_display_req_get_registry(&T, display, registry);
+		send_wl_registry_evt_global(&T, registry, 1, "wl_drm", 1);
+		send_wl_registry_evt_global(
+				&T, registry, 2, "wl_compositor", 1);
+		send_wl_registry_req_bind(&T, registry, 1, "wl_drm", 1, wl_drm);
+		send_wl_registry_req_bind(&T, registry, 12, "wl_compositor", 1,
+				compositor);
+
+		send_wl_drm_evt_device(&T, wl_drm, "/dev/dri/renderD128");
+		send_wl_drm_evt_format(&T, wl_drm, DMABUF_FORMAT);
+		send_wl_drm_evt_capabilities(&T, wl_drm, 1);
+		send_wl_drm_req_create_prime_buffer(&T, wl_drm, buffer, dmabufd,
+				width, height, DMABUF_FORMAT, 0, width * 4, 0,
+				0, 0, 0);
+
+		ret_fd = get_fd_from_nth_to_last_msg(T.comp, 1);
+		send_wl_compositor_req_create_surface(&T, compositor, surface);
+		send_wl_surface_req_attach(&T, surface, buffer, 0, 0);
+		send_wl_surface_req_damage(&T, surface, 0, 0, 64, 64);
+		send_wl_surface_req_commit(&T, surface);
+	} break;
+
+	case COPY_WLR_EXPORT: {
+		/* note: here the compositor creates and sends fd to client */
+
+		struct wp_objid display = {0x1}, registry = {0x2},
+				export_manager = {0x3}, output = {0x4},
+				dmabuf_frame = {0x5};
+
+		send_wl_display_req_get_registry(&T, display, registry);
+		send_wl_registry_evt_global(&T, registry, 1,
+				"zwlr_export_dmabuf_manager_v1", 1);
+		send_wl_registry_evt_global(&T, registry, 2, "wl_output", 1);
+		send_wl_registry_req_bind(&T, registry, 1,
+				"zwlr_export_dmabuf_manager_v1", 1,
+				export_manager);
+		send_wl_registry_req_bind(
+				&T, registry, 12, "wl_output", 1, output);
+
+		send_zwlr_export_dmabuf_manager_v1_req_capture_output(
+				&T, export_manager, dmabuf_frame, 1, output);
+		send_zwlr_export_dmabuf_frame_v1_evt_frame(&T, dmabuf_frame,
+				width, height, 0, 0, 0, 1, DMABUF_FORMAT, 0, 0,
+				1);
+		send_zwlr_export_dmabuf_frame_v1_evt_object(&T, dmabuf_frame, 0,
+				dmabufd, width * height * 4, 0, width * 4, 0);
+		ret_fd = get_only_fd_from_msg(T.app);
+		send_zwlr_export_dmabuf_frame_v1_evt_ready(
+				&T, dmabuf_frame, 555555, 555555555, 333333333);
+	} break;
+	}
 
 	if (ret_fd == -1) {
 		wp_error("Fd not passed through");
@@ -1091,12 +1197,15 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
-	int ntest = 17;
+	int ntest = 20;
 	int nsuccess = 0;
 	nsuccess += test_fixed_shm_buffer_copy();
 	nsuccess += test_fixed_shm_screencopy_copy();
 	nsuccess += test_fixed_keymap_copy();
-	nsuccess += test_fixed_dmabuf_copy();
+	nsuccess += test_fixed_dmabuf_copy(COPY_LINUX_DMABUF);
+	nsuccess += test_fixed_dmabuf_copy(COPY_LINUX_DMABUF_INDIR);
+	nsuccess += test_fixed_dmabuf_copy(COPY_DRM_PRIME);
+	nsuccess += test_fixed_dmabuf_copy(COPY_WLR_EXPORT);
 	nsuccess += test_data_offer(DDT_WAYLAND);
 	nsuccess += test_data_offer(DDT_PRIMARY);
 	nsuccess += test_data_offer(DDT_GTK_PRIMARY);
