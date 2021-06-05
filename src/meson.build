@@ -2,7 +2,6 @@
 waypipe_source_files = ['dmabuf.c', 'handlers.c', 'kernel.c', 'mainloop.c', 'parsing.c', 'platform.c', 'shadow.c', 'interval.c', 'util.c', 'video.c']
 waypipe_deps = [
 	pthreads,        # To run expensive computations in parallel
-	protos,          # Wayland protocol data
 	rt,              # For shared memory
 ]
 if config_data.has('HAS_DMABUF')
@@ -61,7 +60,7 @@ configure_file(
 
 lib_waypipe_src = static_library(
 	'waypipe_src',
-	waypipe_source_files,
+	waypipe_source_files + protocols_src,
 	include_directories: waypipe_includes,
 	link_with: kernel_libs,
 	dependencies: waypipe_deps,

@@ -25,8 +25,6 @@ protocols = [
 ]
 
 protocols_src = []
-protocols_headers = []
-protocols_headers += configure_file(input: 'symgen_types.h', copy: true, output: 'symgen_types.h')
 protocols_src += custom_target(
 	'protocol code',
 	output: 'protocols.c',
@@ -34,22 +32,12 @@ protocols_src += custom_target(
 	depend_files: [fn_list, symgen_path],
 	command: [python3, symgen_path, 'data', fn_list, '@OUTPUT@', '@INPUT@'],
 )
-protocols_headers += custom_target(
+protocols_src += custom_target(
 	'protocol header',
 	output: 'protocols.h',
 	input: protocols,
 	depend_files: [fn_list, symgen_path],
 	command: [python3, symgen_path, 'header', fn_list, '@OUTPUT@', '@INPUT@'],
-)
-
-# the src files do not require the headers
-lib_protocols = static_library(
-	'protocols',
-	protocols_src,
-)
-protos = declare_dependency(
-	link_with: lib_protocols,
-	sources: protocols_headers,
 )
 
 # For use in test
