@@ -23,6 +23,7 @@
  * SOFTWARE.
  */
 
+#include "common.h"
 #include "main.h"
 
 #include <errno.h>
@@ -54,27 +55,6 @@ static void *start_looper(void *data)
 	main_interface_loop(setup->conn, setup->wayl, -1, setup->mc,
 			setup->is_display_side);
 	return NULL;
-}
-
-static void *read_file_into_mem(const char *path, size_t *len)
-{
-	int fd = open(path, O_RDONLY);
-	if (fd == -1) {
-		printf("Failed to open '%s'", path);
-		return NULL;
-	}
-	*len = (size_t)lseek(fd, 0, SEEK_END);
-	if (*len == 0) {
-		checked_close(fd);
-		return EXIT_SUCCESS;
-	}
-	lseek(fd, 0, SEEK_SET);
-	void *buf = malloc(*len);
-	if (read(fd, buf, *len) == -1) {
-		return NULL;
-	}
-	checked_close(fd);
-	return buf;
 }
 
 log_handler_func_t log_funcs[2] = {NULL, NULL};

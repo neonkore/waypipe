@@ -23,6 +23,7 @@
  * SOFTWARE.
  */
 
+#include "common.h"
 #include "main.h"
 
 #include <errno.h>
@@ -71,22 +72,11 @@ int main(int argc, char **argv)
 		argv++;
 	}
 
-	int fd = open(argv[1], O_RDONLY);
-	if (fd == -1) {
-		printf("Failed to open '%s'", argv[1]);
+	size_t len;
+	char *buf = read_file_into_mem(argv[1], &len);
+	if (!buf) {
 		return EXIT_FAILURE;
 	}
-	int64_t len = (int64_t)lseek(fd, 0, SEEK_END);
-	if (len == 0) {
-		checked_close(fd);
-		return EXIT_SUCCESS;
-	}
-	lseek(fd, 0, SEEK_SET);
-	char *buf = malloc((size_t)len);
-	if (read(fd, buf, (size_t)len) == -1) {
-		return EXIT_FAILURE;
-	}
-	checked_close(fd);
 	printf("Loaded %" PRId64 " bytes\n", len);
 
 	int srv_fds[2], cli_fds[2], conn_fds[2];
@@ -128,7 +118,7 @@ int main(int argc, char **argv)
 	char *ignore_buf = malloc(65536);
 
 	/* Main loop: RW from socketpairs with sendmsg, with short wait */
-	int64_t file_nwords = len / 4;
+	int64_t file_nwords = (int64_t)len / 4;
 	int64_t cursor = 0;
 	uint32_t *data = (uint32_t *)buf;
 

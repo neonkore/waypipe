@@ -1,4 +1,9 @@
 
+common_src = static_library(
+	'common',
+	'common.c',
+	include_directories: waypipe_includes
+)
 # Testing
 test_diff = executable(
 	'diff_roundtrip',
@@ -34,7 +39,7 @@ test_protocol = executable(
 	'protocol_control',
 	['protocol_control.c', proto_send_src],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src
+	link_with: [lib_waypipe_src, common_src]
 )
 test('That common Wayland message patterns work', test_protocol, env: ['ASAN_OPTIONS=detect_leaks=0'], timeout: 20)
 test_pipe = executable(
@@ -110,19 +115,26 @@ if weston_prog.found() and have_test_progs
 endif
 test_startup = join_paths(meson.current_source_dir(), 'startup_failure.py')
 test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist, timeout: 10)
+
 fuzz_hook_ext = executable(
 	'fuzz_hook_ext',
 	['fuzz_hook_ext.c'],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src,
+	link_with: [lib_waypipe_src, common_src],
 	dependencies: [pthreads]
 )
 fuzz_hook_int = executable(
 	'fuzz_hook_int',
 	['fuzz_hook_int.c'],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src,
+	link_with: [lib_waypipe_src, common_src],
 	dependencies: [pthreads]
+)
+fuzz_hook_det = executable(
+	'fuzz_hook_det',
+	['fuzz_hook_det.c'],
+	include_directories: waypipe_includes,
+	link_with: [lib_waypipe_src, common_src]
 )
 test('That `waypipe bench` doesn\'t crash',
 	waypipe_prog, timeout: 20,
