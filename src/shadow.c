@@ -1545,7 +1545,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		// Create mirror from first transfer
 		// The file can only actually be created when we know
 		// what type it is?
-		if (init_render_data(render) == 1) {
+		if (init_render_data(render) == -1) {
 			sfd->fd_local = -1;
 			return 0;
 		}
@@ -1679,7 +1679,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			}
 		}
 
-		if (init_render_data(render) == 1) {
+		if (init_render_data(render) == -1) {
 			sfd->fd_local = -1;
 			return 0;
 		}
