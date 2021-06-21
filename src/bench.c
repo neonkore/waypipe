@@ -268,13 +268,12 @@ static struct bench_result run_sub_bench(bool first,
 					 * produced for diffs */
 					struct wmsg_buffer_diff *header =
 							v.iov_base;
-					net_diff_size += (size_t)(
-							header->diff_size +
-							header->ntrailing);
+					net_diff_size += (size_t)(header->diff_size +
+								  header->ntrailing);
 
 					/* Advance timer for next receipt */
-					int64_t delay_ns = (int64_t)(
-							delay_s * 1e9f);
+					int64_t delay_ns = (int64_t)(delay_s *
+								     1e9f);
 					next_write_time = timespec_add(
 							cur_time, delay_ns);
 				}

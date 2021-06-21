@@ -69,7 +69,7 @@ int main(int argc, char **argv)
 	printf("Loaded %zu bytes\n", len);
 
 	struct test_state ts;
-	if (setup_state(&ts, display_side, false) == -1) {
+	if (setup_state(&ts, display_side, true) == -1) {
 		return -1;
 	}
 

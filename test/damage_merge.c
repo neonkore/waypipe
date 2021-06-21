@@ -23,6 +23,7 @@
  * SOFTWARE.
  */
 
+#include "common.h"
 #include "shadow.h"
 
 #include <stdio.h>

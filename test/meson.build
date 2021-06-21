@@ -9,21 +9,21 @@ test_diff = executable(
 	'diff_roundtrip',
 	['diff_roundtrip.c'],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src
+	link_with: [lib_waypipe_src, common_src]
 )
 test('Whether diff operations successfully roundtrip', test_diff, timeout: 60)
 test_damage = executable(
 	'damage_merge',
 	['damage_merge.c'],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src
+	link_with: [lib_waypipe_src, common_src]
 )
 test('If damage rectangles merge efficiently', test_damage, timeout: 5)
 test_mirror = executable(
 	'fd_mirror',
 	['fd_mirror.c'],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src,
+	link_with: [lib_waypipe_src, common_src],
 	dependencies: [libgbm]
 )
 # disable leak checking, because library code is often responsible
@@ -46,7 +46,7 @@ test_pipe = executable(
 	'pipe_mirror',
 	['pipe_mirror.c'],
 	include_directories: waypipe_includes,
-	link_with: lib_waypipe_src
+	link_with: [lib_waypipe_src, common_src]
 )
 test('How well pipes are replicated', test_pipe, timeout: 20)
 test_fnlist = files('test_fnlist.txt')
@@ -68,7 +68,7 @@ test_parse = executable(
 	'wire_parse',
 	['wire_parse.c', testproto_src, testproto_header],
 	include_directories: waypipe_includes + ['../protocols'],
-	link_with: lib_waypipe_src,
+	link_with: [lib_waypipe_src, common_src],
 )
 test('That protocol parsing fails cleanly', test_parse, timeout: 5)
 

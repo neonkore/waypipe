@@ -39,26 +39,6 @@ bool video_supports_shm_format(uint32_t format)
 	(void)format;
 	return false;
 }
-
-void copy_onto_video_mirror(char *buffer, char *mirror,
-		const struct dmabuf_slice_data *info)
-{
-	(void)buffer;
-	(void)mirror;
-	(void)info;
-}
-void copy_from_video_mirror(char *buffer, char *mirror,
-		const struct dmabuf_slice_data *info)
-{
-	(void)buffer;
-	(void)mirror;
-	(void)info;
-}
-int init_hwcontext(struct render_data *rd)
-{
-	(void)rd;
-	return -1;
-}
 void cleanup_hwcontext(struct render_data *rd) { (void)rd; }
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
 int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
@@ -528,7 +508,7 @@ static bool pad_hardware_size(
 	return true;
 }
 
-int init_hwcontext(struct render_data *rd)
+static int init_hwcontext(struct render_data *rd)
 {
 	if (rd->av_disabled) {
 		return -1;

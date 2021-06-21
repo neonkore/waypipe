@@ -29,6 +29,12 @@
 #include "parsing.h"
 #include "util.h"
 
+/** a simple log handler to STDOUT for use by test programs */
+void test_log_handler(const char *file, int line, enum log_level level,
+		const char *fmt, ...);
+void test_atomic_log_handler(const char *file, int line, enum log_level level,
+		const char *fmt, ...);
+
 extern uint64_t time_value;
 extern uint64_t local_time_offset;
 

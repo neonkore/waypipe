@@ -23,7 +23,9 @@
  * SOFTWARE.
  */
 
+#include "common.h"
 #include "parsing.h"
+#include "shadow.h"
 #include "util.h"
 
 #include <errno.h>
@@ -32,7 +34,6 @@
 #include <string.h>
 
 #include "protocol-test-proto.h"
-#include "util.h"
 
 /* from parsing.c */
 bool size_check(const struct msg_data *data, const uint32_t *payload,

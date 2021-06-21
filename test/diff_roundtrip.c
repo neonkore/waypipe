@@ -23,6 +23,7 @@
  * SOFTWARE.
  */
 
+#include "common.h"
 #include "shadow.h"
 
 #include <stdio.h>
@@ -144,12 +145,12 @@ static bool run_subtest(int i, const struct subtest test, char *diff,
 			apply_diff(test.size, target1, target2, diffsize,
 					ntrailing, diff);
 			clock_gettime(CLOCK_MONOTONIC, &t2);
-			ns01 += (uint64_t)(
-					(t1.tv_sec - t0.tv_sec) * 1000000000LL +
-					(t1.tv_nsec - t0.tv_nsec));
-			ns12 += (uint64_t)(
-					(t2.tv_sec - t1.tv_sec) * 1000000000LL +
-					(t2.tv_nsec - t1.tv_nsec));
+			ns01 += (uint64_t)((t1.tv_sec - t0.tv_sec) *
+							   1000000000LL +
+					   (t1.tv_nsec - t0.tv_nsec));
+			ns12 += (uint64_t)((t2.tv_sec - t1.tv_sec) *
+							   1000000000LL +
+					   (t2.tv_nsec - t1.tv_nsec));
 			net_diffsize += diffsize + ntrailing;
 		}
 

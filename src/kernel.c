@@ -33,13 +33,13 @@
 #include <stdint.h>
 #include <string.h>
 
-size_t run_interval_diff_C(const int diff_window_size,
+static size_t run_interval_diff_C(const int diff_window_size,
 		const void *__restrict__ imod, void *__restrict__ ibase,
 		uint32_t *__restrict__ idiff, size_t i, const size_t i_end)
 {
 	const uint64_t *__restrict__ mod = imod;
 	uint64_t *__restrict__ base = ibase;
-	uint64_t *__restrict__ diff = (uint64_t * __restrict__) idiff;
+	uint64_t *__restrict__ diff = (uint64_t *__restrict__)idiff;
 
 	/* we paper over gaps of a given window size, to avoid fine
 	 * grained context switches */
