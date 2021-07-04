@@ -67,7 +67,7 @@ testproto_header = custom_target(
 test_parse = executable(
 	'wire_parse',
 	['wire_parse.c', testproto_src, testproto_header],
-	include_directories: waypipe_includes + ['../protocols'],
+	include_directories: waypipe_includes,
 	link_with: [lib_waypipe_src, common_src],
 )
 test('That protocol parsing fails cleanly', test_parse, timeout: 5)
