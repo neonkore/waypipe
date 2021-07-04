@@ -77,7 +77,7 @@ int main(int argc, char **argv)
 	if (!buf) {
 		return EXIT_FAILURE;
 	}
-	printf("Loaded %" PRId64 " bytes\n", len);
+	printf("Loaded %zu bytes\n", len);
 
 	int srv_fds[2], cli_fds[2], conn_fds[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, srv_fds) == -1 ||
