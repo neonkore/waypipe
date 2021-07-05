@@ -72,6 +72,11 @@ test_parse = executable(
 )
 test('That protocol parsing fails cleanly', test_parse, timeout: 5)
 
+fake_ssh = executable(
+	'ssh',
+	['fake_ssh.c']
+)
+
 weston_dep = dependency('weston', required: false)
 testprog_paths = []
 if weston_dep.found()
@@ -79,11 +84,13 @@ if weston_dep.found()
 	testprog_paths += weston_dep.get_pkgconfig_variable('libexecdir')
 endif
 weston_prog = find_program('weston', required: false)
-envlist = [
+base_envlist = [
 	'TEST_WAYPIPE_PATH=@0@'.format(waypipe_prog.full_path()),
 ]
+
+headless_envlist = base_envlist
 if weston_prog.found()
-	envlist += 'TEST_WESTON_PATH=@0@'.format(weston_prog.path())
+	headless_envlist += 'TEST_WESTON_PATH=@0@'.format(weston_prog.path())
 endif
 test_programs = [
 	['TEST_WESTON_SHM_PATH', 'weston-simple-shm'],
@@ -105,16 +112,23 @@ foreach t : test_programs
 	endforeach
 	if test_prog.found()
 		have_test_progs = true
-		envlist += '@0@=@1@'.format(t[0], test_prog.path())
+		headless_envlist += '@0@=@1@'.format(t[0], test_prog.path())
 	endif
 endforeach
 
 if weston_prog.found() and have_test_progs
 	test_headless = join_paths(meson.current_source_dir(), 'headless.py')
-	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: envlist, timeout: 30)
+	test('If clients crash when run with weston via waypipe', python3, args: test_headless, env: headless_envlist, timeout: 30)
 endif
+
+sleep_prog = find_program('sleep')
+startup_envlist = base_envlist
+startup_envlist += ['TEST_SLEEP_PATH=' + sleep_prog.path()]
+startup_envlist += ['TEST_FAKE_SSH_PATH=' + fake_ssh.full_path()]
 test_startup = join_paths(meson.current_source_dir(), 'startup_failure.py')
-test('That waypipe exits cleanly given a bad setup', python3, args: test_startup, env: envlist, timeout: 10)
+test('That waypipe exits cleanly given a bad setup',
+        python3, args: test_startup, env: startup_envlist, timeout: 10
+)
 
 fuzz_hook_ext = executable(
 	'fuzz_hook_ext',

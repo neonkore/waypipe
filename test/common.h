@@ -56,13 +56,13 @@ struct test_state {
 	uint64_t local_time_offset;
 };
 
-void send_wayland_msg(struct test_state *src, const struct msg msg, struct transfer_queue *queue);
+void send_wayland_msg(struct test_state *src, const struct msg msg,
+		struct transfer_queue *queue);
 void receive_wire(struct test_state *src, struct transfer_queue *queue);
 
 void send_protocol_msg(struct test_state *src, struct test_state *dst,
 		const struct msg msg);
 int setup_state(struct test_state *s, bool display_side, bool has_gpu);
 void cleanup_state(struct test_state *s);
-
 
 #endif /* WAYPIPE_TESTCOMMON_H */

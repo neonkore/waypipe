@@ -18,6 +18,8 @@ def try_unlink(path):
 
 
 waypipe_path = os.environ["TEST_WAYPIPE_PATH"]
+sleep_path = os.environ["TEST_SLEEP_PATH"]
+fake_ssh_path = os.environ["TEST_FAKE_SSH_PATH"]
 ld_library_path = (
     os.environ["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in os.environ else ""
 )
@@ -31,6 +33,7 @@ all_succeeding = True
 wayland_display_short = "s_disp"
 client_socket_path = xdg_runtime_dir + "/s_cli"
 server_socket_path = xdg_runtime_dir + "/s_srv"
+ssh_socket_path = xdg_runtime_dir + "/s_ssh"
 wayland_display_path = xdg_runtime_dir + "/" + wayland_display_short
 
 try_unlink(wayland_display_path)
@@ -105,8 +108,15 @@ def run_test(name, command, env, use_socketpair, expect_success):
             print("Run {} passed:".format(name), output)
 
 
-base_env = {"LD_LIBRARY_PATH": ld_library_path}
+wait_cmd = [sleep_path, "0.5"]
+invalid_hostname = "@"
+fake_ssh_dir = os.path.dirname(fake_ssh_path)
+waypipe_dir = os.path.dirname(waypipe_path)
+
+base_env = {"LD_LIBRARY_PATH": ld_library_path, "PATH": ""}
 standard_env = dict(base_env, XDG_RUNTIME_DIR=xdg_runtime_dir)
+ssh_only_env = dict(standard_env, PATH=fake_ssh_dir)
+ssh_env = dict(standard_env, PATH=fake_ssh_dir + ":" + waypipe_dir)
 # Configurations that should fail
 run_test(
     "b_client_long_disp",
@@ -131,7 +141,7 @@ run_test(
 )
 run_test(
     "b_server_oneshot_no_env",
-    [waypipe_path, "-o", "-s", server_socket_path, "server", "sleep", "0.26"],
+    [waypipe_path, "-o", "-s", server_socket_path, "server"] + wait_cmd,
     base_env,
     False,
     False,
@@ -166,16 +176,24 @@ run_test(
 )
 run_test(
     "b_server_no_env",
-    [waypipe_path, "-s", server_socket_path, "server", "sleep", "0.26"],
+    [waypipe_path, "-s", server_socket_path, "server"] + wait_cmd,
     base_env,
     False,
     False,
 )
+run_test(
+    "g_ssh_test_nossh_env",
+    [waypipe_path, "-o", "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
+    dict(standard_env, WAYLAND_DISPLAY=wayland_display_short),
+    False,
+    False,
+)
+
 
 # Configurations that should succeed
 run_test(
     "g_server_std_env",
-    [waypipe_path, "-s", server_socket_path, "server", "sleep", "0.26"],
+    [waypipe_path, "-s", server_socket_path, "server"] + wait_cmd,
     standard_env,
     False,
     True,
@@ -201,7 +219,37 @@ run_test(
     True,
     True,
 )
-
+run_test(
+    "g_ssh_test_oneshot",
+    [waypipe_path, "-o", "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
+    dict(ssh_env, WAYLAND_DISPLAY=wayland_display_short),
+    False,
+    True,
+)
+run_test(
+    "g_ssh_test_reg",
+    [waypipe_path, "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
+    dict(ssh_env, WAYLAND_DISPLAY=wayland_display_short),
+    False,
+    True,
+)
+run_test(
+    "g_ssh_test_remotebin",
+    [
+        waypipe_path,
+        "--oneshot",
+        "--remote-bin",
+        waypipe_path,
+        "-s",
+        ssh_socket_path,
+        "ssh",
+        invalid_hostname,
+    ]
+    + wait_cmd,
+    dict(ssh_only_env, WAYLAND_DISPLAY=wayland_display_short),
+    False,
+    True,
+)
 
 try_unlink(client_socket_path)
 try_unlink(wayland_display_path)
