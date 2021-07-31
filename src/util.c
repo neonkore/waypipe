@@ -230,14 +230,33 @@ void check_unclosed_fds(void)
 						  (1uLL << (i % 64))) != 0;
 		if (initial_fd) {
 			if (checklist[i].revents & POLLNVAL) {
-				wp_error("Unexpected closed fd %d",
-						checklist[i].fd);
+				wp_error("Unexpected closed fd %d", i);
 			}
 		} else {
-			if (!(checklist[i].revents & POLLNVAL)) {
-				wp_error("Unexpected open fd %d",
-						checklist[i].fd);
+			if (checklist[i].revents & POLLNVAL) {
+				continue;
 			}
+#ifdef __linux__
+			char fd_path[64];
+			char link[256];
+			sprintf(fd_path, "/proc/self/fd/%d", i);
+			ssize_t len = readlink(fd_path, link, sizeof(link) - 1);
+			if (len == -1) {
+				wp_error("Failed to readlink /proc/self/fd/%d for unexpected open fd %d",
+						i, i);
+			} else {
+				link[len] = '\0';
+				if (!strcmp(link, "/var/lib/sss/mc/passwd")) {
+					wp_debug("Known issue, leaked fd %d to /var/lib/sss/mc/passwd",
+							i);
+				} else {
+					wp_error("Unexpected open fd %d: %s", i,
+							link);
+				}
+			}
+#else
+			wp_error("Unexpected open fd %d", i);
+#endif
 		}
 	}
 }
