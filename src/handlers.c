@@ -505,13 +505,62 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 	case WL_SHM_FORMAT_YVU422:
 	case WL_SHM_FORMAT_YUV444:
 	case WL_SHM_FORMAT_YVU444:
-		wp_error("Encountered planar wl_shm format %x; marking entire buffer",
-				format);
-		return -1;
+		goto planar;
+	case WL_SHM_FORMAT_R8:
+		return 1;
+	case WL_SHM_FORMAT_R16:
+	case WL_SHM_FORMAT_RG88:
+	case WL_SHM_FORMAT_GR88:
+		return 2;
+	case WL_SHM_FORMAT_RG1616:
+	case WL_SHM_FORMAT_GR1616:
+		return 4;
+	case WL_SHM_FORMAT_XRGB16161616F:
+	case WL_SHM_FORMAT_XBGR16161616F:
+	case WL_SHM_FORMAT_ARGB16161616F:
+	case WL_SHM_FORMAT_ABGR16161616F:
+		return 8;
+	case WL_SHM_FORMAT_XYUV8888:
+	case WL_SHM_FORMAT_VUY888:
+	case WL_SHM_FORMAT_VUY101010:
+	case WL_SHM_FORMAT_Y210:
+	case WL_SHM_FORMAT_Y212:
+	case WL_SHM_FORMAT_Y216:
+	case WL_SHM_FORMAT_Y410:
+	case WL_SHM_FORMAT_Y412:
+	case WL_SHM_FORMAT_Y416:
+	case WL_SHM_FORMAT_XVYU2101010:
+	case WL_SHM_FORMAT_XVYU12_16161616:
+	case WL_SHM_FORMAT_XVYU16161616:
+	case WL_SHM_FORMAT_Y0L0:
+	case WL_SHM_FORMAT_X0L0:
+	case WL_SHM_FORMAT_Y0L2:
+	case WL_SHM_FORMAT_X0L2:
+	case WL_SHM_FORMAT_YUV420_8BIT:
+	case WL_SHM_FORMAT_YUV420_10BIT:
+	case WL_SHM_FORMAT_XRGB8888_A8:
+	case WL_SHM_FORMAT_XBGR8888_A8:
+	case WL_SHM_FORMAT_RGBX8888_A8:
+	case WL_SHM_FORMAT_BGRX8888_A8:
+	case WL_SHM_FORMAT_RGB888_A8:
+	case WL_SHM_FORMAT_BGR888_A8:
+	case WL_SHM_FORMAT_RGB565_A8:
+	case WL_SHM_FORMAT_BGR565_A8:
+	case WL_SHM_FORMAT_NV24:
+	case WL_SHM_FORMAT_NV42:
+	case WL_SHM_FORMAT_P210:
+	case WL_SHM_FORMAT_P010:
+	case WL_SHM_FORMAT_P012:
+	case WL_SHM_FORMAT_P016:
+		goto planar;
 	default:
 		wp_error("Unidentified WL_SHM format %x", format);
 		return -1;
 	}
+planar:
+	wp_error("Encountered planar/subsampled wl_shm format %x; marking entire buffer",
+			format);
+	return -1;
 }
 static void compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
 		int *yhigh, const struct damage_record *rec, int buf_width,
