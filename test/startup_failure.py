@@ -30,10 +30,11 @@ os.chmod(xdg_runtime_dir, 0o700)
 
 all_succeeding = True
 
+# These must be kept short to fall within path length limits on CI
 wayland_display_short = "s_disp"
 client_socket_path = xdg_runtime_dir + "/s_cli"
 server_socket_path = xdg_runtime_dir + "/s_srv"
-ssh_socket_path = xdg_runtime_dir + "/s_ssh"
+ssh_socket_path = xdg_runtime_dir + "/S"
 wayland_display_path = xdg_runtime_dir + "/" + wayland_display_short
 
 try_unlink(wayland_display_path)
