@@ -96,14 +96,17 @@ def write_enum(is_header, ostream, iface_name, enum):
     enum_name = enum.attrib["name"]
     is_bitfield = "bitfield" in enum.attrib and enum.attrib["bitfield"] == "true"
 
+    long_name = iface_name + "_" + enum_name
+    print("enum " + long_name + " {", file=ostream)
     for entry in enum:
         if entry.tag != "entry":
             continue
         entry_name = entry.attrib["name"]
         entry_value = entry.attrib["value"]
 
-        full_name = (iface_name + "_" + enum_name + "_" + entry_name).upper()
-        print("#define {} {}".format(full_name, entry_value), file=ostream)
+        full_name = long_name.upper() + "_" + entry_name.upper()
+        print("\t" + full_name + " = " + entry_value + ",", file=ostream)
+    print("};", file=ostream)
 
 
 def is_exportable(func_name, export_list):
