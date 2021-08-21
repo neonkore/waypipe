@@ -741,8 +741,14 @@ int main(int argc, char **argv)
 			strcpy(sockaddr.sun_path,
 					socketpath ? socketpath
 						   : "/tmp/waypipe-client.sock");
+			int nmaxclients = oneshot ? 1 : 128;
+			int channelsock =
+					setup_nb_socket(&sockaddr, nmaxclients);
+			if (channelsock == -1) {
+				return EXIT_FAILURE;
+			}
 			ret = run_client(&sockaddr, &config, oneshot,
-					wayland_socket, 0);
+					wayland_socket, 0, channelsock);
 		}
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
@@ -788,6 +794,17 @@ int main(int argc, char **argv)
 		char rbytes[9];
 		fill_rand_token(rbytes);
 		rbytes[8] = 0;
+
+		struct sockaddr_un clientsock;
+		memset(&clientsock, 0, sizeof(clientsock));
+		sprintf(clientsock.sun_path, "%s-client-%s.sock", socketpath,
+				rbytes);
+
+		int nmaxclients = oneshot ? 1 : 128;
+		int channelsock = setup_nb_socket(&clientsock, nmaxclients);
+		if (channelsock == -1) {
+			return EXIT_FAILURE;
+		}
 
 		bool allocates_pty = false;
 		int dstidx = locate_openssh_cmd_hostname(
@@ -911,6 +928,8 @@ int main(int argc, char **argv)
 			}
 			arglist[argc + offset] = NULL;
 
+			checked_close(channelsock);
+
 			// execvp effectively frees arglist
 			execvp(arglist[0], arglist);
 			wp_error("Failed to execvp \'%s\': %s", arglist[0],
@@ -918,13 +937,8 @@ int main(int argc, char **argv)
 			free(arglist);
 			return EXIT_FAILURE;
 		} else {
-			struct sockaddr_un clientsock;
-			memset(&clientsock, 0, sizeof(clientsock));
-			sprintf(clientsock.sun_path, "%s-client-%s.sock",
-					socketpath, rbytes);
-
 			ret = run_client(&clientsock, &config, oneshot,
-					wayland_socket, conn_pid);
+					wayland_socket, conn_pid, channelsock);
 		}
 	}
 	check_unclosed_fds();

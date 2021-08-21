@@ -68,7 +68,7 @@ int run_server(const struct sockaddr_un *socket_path, const char *display_path,
 /** Act as a Wayland client */
 int run_client(const struct sockaddr_un *socket_path,
 		const struct main_config *config, bool oneshot,
-		const char *wayland_socket, pid_t eol_pid);
+		const char *wayland_socket, pid_t eol_pid, int channelsock);
 /** Run benchmarking tool; n_worker_threads defined as with \ref main_config */
 int run_bench(float bandwidth_mBps, uint32_t test_size, int n_worker_threads);
 

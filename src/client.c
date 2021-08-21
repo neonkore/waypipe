@@ -276,10 +276,14 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 		}
 	}
 	if (retcode == EXIT_FAILURE || shutdown_flag || chanclient == -1) {
+		checked_close(channelsock);
+		checked_close(disp_fd);
 		return retcode;
 	}
 	if (conn_id.header & CONN_UPDATE_BIT) {
 		wp_error("Initial connection token had update flag set");
+		checked_close(channelsock);
+		checked_close(disp_fd);
 		return retcode;
 	}
 
@@ -579,7 +583,7 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 
 int run_client(const struct sockaddr_un *socket_addr,
 		const struct main_config *config, bool oneshot,
-		const char *wayland_socket, pid_t eol_pid)
+		const char *wayland_socket, pid_t eol_pid, int channelsock)
 {
 	wp_debug("I'm a client listening on %s", socket_addr->sun_path);
 	wp_debug("version: %s", WAYPIPE_VERSION);
@@ -597,6 +601,8 @@ int run_client(const struct sockaddr_un *socket_addr,
 			if (eol_pid) {
 				waitpid(eol_pid, NULL, 0);
 			}
+			close(channelsock);
+			unlink(socket_addr->sun_path);
 			return EXIT_FAILURE;
 		}
 		/* This socket is inherited and meant to be closed by Waypipe */
@@ -608,6 +614,8 @@ int run_client(const struct sockaddr_un *socket_addr,
 			if (eol_pid) {
 				waitpid(eol_pid, NULL, 0);
 			}
+			close(channelsock);
+			unlink(socket_addr->sun_path);
 			return EXIT_FAILURE;
 		}
 	}
@@ -622,24 +630,13 @@ int run_client(const struct sockaddr_un *socket_addr,
 			if (eol_pid) {
 				waitpid(eol_pid, NULL, 0);
 			}
+			close(channelsock);
+			unlink(socket_addr->sun_path);
 			return EXIT_FAILURE;
 		}
 		checked_close(test_conn);
 	}
 	wp_debug("A wayland compositor is available. Proceeding.");
-
-	int nmaxclients = oneshot ? 1 : 128;
-	int channelsock = setup_nb_socket(socket_addr, nmaxclients);
-	if (channelsock == -1) {
-		// Error messages already made
-		if (eol_pid) {
-			waitpid(eol_pid, NULL, 0);
-		}
-		if (dispfd != -1) {
-			checked_close(dispfd);
-		}
-		return EXIT_FAILURE;
-	}
 
 	/* These handlers close the channelsock and dispfd */
 	int retcode;
