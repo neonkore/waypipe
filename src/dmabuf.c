@@ -116,6 +116,8 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 #endif
 #endif
 
+#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
+
 int is_dmabuf(int fd)
 {
 #ifdef HAS_DETECTING_DMABUF_SYNC
@@ -288,8 +290,7 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	}
 	if (read_modifier && info) {
 		info->modifier = gbm_bo_get_modifier(bo);
-		const uint64_t drm_format_mod_invalid = 0x00ffffffffffffffULL;
-		if (info->modifier == drm_format_mod_invalid) {
+		if (info->modifier == DRM_FORMAT_MOD_INVALID) {
 			/* gbm_bo_get_modifier can fail */
 			info->modifier = 0;
 		}
@@ -338,7 +339,8 @@ retry:
 			wp_error("Failed to make dmabuf: %s", strerror(errno));
 			return NULL;
 		}
-	} else if (!rd->supports_modifiers) {
+	} else if (!rd->supports_modifiers ||
+			info->modifier == DRM_FORMAT_MOD_INVALID) {
 		uint32_t simple_format = dmabuf_get_simple_format_for_plane(
 				info->format, 0);
 		/* If the modifier is nonzero, assume that the backend
@@ -355,14 +357,13 @@ retry:
 			return NULL;
 		}
 		uint64_t mod = gbm_bo_get_modifier(bo);
-		const uint64_t drm_format_mod_invalid = 0x00ffffffffffffffULL;
-		if (mod != drm_format_mod_invalid && mod != info->modifier) {
+		if (info->modifier != DRM_FORMAT_MOD_INVALID &&
+				mod != DRM_FORMAT_MOD_INVALID &&
+				mod != info->modifier) {
 			wp_error("DMABUF with autoselected modifier %" PRIx64
 				 " does not match desired %" PRIx64
 				 ", expect a crash",
 					mod, info->modifier);
-			gbm_bo_destroy(bo);
-			return NULL;
 		}
 	} else {
 		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
@@ -416,6 +417,11 @@ void destroy_dmabuf(struct gbm_bo *bo)
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
 		uint32_t *exp_stride, uint32_t *exp_height)
 {
+	if (!bo) {
+		wp_error("Tried to map null gbm_bo");
+		return NULL;
+	}
+
 	/* With i965, the map handle MUST initially point to a NULL pointer;
 	 * otherwise the handler silently exits, sometimes with misleading errno
 	 * :-(
@@ -430,6 +436,7 @@ void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
 	if (!data) {
 		// errno is useless here
 		wp_error("Failed to map dmabuf");
+		return NULL;
 	}
 	if (exp_stride) {
 		*exp_stride = stride;
