@@ -1039,7 +1039,7 @@ static void add_dmabuf_create_request(struct transfer_queue *transfers,
 	memcpy(data + sizeof(struct wmsg_open_dmabuf), &sfd->dmabuf_info,
 			sizeof(struct dmabuf_slice_data));
 
-	transfer_add(transfers, padded_len, data, false);
+	transfer_add(transfers, padded_len, data);
 }
 
 static void add_dmabuf_create_request_v2(struct transfer_queue *transfers,
@@ -1064,7 +1064,7 @@ static void add_dmabuf_create_request_v2(struct transfer_queue *transfers,
 	memcpy(data + sizeof(*header), &sfd->dmabuf_info,
 			sizeof(struct dmabuf_slice_data));
 
-	transfer_add(transfers, actual_len, data, false);
+	transfer_add(transfers, actual_len, data);
 }
 static void add_file_create_request(
 		struct transfer_queue *transfers, struct shadow_fd *sfd)
@@ -1076,7 +1076,7 @@ static void add_file_create_request(
 	header->size_and_type = transfer_header(
 			sizeof(struct wmsg_open_file), WMSG_OPEN_FILE);
 
-	transfer_add(transfers, sizeof(struct wmsg_open_file), header, false);
+	transfer_add(transfers, sizeof(struct wmsg_open_file), header);
 }
 
 void finish_update(struct shadow_fd *sfd)
@@ -1141,7 +1141,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					WMSG_EXTEND_FILE);
 
 			transfer_add(transfers, sizeof(struct wmsg_open_file),
-					header, false);
+					header);
 
 			sfd->remote_bufsize = sfd->buffer_size;
 		}
@@ -1258,7 +1258,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			createh->remote_id = sfd->remote_id;
 
 			transfer_add(transfers, sizeof(struct wmsg_basic),
-					createh, false);
+					createh);
 		}
 
 		if (sfd->pipe.recv.used > 0) {
@@ -1274,7 +1274,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					(size_t)sfd->pipe.recv.used);
 			memset(buf + msgsz, 0, alignz(msgsz, 4) - msgsz);
 
-			transfer_add(transfers, alignz(msgsz, 4), buf, false);
+			transfer_add(transfers, alignz(msgsz, 4), buf);
 
 			sfd->pipe.recv.used = 0;
 		}
@@ -1287,7 +1287,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					WMSG_PIPE_SHUTDOWN_W);
 			header->remote_id = sfd->remote_id;
 			transfer_add(transfers, sizeof(struct wmsg_basic),
-					header, false);
+					header);
 			sfd->pipe.remote_can_write = false;
 		}
 		if (!sfd->pipe.can_write && sfd->pipe.remote_can_read) {
@@ -1298,7 +1298,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 					WMSG_PIPE_SHUTDOWN_R);
 			header->remote_id = sfd->remote_id;
 			transfer_add(transfers, sizeof(struct wmsg_basic),
-					header, false);
+					header);
 			sfd->pipe.remote_can_read = false;
 		}
 	} break;

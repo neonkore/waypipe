@@ -1090,7 +1090,7 @@ void collect_video_from_mirror(
 		memcpy(buf + sizeof(struct wmsg_basic), pkt->buf->data, pktsz);
 		memset(buf + msgsz, 0, alignz(msgsz, 4) - msgsz);
 
-		transfer_add(transfers, alignz(msgsz, 4), buf, false);
+		transfer_add(transfers, alignz(msgsz, 4), buf);
 
 		av_packet_unref(pkt);
 	}

@@ -137,8 +137,7 @@ int main(int argc, char **argv)
 			/* Send a transfer */
 			void *msg_copy = calloc(packet_size, 4);
 			memcpy(msg_copy, &data[cursor], packet_size * 4);
-			transfer_add(&transfers, packet_size * 4, msg_copy,
-					false);
+			transfer_add(&transfers, packet_size * 4, msg_copy);
 			receive_wire(&ts, &transfers);
 		}
 		cleanup_transfer_queue(&transfers);

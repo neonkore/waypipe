@@ -385,33 +385,37 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 	return wmsg_types[tp];
 }
 
-int transfer_add(struct transfer_queue *w, size_t size, void *data,
-		bool is_ack_msg)
+int transfer_ensure_size(struct transfer_queue *transfers, int count)
+{
+	int sz = transfers->size;
+	if (buf_ensure_size(count, sizeof(*transfers->vecs), &sz,
+			    (void **)&transfers->vecs) == -1) {
+		return -1;
+	}
+	sz = transfers->size;
+	if (buf_ensure_size(count, sizeof(*transfers->msgnos), &sz,
+			    (void **)&transfers->msgnos) == -1) {
+		return -1;
+	}
+	transfers->size = sz;
+	return 0;
+}
+
+int transfer_add(struct transfer_queue *w, size_t size, void *data)
 {
 	if (size == 0) {
 		return 0;
 	}
-	int sz = w->size;
-	if (buf_ensure_size(w->end + 1, sizeof(struct iovec), &sz,
-			    (void **)&w->vecs) == -1) {
+	if (transfer_ensure_size(w, w->end + 1) == -1) {
 		return -1;
 	}
-	sz = w->size;
-	if (buf_ensure_size(w->end + 1, sizeof(struct iovec), &sz,
-			    (void **)&w->msgnos) == -1) {
-		return -1;
-	}
-	w->size = sz;
 
 	w->vecs[w->end].iov_len = size;
 	w->vecs[w->end].iov_base = data;
 	w->msgnos[w->end] = w->last_msgno;
 	w->end++;
-	if (!is_ack_msg) {
-		w->last_msgno++;
-	}
-
-	return true;
+	w->last_msgno++;
+	return 0;
 }
 
 void transfer_async_add(struct thread_msg_recv_buf *q, void *data, size_t sz)
@@ -441,7 +445,7 @@ int transfer_load_async(struct transfer_queue *w)
 		}
 		/* Only fill/diff messages are received async, so msgno
 		 * is always incremented */
-		if (transfer_add(w, v.iov_len, v.iov_base, false) == -1) {
+		if (transfer_add(w, v.iov_len, v.iov_base) == -1) {
 			wp_error("Failed to add message to transfer queue");
 			pthread_mutex_unlock(&w->async_recv_queue.lock);
 			return -1;

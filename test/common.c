@@ -167,7 +167,7 @@ void send_wayland_msg(struct test_state *src, const struct msg msg,
 		((uint32_t *)tmsg)[0] = transfer_header(tsz, WMSG_INJECT_RIDS);
 		memcpy((char *)tmsg + 4, fd_window.data,
 				4 * (size_t)fd_window.zone_start);
-		transfer_add(transfers, tsz, tmsg, false);
+		transfer_add(transfers, tsz, tmsg);
 	}
 	if (proto_mid.zone_end > 0) {
 		size_t tsz = sizeof(uint32_t) + (size_t)proto_mid.zone_end;
@@ -175,7 +175,7 @@ void send_wayland_msg(struct test_state *src, const struct msg msg,
 		((uint32_t *)tmsg)[0] = transfer_header(tsz, WMSG_PROTOCOL);
 		memcpy((char *)tmsg + 4, proto_mid.data,
 				(size_t)proto_mid.zone_end);
-		transfer_add(transfers, tsz, tmsg, false);
+		transfer_add(transfers, tsz, tmsg);
 	}
 cleanup:
 	free(proto_src.data);

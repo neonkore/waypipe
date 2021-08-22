@@ -272,7 +272,10 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		return 0;
 	} else if (type == WMSG_ACK_NBLOCKS) {
 		struct wmsg_ack *ackm = (struct wmsg_ack *)packet;
-		cxs->last_confirmed_msgno = ackm->messages_received;
+
+		if (ackm->messages_received >= cxs->last_received_msgno) {
+			cxs->last_confirmed_msgno = ackm->messages_received;
+		}
 		return 0;
 	} else {
 		cxs->last_received_msgno++;
@@ -686,6 +689,65 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 	// First, clear out any transfers that are no longer needed
 	clear_old_transfers(&wmsg->transfers, cxs->last_confirmed_msgno);
+
+	/* Acknowledge the other side's transfers as soon as possible */
+	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
+		/* TODO: consider statically allocating two slots for ack
+		 * messages, and updating the next slot in use if applicable */
+		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
+		if (!ackm) {
+			wp_error("Failed to allocate transfer acknowledgement message");
+			goto ackmsg_fail;
+		}
+		ackm->size_and_type = transfer_header(
+				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
+
+		if (transfer_ensure_size(&wmsg->transfers,
+				    wmsg->transfers.end + 1) == -1) {
+			wp_error("Failed to allocate space for ack message transfer");
+			free(ackm);
+			goto ackmsg_fail;
+		}
+
+		/* Reorder the messages to introduce the acknowledgement
+		 * as early as possible in the stream */
+		int next_slot = (wmsg->transfers.partial_write_amt > 0)
+						? wmsg->transfers.start + 1
+						: wmsg->transfers.start;
+
+		/* To avoid infinite regress, receive acknowledgement
+		 * messages do not themselves increase the message counters. */
+		uint32_t ack_msgno;
+		if (wmsg->transfers.start == wmsg->transfers.end) {
+			ack_msgno = wmsg->transfers.last_msgno;
+		} else {
+			ack_msgno = wmsg->transfers.msgnos
+						    [wmsg->transfers.start];
+		}
+
+		if (next_slot < wmsg->transfers.end) {
+			size_t nmoved = (size_t)(wmsg->transfers.end -
+						 next_slot);
+			memmove(wmsg->transfers.vecs + next_slot + 1,
+					wmsg->transfers.vecs + next_slot,
+					sizeof(*wmsg->transfers.vecs) * nmoved);
+			memmove(wmsg->transfers.msgnos + next_slot + 1,
+					wmsg->transfers.msgnos + next_slot,
+					sizeof(*wmsg->transfers.msgnos) *
+							nmoved);
+		}
+		wmsg->transfers.vecs[next_slot].iov_len =
+				sizeof(struct wmsg_ack);
+		wmsg->transfers.vecs[next_slot].iov_base = ackm;
+		wmsg->transfers.msgnos[next_slot] = ack_msgno;
+
+		wmsg->transfers.end++;
+
+		ackm->messages_received = cxs->last_received_msgno;
+		cxs->last_acked_msgno = cxs->last_received_msgno;
+	ackmsg_fail:;
+	}
+
 	int ret = partial_write_transfer(chanfd, &wmsg->transfers,
 			&wmsg->total_written, wmsg->max_iov);
 	if (ret < 0) {
@@ -721,7 +783,7 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		for (int i = 0; i < wmsg->ntrailing; i++) {
 			transfer_add(&wmsg->transfers,
 					wmsg->trailing[i].iov_len,
-					wmsg->trailing[i].iov_base, false);
+					wmsg->trailing[i].iov_base);
 		}
 
 		wmsg->ntrailing = 0;
@@ -767,8 +829,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 	return 0;
 }
 static int advance_waymsg_progread(struct way_msg_state *wmsg,
-		struct cross_state *cxs, struct globals *g, int progfd,
-		bool display_side, bool progsock_readable)
+		struct globals *g, int progfd, bool display_side,
+		bool progsock_readable)
 {
 	const char *progdesc = display_side ? "compositor" : "application";
 	// We have data to read from programs/pipes
@@ -834,29 +896,6 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 	}
 
 	read_readable_pipes(&g->map);
-
-	/* Acknowledge the other side's transfers as soon as possible */
-	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
-		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
-		if (!ackm) {
-			wp_error("Failed to allocate transfer acknowledgement message");
-			goto ackmsg_fail;
-		}
-		ackm->size_and_type = transfer_header(
-				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
-
-		/* To avoid infinite regress, receive acknowledgement
-		 * messages do not themselves increase the message counters. */
-		if (transfer_add(&wmsg->transfers, sizeof(struct wmsg_ack),
-				    ackm, true) == -1) {
-			wp_error("Failed to allocate space for ack message transfer");
-			free(ackm);
-			goto ackmsg_fail;
-		}
-		ackm->messages_received = cxs->last_received_msgno;
-		cxs->last_acked_msgno = cxs->last_received_msgno;
-	ackmsg_fail:;
-	}
 
 	for (struct shadow_fd_link *lcur = g->map.link.l_next,
 				   *lnxt = lcur->l_next;
@@ -966,8 +1005,8 @@ static int advance_waymsg_transfer(struct globals *g,
 		return advance_waymsg_chanwrite(
 				wmsg, cxs, g, chanfd, display_side);
 	} else if (wmsg->state == WM_WAITING_FOR_PROGRAM) {
-		return advance_waymsg_progread(wmsg, cxs, g, progfd,
-				display_side, progsock_readable);
+		return advance_waymsg_progread(wmsg, g, progfd, display_side,
+				progsock_readable);
 	}
 	return 0;
 }

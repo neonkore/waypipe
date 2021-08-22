@@ -373,9 +373,12 @@ struct transfer_queue {
 	struct thread_msg_recv_buf async_recv_queue;
 };
 
-/** Add transfer message to the queue, expanding the queue as necessary. */
-int transfer_add(struct transfer_queue *transfers, size_t size, void *data,
-		bool is_ack_msg);
+/** Ensure the queue has space for 'count' elements */
+int transfer_ensure_size(struct transfer_queue *transfers, int count);
+/** Add transfer message to the queue, expanding the queue as necessary.
+ * This increments the last_msgno, and thus should not be used
+ * for WMSG_ACK_NBLOCKS messages. */
+int transfer_add(struct transfer_queue *transfers, size_t size, void *data);
 /** Destroy the transfer queue, deallocating all attached buffers */
 void cleanup_transfer_queue(struct transfer_queue *transfers);
 /** Move any asynchronously loaded messages to the queue */
