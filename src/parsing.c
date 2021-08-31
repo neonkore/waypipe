@@ -39,7 +39,7 @@ static const char *get_type_name(struct wp_object *obj)
 const char *get_nth_packed_string(const char *pack, int n)
 {
 	for (int i = 0; i < n; i++) {
-		pack += strlen(pack);
+		pack += strlen(pack) + 1;
 	}
 	return pack;
 }
