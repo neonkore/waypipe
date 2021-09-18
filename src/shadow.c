@@ -573,7 +573,8 @@ struct shadow_fd *translate_fd(struct fd_translation_map *map,
 		// memory does not always have to be the side that modifies it
 		sfd->mem_local = mmap(NULL, sfd->buffer_size,
 				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (sfd->mem_local == MAP_FAILED && errno == EPERM) {
+		if (sfd->mem_local == MAP_FAILED &&
+				(errno == EPERM || errno == EACCES)) {
 			wp_debug("Initial mmap for RID=%d failed, trying private+readonly",
 					sfd->remote_id);
 			// Some files are memfds that are sealed
