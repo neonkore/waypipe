@@ -198,6 +198,10 @@ struct way_msg_state {
 	/** Transfers to send after the compute queue is empty */
 	int ntrailing;
 	struct iovec trailing[3];
+
+	/** Statically allocated message acknowledgement messages; due
+	 * to the way they are updated out of order, at most two are needed */
+	struct wmsg_ack ack_msgs[2];
 };
 
 enum cm_state { CM_WAITING_FOR_PROGRAM, CM_WAITING_FOR_CHANNEL, CM_TERMINAL };
@@ -610,7 +614,9 @@ static void clear_old_transfers(
 		if (td->meta[i].msgno > inclusive_cutoff) {
 			break;
 		}
-		free(td->vecs[i].iov_base);
+		if (!td->meta[i].static_alloc) {
+			free(td->vecs[i].iov_base);
+		}
 		td->vecs[i].iov_base = NULL;
 		td->vecs[i].iov_len = 0;
 		k = i + 1;
@@ -691,29 +697,11 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 
 	/* Acknowledge the other side's transfers as soon as possible */
 	if (cxs->last_acked_msgno != cxs->last_received_msgno) {
-		/* TODO: consider statically allocating two slots for ack
-		 * messages, and updating the next slot in use if applicable */
-		struct wmsg_ack *ackm = calloc(1, sizeof(struct wmsg_ack));
-		if (!ackm) {
-			wp_error("Failed to allocate transfer acknowledgement message");
-			goto ackmsg_fail;
-		}
-		ackm->size_and_type = transfer_header(
-				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
-
 		if (transfer_ensure_size(&wmsg->transfers,
 				    wmsg->transfers.end + 1) == -1) {
 			wp_error("Failed to allocate space for ack message transfer");
-			free(ackm);
 			goto ackmsg_fail;
 		}
-
-		/* Reorder the messages to introduce the acknowledgement
-		 * as early as possible in the stream */
-		int next_slot = (wmsg->transfers.partial_write_amt > 0)
-						? wmsg->transfers.start + 1
-						: wmsg->transfers.start;
-
 		/* To avoid infinite regress, receive acknowledgement
 		 * messages do not themselves increase the message counters. */
 		uint32_t ack_msgno;
@@ -724,24 +712,62 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 						    .msgno;
 		}
 
-		if (next_slot < wmsg->transfers.end) {
-			size_t nmoved = (size_t)(wmsg->transfers.end -
-						 next_slot);
-			memmove(wmsg->transfers.vecs + next_slot + 1,
-					wmsg->transfers.vecs + next_slot,
-					sizeof(*wmsg->transfers.vecs) * nmoved);
-			memmove(wmsg->transfers.meta + next_slot + 1,
-					wmsg->transfers.meta + next_slot,
-					sizeof(*wmsg->transfers.meta) * nmoved);
+		/* This is the next point where messages can be changed */
+		int next_slot = (wmsg->transfers.partial_write_amt > 0)
+						? wmsg->transfers.start + 1
+						: wmsg->transfers.start;
+		struct wmsg_ack *not_in_prog_msg = NULL;
+		struct wmsg_ack *queued_msg = NULL;
+		for (size_t i = 0; i < 2; i++) {
+			if (wmsg->transfers.partial_write_amt > 0 &&
+					wmsg->transfers.vecs[wmsg->transfers.start]
+									.iov_base ==
+							&wmsg->ack_msgs[i]) {
+				not_in_prog_msg = &wmsg->ack_msgs[1 - i];
+			}
+			if (wmsg->transfers.vecs[next_slot].iov_base ==
+					&wmsg->ack_msgs[i]) {
+				queued_msg = &wmsg->ack_msgs[i];
+			}
 		}
-		wmsg->transfers.vecs[next_slot].iov_len =
-				sizeof(struct wmsg_ack);
-		wmsg->transfers.vecs[next_slot].iov_base = ackm;
-		wmsg->transfers.meta[next_slot].msgno = ack_msgno;
-		wmsg->transfers.meta[next_slot].static_alloc = false;
-		wmsg->transfers.end++;
 
-		ackm->messages_received = cxs->last_received_msgno;
+		if (!queued_msg) {
+			/* Insert a message--which is not partially written--
+			 * in the next available slot, pushing forward other
+			 * messages */
+			if (!not_in_prog_msg) {
+				queued_msg = &wmsg->ack_msgs[0];
+			} else {
+				queued_msg = not_in_prog_msg;
+			}
+
+			if (next_slot < wmsg->transfers.end) {
+				size_t nmoved = (size_t)(wmsg->transfers.end -
+							 next_slot);
+				memmove(wmsg->transfers.vecs + next_slot + 1,
+						wmsg->transfers.vecs +
+								next_slot,
+						sizeof(*wmsg->transfers.vecs) *
+								nmoved);
+				memmove(wmsg->transfers.meta + next_slot + 1,
+						wmsg->transfers.meta +
+								next_slot,
+						sizeof(*wmsg->transfers.meta) *
+								nmoved);
+			}
+			wmsg->transfers.vecs[next_slot].iov_len =
+					sizeof(struct wmsg_ack);
+			wmsg->transfers.vecs[next_slot].iov_base = queued_msg;
+			wmsg->transfers.meta[next_slot].msgno = ack_msgno;
+			wmsg->transfers.meta[next_slot].static_alloc = true;
+			wmsg->transfers.end++;
+		}
+
+		/* Modify the message which is now next up in the transfer
+		 * queue */
+		queued_msg->size_and_type = transfer_header(
+				sizeof(struct wmsg_ack), WMSG_ACK_NBLOCKS);
+		queued_msg->messages_received = cxs->last_received_msgno;
 		cxs->last_acked_msgno = cxs->last_received_msgno;
 	ackmsg_fail:;
 	}
