@@ -350,6 +350,13 @@ struct thread_msg_recv_buf {
 	pthread_mutex_t lock;
 };
 
+struct transfer_block_meta {
+	/** Indicating to which message the corresponding data block belongs. */
+	uint32_t msgno;
+	/** If true, data is not heap allocated */
+	bool static_alloc;
+};
+
 /** A queue of data blocks to be written to the channel. This should only
  * be used by the main thread; worker tasks should write to a \ref
  * thread_msg_recv_buf, from which the main thread should in turn collect data
@@ -357,9 +364,8 @@ struct thread_msg_recv_buf {
 struct transfer_queue {
 	/** Data to be writtenveed */
 	struct iovec *vecs;
-	/** Matching vector indicating to which message the corresponding data
-	 * block belongs. */
-	uint32_t *msgnos;
+	/** Vector with metadata for matching entries of `vecs` */
+	struct transfer_block_meta *meta;
 	/** start: next block to write. end: just after last block to write;
 	 * size: number of iovec blocks */
 	int start, end, size;

@@ -607,7 +607,7 @@ static void clear_old_transfers(
 	}
 	int k = 0;
 	for (int i = 0; i < td->start; i++) {
-		if (td->msgnos[i] > inclusive_cutoff) {
+		if (td->meta[i].msgno > inclusive_cutoff) {
 			break;
 		}
 		free(td->vecs[i].iov_base);
@@ -617,8 +617,7 @@ static void clear_old_transfers(
 	}
 	if (k > 0) {
 		size_t nshift = (size_t)(td->end - k);
-		memmove(td->msgnos, td->msgnos + k,
-				nshift * sizeof(td->msgnos[0]));
+		memmove(td->meta, td->meta + k, nshift * sizeof(td->meta[0]));
 		memmove(td->vecs, td->vecs + k, nshift * sizeof(td->vecs[0]));
 		td->start -= k;
 		td->end -= k;
@@ -721,8 +720,8 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 		if (wmsg->transfers.start == wmsg->transfers.end) {
 			ack_msgno = wmsg->transfers.last_msgno;
 		} else {
-			ack_msgno = wmsg->transfers.msgnos
-						    [wmsg->transfers.start];
+			ack_msgno = wmsg->transfers.meta[wmsg->transfers.start]
+						    .msgno;
 		}
 
 		if (next_slot < wmsg->transfers.end) {
@@ -731,16 +730,15 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 			memmove(wmsg->transfers.vecs + next_slot + 1,
 					wmsg->transfers.vecs + next_slot,
 					sizeof(*wmsg->transfers.vecs) * nmoved);
-			memmove(wmsg->transfers.msgnos + next_slot + 1,
-					wmsg->transfers.msgnos + next_slot,
-					sizeof(*wmsg->transfers.msgnos) *
-							nmoved);
+			memmove(wmsg->transfers.meta + next_slot + 1,
+					wmsg->transfers.meta + next_slot,
+					sizeof(*wmsg->transfers.meta) * nmoved);
 		}
 		wmsg->transfers.vecs[next_slot].iov_len =
 				sizeof(struct wmsg_ack);
 		wmsg->transfers.vecs[next_slot].iov_base = ackm;
-		wmsg->transfers.msgnos[next_slot] = ack_msgno;
-
+		wmsg->transfers.meta[next_slot].msgno = ack_msgno;
+		wmsg->transfers.meta[next_slot].static_alloc = false;
 		wmsg->transfers.end++;
 
 		ackm->messages_received = cxs->last_received_msgno;

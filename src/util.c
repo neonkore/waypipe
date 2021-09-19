@@ -393,8 +393,8 @@ int transfer_ensure_size(struct transfer_queue *transfers, int count)
 		return -1;
 	}
 	sz = transfers->size;
-	if (buf_ensure_size(count, sizeof(*transfers->msgnos), &sz,
-			    (void **)&transfers->msgnos) == -1) {
+	if (buf_ensure_size(count, sizeof(*transfers->meta), &sz,
+			    (void **)&transfers->meta) == -1) {
 		return -1;
 	}
 	transfers->size = sz;
@@ -412,7 +412,8 @@ int transfer_add(struct transfer_queue *w, size_t size, void *data)
 
 	w->vecs[w->end].iov_len = size;
 	w->vecs[w->end].iov_base = data;
-	w->msgnos[w->end] = w->last_msgno;
+	w->meta[w->end].msgno = w->last_msgno;
+	w->meta[w->end].static_alloc = false;
 	w->end++;
 	w->last_msgno++;
 	return 0;
@@ -463,8 +464,10 @@ void cleanup_transfer_queue(struct transfer_queue *td)
 	pthread_mutex_destroy(&td->async_recv_queue.lock);
 	free(td->async_recv_queue.data);
 	for (int i = 0; i < td->end; i++) {
-		free(td->vecs[i].iov_base);
+		if (!td->meta[i].static_alloc) {
+			free(td->vecs[i].iov_base);
+		}
 	}
 	free(td->vecs);
-	free(td->msgnos);
+	free(td->meta);
 }
