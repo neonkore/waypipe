@@ -133,10 +133,14 @@ static enum AVPixelFormat drm_to_av(uint32_t format)
 	case DRM_FORMAT_BGRX8888:
 		return AV_PIX_FMT_0RGB;
 
-	/* there do not appear to be equivalents for these 10-bit formats */
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 7, 100)
+	/* While X2RGB10LE was available earlier than X2BGR10LE, conversions to
+	 * X2RGB10LE were broken until just before X2BGR10LE was added */
 	case DRM_FORMAT_XRGB2101010:
+		return AV_PIX_FMT_X2RGB10LE;
 	case DRM_FORMAT_XBGR2101010:
-		return AV_PIX_FMT_NONE;
+		return AV_PIX_FMT_X2BGR10LE;
+#endif
 
 	case DRM_FORMAT_NV12:
 		return AV_PIX_FMT_NV12;
@@ -662,7 +666,7 @@ static int setup_hwvideo_encode(struct shadow_fd *sfd, struct render_data *rd)
 	const char *hw_encoder = sfd->video_fmt == VIDEO_H264
 						 ? VIDEO_H264_HW_ENCODER
 						 : VIDEO_VP9_HW_ENCODER;
-	struct AVCodec *codec = avcodec_find_encoder_by_name(hw_encoder);
+	const struct AVCodec *codec = avcodec_find_encoder_by_name(hw_encoder);
 	if (!codec) {
 		wp_error("Failed to find encoder \"%s\"", hw_encoder);
 		return -1;
@@ -851,7 +855,7 @@ int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
 	const char *sw_encoder = sfd->video_fmt == VIDEO_H264
 						 ? VIDEO_H264_SW_ENCODER
 						 : VIDEO_VP9_SW_ENCODER;
-	struct AVCodec *codec = avcodec_find_encoder_by_name(sw_encoder);
+	const struct AVCodec *codec = avcodec_find_encoder_by_name(sw_encoder);
 	if (!codec) {
 		wp_error("Failed to find encoder \"%s\"", sw_encoder);
 		return -1;
@@ -961,7 +965,7 @@ int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 
 	const char *decoder = sfd->video_fmt == VIDEO_H264 ? VIDEO_H264_DECODER
 							   : VIDEO_VP9_DECODER;
-	struct AVCodec *codec = avcodec_find_decoder_by_name(decoder);
+	const struct AVCodec *codec = avcodec_find_decoder_by_name(decoder);
 	if (!codec) {
 		wp_error("Failed to find decoder \"%s\"", decoder);
 		return -1;
