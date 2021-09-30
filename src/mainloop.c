@@ -276,14 +276,15 @@ static int interpret_chanmsg(struct chan_msg_state *cmsg,
 		return 0;
 	} else if (type == WMSG_ACK_NBLOCKS) {
 		struct wmsg_ack *ackm = (struct wmsg_ack *)packet;
-
-		if (ackm->messages_received >= cxs->last_received_msgno) {
+		if (msgno_gt(ackm->messages_received,
+				    cxs->last_received_msgno)) {
 			cxs->last_confirmed_msgno = ackm->messages_received;
 		}
 		return 0;
 	} else {
 		cxs->last_received_msgno++;
-		if (cxs->last_received_msgno <= cxs->newest_received_msgno) {
+		if (msgno_gt(cxs->newest_received_msgno,
+				    cxs->last_received_msgno)) {
 			/* Skip packet, as we already received it */
 			wp_debug("Ignoring replayed message %d (newest=%d)",
 					cxs->last_received_msgno,
@@ -611,7 +612,7 @@ static void clear_old_transfers(
 	}
 	int k = 0;
 	for (int i = 0; i < td->start; i++) {
-		if (td->meta[i].msgno > inclusive_cutoff) {
+		if (!msgno_gt(inclusive_cutoff, td->meta[i].msgno)) {
 			break;
 		}
 		if (!td->meta[i].static_alloc) {

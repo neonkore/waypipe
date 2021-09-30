@@ -349,6 +349,10 @@ struct thread_msg_recv_buf {
 	int zone_start, zone_end, size;
 	pthread_mutex_t lock;
 };
+static inline int msgno_gt(uint32_t a, uint32_t b)
+{
+	return !((a - b) & (1u << 31));
+}
 
 struct transfer_block_meta {
 	/** Indicating to which message the corresponding data block belongs. */
