@@ -360,10 +360,10 @@ retry:
 		if (info->modifier != DRM_FORMAT_MOD_INVALID &&
 				mod != DRM_FORMAT_MOD_INVALID &&
 				mod != info->modifier) {
-			wp_error("DMABUF with autoselected modifier %" PRIx64
+			wp_error("DMABUF with format %08x, autoselected modifier %" PRIx64
 				 " does not match desired %" PRIx64
 				 ", expect a crash",
-					mod, info->modifier);
+					simple_format, mod, info->modifier);
 		}
 	} else {
 		uint64_t modifiers[2] = {info->modifier, GBM_BO_USE_RENDERING};
@@ -392,8 +392,10 @@ retry:
 			goto retry;
 		}
 		if (!bo) {
-			wp_error("Failed to make dmabuf (with modifier %lx): %s",
-					info->modifier, strerror(errno));
+			wp_error("Failed to make dmabuf (with format %x, modifier %" PRIx64
+				 "): %s",
+					simple_format, info->modifier,
+					strerror(errno));
 			return NULL;
 		}
 	}
