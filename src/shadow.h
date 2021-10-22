@@ -50,12 +50,8 @@ struct comp_ctx {
 
 enum compression_mode {
 	COMP_NONE,
-#ifdef HAS_LZ4
 	COMP_LZ4,
-#endif
-#ifdef HAS_ZSTD
 	COMP_ZSTD,
-#endif
 };
 
 struct shadow_fd_link {

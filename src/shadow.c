@@ -335,16 +335,13 @@ const char *compression_mode_to_str(enum compression_mode mode)
 	switch (mode) {
 	case COMP_NONE:
 		return "NONE";
-#ifdef HAS_LZ4
 	case COMP_LZ4:
 		return "LZ4";
-#endif
-#ifdef HAS_ZSTD
 	case COMP_ZSTD:
 		return "ZSTD";
-#endif
+	default:
+		return "<invalid>";
 	}
-	return "<invalid>";
 }
 
 enum fdcat get_fd_type(int fd, size_t *size)
@@ -394,6 +391,7 @@ enum fdcat get_fd_type(int fd, size_t *size)
 static size_t compress_bufsize(struct thread_pool *pool, size_t max_input)
 {
 	switch (pool->compression) {
+	default:
 	case COMP_NONE:
 		(void)max_input;
 		return 0;
@@ -427,6 +425,7 @@ static void compress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 
 	DTRACE_PROBE1(waypipe, compress_buffer_enter, isize);
 	switch (pool->compression) {
+	default:
 	case COMP_NONE:
 		(void)msize;
 		(void)mbuf;
@@ -488,6 +487,7 @@ static void uncompress_buffer(struct thread_pool *pool, struct comp_ctx *ctx,
 
 	DTRACE_PROBE1(waypipe, uncompress_buffer_enter, isize);
 	switch (pool->compression) {
+	default:
 	case COMP_NONE:
 		(void)mbuf;
 		(void)msize;

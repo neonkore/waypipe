@@ -72,29 +72,19 @@ static int check_conn_header(uint32_t header, const struct main_config *config)
 	 * initial connection mechanism were to be expanded to allow setting
 	 * compression level. */
 	if ((header & CONN_COMPRESSION_MASK) == CONN_ZSTD_COMPRESSION) {
-#ifdef HAS_ZSTD
 		if (config->compression != COMP_ZSTD) {
 			wp_error("This waypipe client is configured for compression=%s, not the compression=ZSTD the waypipe server expected",
 					compression_mode_to_str(
 							config->compression));
 			return -1;
 		}
-#else
-		wp_error("This waypipe client does not support the ZSTD compression requested by waypipe server");
-		return -1;
-#endif
 	} else if ((header & CONN_COMPRESSION_MASK) == CONN_LZ4_COMPRESSION) {
-#ifdef HAS_LZ4
 		if (config->compression != COMP_LZ4) {
 			wp_error("This waypipe client is configured for compression=%s, not the compression=LZ4 the waypipe server expected",
 					compression_mode_to_str(
 							config->compression));
 			return -1;
 		}
-#else
-		wp_error("This waypipe client does not support the LZ4 compression requested by waypipe server");
-		return -1;
-#endif
 	} else if ((header & CONN_COMPRESSION_MASK) == CONN_NO_COMPRESSION) {
 		if (config->compression != COMP_NONE) {
 			wp_error("This waypipe client is configured for compression=%s, not the compression=NONE the waypipe server expected",
