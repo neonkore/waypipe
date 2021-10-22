@@ -71,6 +71,7 @@ int main(int argc, char **argv)
 		argc--;
 		argv++;
 	}
+	setup_video_logging();
 
 	size_t len;
 	char *buf = read_file_into_mem(argv[1], &len);

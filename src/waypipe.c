@@ -704,6 +704,7 @@ int main(int argc, char **argv)
 	log_mode = mode;
 	log_anti_staircase = false;
 	log_to_tty = isatty(STDERR_FILENO);
+	setup_video_logging();
 
 	if (setup_sighandlers() == -1) {
 		return EXIT_FAILURE;

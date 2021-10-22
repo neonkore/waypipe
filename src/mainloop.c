@@ -1237,7 +1237,6 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 	if (init_message_tracker(&g.tracker) == -1) {
 		goto init_failure_cleanup;
 	}
-	setup_video_logging();
 
 	struct int_window recon_fds = {
 			.data = NULL,
