@@ -106,6 +106,12 @@ void set_initial_fds(void);
 /** Verify that all file descriptors (except for the initial ones) are closed */
 void check_unclosed_fds(void);
 
+/** Write the wire representation of a wl_display.error(error_code, message)
+ * event into array `dest`. Return its length in bytes, or 0 if there is not
+ * enough space. */
+size_t print_display_error(char *dest, size_t dest_space, uint32_t error_code,
+		const char *message);
+
 #define WAYPIPE_PROTOCOL_VERSION 0x1u
 /** If the byte order is wrong, the fixed set/unset bits are swapped */
 #define CONN_FIXED_BIT (0x1u << 7)

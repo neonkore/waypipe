@@ -1465,23 +1465,18 @@ init_failure_cleanup:
 	}
 
 	if (!display_side && progfd != -1) {
+		char error[128];
 		if (exit_code == ERR_FATAL) {
-			/* wl_display@1, code 3: waypipe internal error */
-			uint32_t fatal_msg[11] = {0x1, 44u << 16, 0x1, 3, 23, 0,
-					0, 0, 0, 0, 0};
-			memcpy(fatal_msg + 5, "waypipe internal error", 23);
-			if (write(progfd, &fatal_msg, sizeof(fatal_msg)) ==
-					-1) {
+			size_t len = print_display_error(error, sizeof(error),
+					3, "waypipe internal error");
+			if (write(progfd, error, len) == -1) {
 				wp_error("Failed to send waypipe error notification: %s",
 						strerror(errno));
 			}
 		} else if (exit_code == ERR_NOMEM) {
-			/* wl_display@1, code 2: no memory */
-			uint32_t nomem_msg[8] = {
-					0x1, 32u << 16, 0x1, 2, 10, 0, 0};
-			memcpy(nomem_msg + 5, "no memory", 10);
-			if (write(progfd, &nomem_msg, sizeof(nomem_msg)) ==
-					-1) {
+			size_t len = print_display_error(
+					error, sizeof(error), 2, "no memory");
+			if (write(progfd, error, len) == -1) {
 				wp_error("Failed to send OOM notification: %s",
 						strerror(errno));
 			}

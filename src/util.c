@@ -261,6 +261,29 @@ void check_unclosed_fds(void)
 	}
 }
 
+size_t print_display_error(char *dest, size_t dest_space, uint32_t error_code,
+		const char *message)
+{
+	if (dest_space < 20) {
+		return 0;
+	}
+	size_t msg_len = strlen(message) + 1;
+	size_t net_len = 4 * ((msg_len + 0x3) / 4) + 20;
+	if (net_len > dest_space) {
+		return 0;
+	}
+	uint32_t header[5] = {0x1, (uint32_t)net_len << 16, 0x1, error_code,
+			(uint32_t)msg_len};
+	memcpy(dest, header, sizeof(header));
+	memcpy(dest + sizeof(header), message, msg_len);
+	if (msg_len % 4 != 0) {
+		size_t trailing = 4 - msg_len % 4;
+		uint8_t zeros[4] = {0, 0, 0, 0};
+		memcpy(dest + sizeof(header) + msg_len, zeros, trailing);
+	}
+	return net_len;
+}
+
 int send_one_fd(int socket, int fd)
 {
 	union {
