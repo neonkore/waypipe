@@ -357,6 +357,8 @@ void run_task(struct task_data *task, struct thread_data *local);
 void cleanup_hwcontext(struct render_data *rd);
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier);
 bool video_supports_shm_format(uint32_t format);
+/** Fast check for whether video coding format can be used */
+bool video_supports_coding_format(enum video_coding_fmt fmt);
 /** set redirect for ffmpeg logging through wp_log */
 void setup_video_logging(void);
 void destroy_video_data(struct shadow_fd *sfd);

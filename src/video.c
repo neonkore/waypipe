@@ -39,6 +39,11 @@ bool video_supports_shm_format(uint32_t format)
 	(void)format;
 	return false;
 }
+bool video_supports_coding_format(enum video_coding_fmt fmt)
+{
+	(void)fmt;
+	return false;
+}
 void cleanup_hwcontext(struct render_data *rd) { (void)rd; }
 void destroy_video_data(struct shadow_fd *sfd) { (void)sfd; }
 int setup_video_encode(struct shadow_fd *sfd, struct render_data *rd)
@@ -202,6 +207,23 @@ bool video_supports_shm_format(uint32_t format)
 		return true;
 	}
 	return video_supports_dmabuf_format(format, 0);
+}
+
+bool video_supports_coding_format(enum video_coding_fmt fmt)
+{
+	const struct AVCodec *enc, *dec;
+	switch (fmt) {
+	case VIDEO_VP9:
+		enc = avcodec_find_encoder_by_name(VIDEO_VP9_SW_ENCODER);
+		dec = avcodec_find_decoder_by_name(VIDEO_VP9_DECODER);
+		return enc && dec;
+	case VIDEO_H264:
+		enc = avcodec_find_encoder_by_name(VIDEO_H264_SW_ENCODER);
+		dec = avcodec_find_decoder_by_name(VIDEO_H264_DECODER);
+		return enc && dec;
+	default:
+		return false;
+	}
 }
 
 static void video_log_callback(
