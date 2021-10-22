@@ -41,7 +41,8 @@ static inline uint32_t conntoken_version(uint32_t header)
 {
 	return header >> 16;
 }
-static int check_conn_header(uint32_t header)
+
+static int check_conn_header(uint32_t header, const struct main_config *config)
 {
 	if ((header >> 16) != WAYPIPE_PROTOCOL_VERSION) {
 		wp_error("Rejecting connection header %08" PRIx32
@@ -57,8 +58,97 @@ static int check_conn_header(uint32_t header)
 		}
 		return -1;
 	}
+
+	/* Skip the following checks if config is null
+	 * (i.e., called from reconnection loop) */
+	if (!config) {
+		return 0;
+	}
+
+	/* For now, reject mismatches in compression format and video coding
+	 * setting, and print an error. Adopting whatever the server asks for
+	 * is a minor security issue -- e.g., video handling is a good target
+	 * for exploits, and compression can cost CPU time, especially if the
+	 * initial connection mechanism were to be expanded to allow setting
+	 * compression level. */
+	if ((header & CONN_COMPRESSION_MASK) == CONN_ZSTD_COMPRESSION) {
+#ifdef HAS_ZSTD
+		if (config->compression != COMP_ZSTD) {
+			wp_error("This waypipe client is configured for compression=%s, not the compression=ZSTD the waypipe server expected",
+					compression_mode_to_str(
+							config->compression));
+			return -1;
+		}
+#else
+		wp_error("This waypipe client does not support the ZSTD compression requested by waypipe server");
+		return -1;
+#endif
+	} else if ((header & CONN_COMPRESSION_MASK) == CONN_LZ4_COMPRESSION) {
+#ifdef HAS_LZ4
+		if (config->compression != COMP_LZ4) {
+			wp_error("This waypipe client is configured for compression=%s, not the compression=LZ4 the waypipe server expected",
+					compression_mode_to_str(
+							config->compression));
+			return -1;
+		}
+#else
+		wp_error("This waypipe client does not support the LZ4 compression requested by waypipe server");
+		return -1;
+#endif
+	} else if ((header & CONN_COMPRESSION_MASK) == CONN_NO_COMPRESSION) {
+		if (config->compression != COMP_NONE) {
+			wp_error("This waypipe client is configured for compression=%s, not the compression=NONE the waypipe server expected",
+					compression_mode_to_str(
+							config->compression));
+			return -1;
+		}
+	}
+
+	if ((header & CONN_VIDEO_MASK) == CONN_VP9_VIDEO) {
+		if (!config->video_if_possible) {
+			wp_error("This waypipe client was not run with video encoding enabled");
+			return -1;
+		}
+		if (config->video_fmt != VIDEO_VP9) {
+			wp_error("This waypipe client is not configured for the VP9 video coding format requested by the waypipe server");
+			return -1;
+		}
+		if (!video_supports_coding_format(VIDEO_VP9)) {
+			wp_error("This waypipe client does not support the VP9 video coding format requested by waypipe server");
+			return -1;
+		}
+	} else if ((header & CONN_VIDEO_MASK) == CONN_H264_VIDEO) {
+		if (!config->video_if_possible) {
+			wp_error("This waypipe client was not run with video encoding enabled");
+			return -1;
+		}
+		if (config->video_fmt != VIDEO_H264) {
+			wp_error("This waypipe client is not configured for the H264 video coding format requested by the waypipe server");
+			return -1;
+		}
+		if (!video_supports_coding_format(VIDEO_H264)) {
+			wp_error("This waypipe client does not support the VP9 video coding format requested by waypipe server");
+			return -1;
+		}
+	} else if ((header & CONN_VIDEO_MASK) == CONN_NO_VIDEO) {
+		if (config->video_if_possible) {
+			wp_error("This waypipe client has video encoding enabled, but the waypipe server required it to be enabled");
+			return -1;
+		}
+	}
+
 	return 0;
 }
+static void apply_conn_header(uint32_t header, struct main_config *config)
+{
+	if (header & CONN_NO_DMABUF_SUPPORT) {
+		if (config) {
+			config->no_gpu = true;
+		}
+	}
+	// todo: consider allowing to disable video encoding
+}
+
 static inline bool key_match(
 		const uint32_t key1[static 3], const uint32_t key2[static 3])
 {
@@ -168,7 +258,8 @@ static int run_single_client_reconnector(
 					wp_error("Failed to get connection id header");
 					goto done;
 				}
-				if (check_conn_header(new_conn.header) < 0) {
+				if (check_conn_header(new_conn.header, NULL) <
+						0) {
 					goto done;
 				}
 				if (read(newclient, &new_conn.key,
@@ -258,7 +349,7 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 				wp_error("Failed to get connection id header");
 				goto fail_cc;
 			}
-			if (check_conn_header(conn_id.header) < 0) {
+			if (check_conn_header(conn_id.header, config) < 0) {
 				goto fail_cc;
 			}
 			if (read(chanclient, &conn_id.key,
@@ -317,8 +408,10 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 	}
 	checked_close(channelsock);
 
+	struct main_config mod_config = *config;
+	apply_conn_header(conn_id.header, &mod_config);
 	return main_interface_loop(
-			chanclient, disp_fd, linkfds[0], config, true);
+			chanclient, disp_fd, linkfds[0], &mod_config, true);
 }
 
 void send_new_connection_fd(
@@ -379,8 +472,11 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 		if (dfd == -1) {
 			exit(EXIT_FAILURE);
 		}
+
+		struct main_config mod_config = *config;
+		apply_conn_header(conn_id->header, &mod_config);
 		int rc = main_interface_loop(
-				chanclient, dfd, linkfds[1], config, true);
+				chanclient, dfd, linkfds[1], &mod_config, true);
 		check_unclosed_fds();
 		exit(rc);
 	} else if (npid == -1) {
@@ -496,7 +592,8 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 			if (bytes_read[i] - (uint8_t)s < 4 &&
 					bytes_read[i] >= 4) {
 				/* Validate connection token header */
-				if (check_conn_header(tokens[i].header) < 0) {
+				if (check_conn_header(tokens[i].header,
+						    config) < 0) {
 					drop_incoming_connection(fds + 1,
 							tokens, bytes_read, i,
 							incomplete);

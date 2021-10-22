@@ -247,6 +247,8 @@ struct shadow_fd {
 	VABufferID video_va_pipeline;
 };
 
+const char *compression_mode_to_str(enum compression_mode mode);
+
 void setup_translation_map(struct fd_translation_map *map, bool display_side);
 void cleanup_translation_map(struct fd_translation_map *map);
 

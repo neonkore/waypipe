@@ -39,11 +39,36 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static inline uint32_t conntoken_header(bool reconnectable, bool update)
+static inline uint32_t conntoken_header(const struct main_config *config,
+		bool reconnectable, bool update)
 {
-	return (WAYPIPE_PROTOCOL_VERSION << 16) |
-	       (update ? CONN_UPDATE_BIT : 0) |
-	       (reconnectable ? CONN_RECONNECTABLE_BIT : 0) | CONN_FIXED_BIT;
+	uint32_t header = (WAYPIPE_PROTOCOL_VERSION << 16) | CONN_FIXED_BIT;
+	header |= (update ? CONN_UPDATE_BIT : 0);
+	header |= (reconnectable ? CONN_RECONNECTABLE_BIT : 0);
+	// TODO: stop compile gating the 'COMP' enum entries
+#ifdef HAS_LZ4
+	header |= (config->compression == COMP_LZ4 ? CONN_LZ4_COMPRESSION : 0);
+#endif
+#ifdef HAS_ZSTD
+	header |= (config->compression == COMP_ZSTD ? CONN_ZSTD_COMPRESSION
+						    : 0);
+#endif
+	if (config->compression == COMP_NONE) {
+		header |= CONN_NO_COMPRESSION;
+	}
+	if (config->video_if_possible) {
+		header |= (config->video_fmt == VIDEO_H264 ? CONN_H264_VIDEO
+							   : 0);
+		header |= (config->video_fmt == VIDEO_VP9 ? CONN_VP9_VIDEO : 0);
+	} else {
+		header |= CONN_NO_VIDEO;
+	}
+#ifdef HAS_DMABUF
+	header |= (config->no_gpu ? CONN_NO_DMABUF_SUPPORT : 0);
+#else
+	header |= CONN_NO_DMABUF_SUPPORT;
+#endif
+	return header;
 }
 
 /** Fill the key for a token using random data with a very low accidental
@@ -174,7 +199,7 @@ static int run_single_server(int control_pipe,
 	struct connection_token token;
 	memset(&token, 0, sizeof(token));
 	fill_random_key(&token);
-	token.header = conntoken_header(reconnectable, false);
+	token.header = conntoken_header(config, reconnectable, false);
 	wp_debug("Connection token header: %08" PRIx32, token.header);
 	if (write(chanfd, &token, sizeof(token)) != sizeof(token)) {
 		wp_error("Failed to write connection token to socket");
@@ -361,7 +386,7 @@ static int run_multi_server(int control_pipe,
 	int retcode = EXIT_SUCCESS;
 	struct connection_token token;
 	memset(&token, 0, sizeof(token));
-	token.header = conntoken_header(control_pipe != -1, false);
+	token.header = conntoken_header(config, control_pipe != -1, false);
 	wp_debug("Connection token header: %08" PRIx32, token.header);
 	while (!shutdown_flag) {
 		int status = -1;

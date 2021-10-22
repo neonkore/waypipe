@@ -110,8 +110,36 @@ void check_unclosed_fds(void);
 /** If the byte order is wrong, the fixed set/unset bits are swapped */
 #define CONN_FIXED_BIT (0x1u << 7)
 #define CONN_UNSET_BIT (0x1u << 31)
+/** The waypipe-server sends this if it supports reconnections, in which case
+ * the main client process should remember which child to route reconnections
+ * to. */
 #define CONN_RECONNECTABLE_BIT (0x1u << 0)
+/** This is set when reconnecting to an established waypipe-client child process
+ */
 #define CONN_UPDATE_BIT (0x1u << 1)
+
+/** The waypipe-server sends this to indicate that it does not support DMABUFs,
+ * so the waypipe-client side does not even need to check if it can support
+ * them. If this is not set, the waypipe-client will support (or not) DMABUFs
+ * depending on its flags and local capabilities. */
+#define CONN_NO_DMABUF_SUPPORT (0x1u << 2)
+
+/** Indicate which compression format the waypipe-server can accept. For
+ * backwards compatibility, if none of these flags is set, assume the server and
+ * client match. */
+#define CONN_COMPRESSION_MASK (0x3u << 8)
+#define CONN_NO_COMPRESSION (0x1u << 8)
+#define CONN_LZ4_COMPRESSION (0x2u << 8)
+#define CONN_ZSTD_COMPRESSION (0x3u << 8)
+
+/** Indicate which video coding format the waypipe-server can accept. For
+ * backwards compatibility, if none of these flags is set, assume the server and
+ * client match. */
+#define CONN_VIDEO_MASK (0x3u << 12)
+#define CONN_NO_VIDEO (0x1u << 12)
+#define CONN_VP9_VIDEO (0x2u << 12)
+#define CONN_H264_VIDEO (0x3u << 12)
+
 struct connection_token {
 	/** Indicate protocol version (top 16 bits), endianness, and
 	 * reconnection flags. The highest bit must stay clear. */

@@ -330,6 +330,23 @@ const char *fdcat_to_str(enum fdcat cat)
 	return "<invalid>";
 }
 
+const char *compression_mode_to_str(enum compression_mode mode)
+{
+	switch (mode) {
+	case COMP_NONE:
+		return "NONE";
+#ifdef HAS_LZ4
+	case COMP_LZ4:
+		return "LZ4";
+#endif
+#ifdef HAS_ZSTD
+	case COMP_ZSTD:
+		return "ZSTD";
+#endif
+	}
+	return "<invalid>";
+}
+
 enum fdcat get_fd_type(int fd, size_t *size)
 {
 	struct stat fsdata;
