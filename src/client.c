@@ -236,58 +236,54 @@ static int run_single_client_reconnector(
 			/* Hang up, main thread has closed its link */
 			break;
 		}
-		if (pf[0].revents & POLLIN) {
-			int newclient = accept(channelsock, NULL, NULL);
-			if (newclient == -1) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK) {
-					// The wakeup may have been spurious
-					continue;
-				}
-				wp_error("Connection failure: %s",
-						strerror(errno));
-				retcode = EXIT_FAILURE;
-				break;
-			} else {
-				wp_debug("Reconnection to oneshot client");
-
-				struct connection_token new_conn;
-				memset(&new_conn, 0, sizeof(new_conn));
-				if (read(newclient, &new_conn.header,
-						    sizeof(new_conn.header)) !=
-						sizeof(new_conn.header)) {
-					wp_error("Failed to get connection id header");
-					goto done;
-				}
-				if (check_conn_header(new_conn.header, NULL) <
-						0) {
-					goto done;
-				}
-				if (read(newclient, &new_conn.key,
-						    sizeof(new_conn.key)) !=
-						sizeof(new_conn.key)) {
-					wp_error("Failed to get connection id key");
-					goto done;
-				}
-				if (!key_match(new_conn.key, conn_id.key)) {
-					wp_error("Connection attempt with unmatched key");
-					goto done;
-				}
-				bool update = new_conn.header &
-					      CONN_RECONNECTABLE_BIT;
-				if (!update) {
-					wp_error("Connection token is missing update flag");
-					goto done;
-				}
-				if (send_one_fd(linkfd, newclient) == -1) {
-					wp_error("Failed to get connection id");
-					retcode = EXIT_FAILURE;
-					checked_close(newclient);
-					break;
-				}
-			done:
-				checked_close(newclient);
-			}
+		if (!(pf[0].revents & POLLIN)) {
+			continue;
 		}
+		int newclient = accept(channelsock, NULL, NULL);
+		if (newclient == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				// The wakeup may have been spurious
+				continue;
+			}
+			wp_error("Connection failure: %s", strerror(errno));
+			retcode = EXIT_FAILURE;
+			break;
+		}
+		wp_debug("Reconnection to oneshot client");
+
+		struct connection_token new_conn;
+		memset(&new_conn, 0, sizeof(new_conn));
+		if (read(newclient, &new_conn.header,
+				    sizeof(new_conn.header)) !=
+				sizeof(new_conn.header)) {
+			wp_error("Failed to get connection id header");
+			goto done;
+		}
+		if (check_conn_header(new_conn.header, NULL) < 0) {
+			goto done;
+		}
+		if (read(newclient, &new_conn.key, sizeof(new_conn.key)) !=
+				sizeof(new_conn.key)) {
+			wp_error("Failed to get connection id key");
+			goto done;
+		}
+		if (!key_match(new_conn.key, conn_id.key)) {
+			wp_error("Connection attempt with unmatched key");
+			goto done;
+		}
+		bool update = new_conn.header & CONN_RECONNECTABLE_BIT;
+		if (!update) {
+			wp_error("Connection token is missing update flag");
+			goto done;
+		}
+		if (send_one_fd(linkfd, newclient) == -1) {
+			wp_error("Failed to get connection id");
+			retcode = EXIT_FAILURE;
+			checked_close(newclient);
+			break;
+		}
+	done:
+		checked_close(newclient);
 	}
 	checked_close(channelsock);
 	checked_close(linkfd);
@@ -341,30 +337,28 @@ static int run_single_client(int channelsock, pid_t *eol_pid,
 			wp_error("Connection failure: %s", strerror(errno));
 			retcode = EXIT_FAILURE;
 			break;
-		} else {
-			wp_debug("New connection to client");
-			if (read(chanclient, &conn_id.header,
-					    sizeof(conn_id.header)) !=
-					sizeof(conn_id.header)) {
-				wp_error("Failed to get connection id header");
-				goto fail_cc;
-			}
-			if (check_conn_header(conn_id.header, config) < 0) {
-				goto fail_cc;
-			}
-			if (read(chanclient, &conn_id.key,
-					    sizeof(conn_id.key)) !=
-					sizeof(conn_id.key)) {
-				wp_error("Failed to get connection id key");
-				goto fail_cc;
-			}
-			break;
-		fail_cc:
-			retcode = EXIT_FAILURE;
-			checked_close(chanclient);
-			chanclient = -1;
-			break;
 		}
+
+		wp_debug("New connection to client");
+		if (read(chanclient, &conn_id.header, sizeof(conn_id.header)) !=
+				sizeof(conn_id.header)) {
+			wp_error("Failed to get connection id header");
+			goto fail_cc;
+		}
+		if (check_conn_header(conn_id.header, config) < 0) {
+			goto fail_cc;
+		}
+		if (read(chanclient, &conn_id.key, sizeof(conn_id.key)) !=
+				sizeof(conn_id.key)) {
+			wp_error("Failed to get connection id key");
+			goto fail_cc;
+		}
+		break;
+	fail_cc:
+		retcode = EXIT_FAILURE;
+		checked_close(chanclient);
+		chanclient = -1;
+		break;
 	}
 	if (retcode == EXIT_FAILURE || shutdown_flag || chanclient == -1) {
 		checked_close(channelsock);
@@ -639,31 +633,30 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 						strerror(errno));
 				retcode = EXIT_FAILURE;
 				break;
-			} else {
-				wp_debug("New connection to client");
-				if (set_nonblocking(chanclient) == -1) {
-					wp_error("Error making new connection nonblocking: %s",
-							strerror(errno));
-					checked_close(chanclient);
-					continue;
-				}
-
-				if (incomplete == NUM_INCOMPLETE_CONNECTIONS) {
-					wp_error("Dropping oldest incomplete connection (out of %d)",
-							NUM_INCOMPLETE_CONNECTIONS);
-					drop_incoming_connection(fds + 1,
-							tokens, bytes_read, 0,
-							incomplete);
-					incomplete--;
-				}
-				fds[1 + incomplete].fd = chanclient;
-				fds[1 + incomplete].events = POLLIN;
-				fds[1 + incomplete].revents = 0;
-				memset(&tokens[incomplete], 0,
-						sizeof(struct connection_token));
-				bytes_read[incomplete] = 0;
-				incomplete++;
 			}
+
+			wp_debug("New connection to client");
+			if (set_nonblocking(chanclient) == -1) {
+				wp_error("Error making new connection nonblocking: %s",
+						strerror(errno));
+				checked_close(chanclient);
+				continue;
+			}
+
+			if (incomplete == NUM_INCOMPLETE_CONNECTIONS) {
+				wp_error("Dropping oldest incomplete connection (out of %d)",
+						NUM_INCOMPLETE_CONNECTIONS);
+				drop_incoming_connection(fds + 1, tokens,
+						bytes_read, 0, incomplete);
+				incomplete--;
+			}
+			fds[1 + incomplete].fd = chanclient;
+			fds[1 + incomplete].events = POLLIN;
+			fds[1 + incomplete].revents = 0;
+			memset(&tokens[incomplete], 0,
+					sizeof(struct connection_token));
+			bytes_read[incomplete] = 0;
+			incomplete++;
 		}
 	}
 	for (int i = 0; i < incomplete; i++) {
