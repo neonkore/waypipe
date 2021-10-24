@@ -82,7 +82,10 @@ compressible as images containing pictures.
 	both the client and the server for their socket paths.
 
 *--version*
-	Print the version number and quit.
+	Briefly describe Waypipe's version and the features it was built with,
+	then quit. Possible features: LZ4 compression support, ZSTD compression
+	support, ability to transfer DMABUFs, video compression support, VAAPI
+	hardware video de/encoding support.
 
 *--allow-tiled*
 	By default, waypipe filters out all advertised DMABUF formats which have
