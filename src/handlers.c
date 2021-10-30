@@ -519,6 +519,7 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 	case WL_SHM_FORMAT_XBGR16161616F:
 	case WL_SHM_FORMAT_ARGB16161616F:
 	case WL_SHM_FORMAT_ABGR16161616F:
+	case WL_SHM_FORMAT_AXBXGXRX106106106106:
 		return 8;
 	case WL_SHM_FORMAT_XYUV8888:
 	case WL_SHM_FORMAT_VUY888:
@@ -552,6 +553,9 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 	case WL_SHM_FORMAT_P010:
 	case WL_SHM_FORMAT_P012:
 	case WL_SHM_FORMAT_P016:
+	case WL_SHM_FORMAT_NV15:
+	case WL_SHM_FORMAT_Q410:
+	case WL_SHM_FORMAT_Q401:
 		goto planar;
 	default:
 		wp_error("Unidentified WL_SHM format %x", format);

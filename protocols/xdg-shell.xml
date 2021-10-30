@@ -75,7 +75,9 @@
       <description summary="create a shell surface from a surface">
 	This creates an xdg_surface for the given surface. While xdg_surface
 	itself is not a role, the corresponding surface may only be assigned
-	a role extending xdg_surface, such as xdg_toplevel or xdg_popup.
+	a role extending xdg_surface, such as xdg_toplevel or xdg_popup. It is
+	illegal to create an xdg_surface for a wl_surface which already has an
+	assigned role and this will result in a protocol error.
 
 	This creates an xdg_surface for the given surface. An xdg_surface is
 	used as basis to define a role to a given surface, such as xdg_toplevel
