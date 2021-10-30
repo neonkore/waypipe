@@ -284,6 +284,18 @@ size_t print_display_error(char *dest, size_t dest_space, uint32_t error_code,
 	return net_len;
 }
 
+size_t print_wrapped_error(char *dest, size_t dest_space, const char *message)
+{
+	size_t msg_len = print_display_error(
+			dest + 4, dest_space - 4, 3, message);
+	if (msg_len == 0) {
+		return 0;
+	}
+	uint32_t header = transfer_header(msg_len + 4, WMSG_PROTOCOL);
+	memcpy(dest, &header, sizeof(header));
+	return msg_len + 4;
+}
+
 int send_one_fd(int socket, int fd)
 {
 	union {
