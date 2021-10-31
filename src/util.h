@@ -137,7 +137,7 @@ size_t print_wrapped_error(char *dest, size_t dest_space, const char *message);
 /** Indicate which compression format the waypipe-server can accept. For
  * backwards compatibility, if none of these flags is set, assume the server and
  * client match. */
-#define CONN_COMPRESSION_MASK (0x3u << 8)
+#define CONN_COMPRESSION_MASK (0x7u << 8)
 #define CONN_NO_COMPRESSION (0x1u << 8)
 #define CONN_LZ4_COMPRESSION (0x2u << 8)
 #define CONN_ZSTD_COMPRESSION (0x3u << 8)
@@ -145,10 +145,10 @@ size_t print_wrapped_error(char *dest, size_t dest_space, const char *message);
 /** Indicate which video coding format the waypipe-server can accept. For
  * backwards compatibility, if none of these flags is set, assume the server and
  * client match. */
-#define CONN_VIDEO_MASK (0x3u << 12)
-#define CONN_NO_VIDEO (0x1u << 12)
-#define CONN_VP9_VIDEO (0x2u << 12)
-#define CONN_H264_VIDEO (0x3u << 12)
+#define CONN_VIDEO_MASK (0x7u << 11)
+#define CONN_NO_VIDEO (0x1u << 11)
+#define CONN_VP9_VIDEO (0x2u << 11)
+#define CONN_H264_VIDEO (0x3u << 11)
 
 struct connection_token {
 	/** Indicate protocol version (top 16 bits), endianness, and

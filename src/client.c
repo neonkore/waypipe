@@ -98,6 +98,11 @@ static int check_conn_header(uint32_t header, const struct main_config *config,
 							config->compression));
 			return -1;
 		}
+	} else if ((header & CONN_COMPRESSION_MASK) != 0) {
+		snprintf(err, err_size,
+				"Waypipe client is rejecting connection, Waypipe client is configured for compression=%s, not the unidentified compression type the Waypipe server expected",
+				compression_mode_to_str(config->compression));
+		return -1;
 	}
 
 	if ((header & CONN_VIDEO_MASK) == CONN_VP9_VIDEO) {
@@ -128,6 +133,10 @@ static int check_conn_header(uint32_t header, const struct main_config *config,
 					"Waypipe client is rejecting connection, Waypipe client has video encoding enabled, but Waypipe server does not");
 			return -1;
 		}
+	} else if ((header & CONN_VIDEO_MASK) != 0) {
+		snprintf(err, err_size,
+				"Waypipe client is rejecting connection, Waypipe client was not configured for the unidentified video coding format requested by the Waypipe server");
+		return -1;
 	}
 
 	return 0;
