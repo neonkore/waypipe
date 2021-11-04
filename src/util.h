@@ -85,6 +85,9 @@ size_t multi_strcat(char *dest, size_t dest_space, ...);
 /** Make the file underlying this file descriptor nonblocking.
  * Silently return -1 on failure. */
 int set_nonblocking(int fd);
+/** Set the close-on-exec flag for the file descriptor.
+ * Silently return -1 on failure. */
+int set_cloexec(int fd);
 
 /* socket path lengths being overly constrained, it is perhaps best to enforce
  * this constraint as early as possible by using this type */

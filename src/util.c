@@ -138,6 +138,15 @@ int set_nonblocking(int fd)
 	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+int set_cloexec(int fd)
+{
+	int flags = fcntl(fd, F_GETFD, 0);
+	if (flags == -1) {
+		return -1;
+	}
+	return fcntl(fd, F_SETFD, flags | O_CLOEXEC);
+}
+
 int setup_nb_socket(const struct sockaddr_un *socket_addr, int nmaxclients)
 {
 	struct sockaddr_un saddr = *socket_addr;

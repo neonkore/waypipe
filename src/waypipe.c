@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -441,6 +442,7 @@ static const struct arg_permissions arg_permissions[] = {
 		{ARG_BENCH_TEST_SIZE, MODE_BENCH},
 };
 
+extern char **environ;
 int main(int argc, char **argv)
 {
 	bool help = false;
@@ -796,6 +798,19 @@ int main(int argc, char **argv)
 			return EXIT_FAILURE;
 		}
 
+		bool allocates_pty = false;
+		int dstidx = locate_openssh_cmd_hostname(
+				argc, argv, &allocates_pty);
+		if (dstidx < 0) {
+			fprintf(stderr, "waypipe: Failed to locate destination in ssh command string\n");
+			return EXIT_FAILURE;
+		}
+		/* If there are no arguments following the destination */
+		bool needs_login_shell = dstidx + 1 == argc;
+		if (needs_login_shell || allocates_pty) {
+			log_anti_staircase = true;
+		}
+
 		char rbytes[9];
 		fill_rand_token(rbytes);
 		rbytes[8] = 0;
@@ -810,156 +825,136 @@ int main(int argc, char **argv)
 		if (channelsock == -1) {
 			return EXIT_FAILURE;
 		}
-
-		bool allocates_pty = false;
-		int dstidx = locate_openssh_cmd_hostname(
-				argc, argv, &allocates_pty);
-		if (dstidx < 0) {
-			fprintf(stderr, "waypipe: Failed to locate destination in ssh command string\n");
+		if (set_cloexec(channelsock) == -1) {
+			wp_error("Failed to make client socket cloexec");
 			return EXIT_FAILURE;
 		}
-		/* If there are no arguments following the destination */
-		bool needs_login_shell = dstidx + 1 == argc;
-		if (needs_login_shell || allocates_pty) {
-			log_anti_staircase = true;
+
+		char linkage[256];
+		char serversock[128];
+		char video_str[140];
+		char remote_display[20];
+		sprintf(serversock, "%s-server-%s.sock", socketpath, rbytes);
+		sprintf(linkage, "%s-server-%s.sock:%s-client-%s.sock",
+				socketpath, rbytes, socketpath, rbytes);
+		sprintf(remote_display, "wayland-%s", rbytes);
+		if (!wayland_display) {
+			wayland_display = remote_display;
 		}
 
-		pid_t conn_pid = fork();
-		if (conn_pid == -1) {
-			wp_error("Fork failure: %s", strerror(errno));
-			return EXIT_FAILURE;
-		} else if (conn_pid == 0) {
-			char linkage[256];
-			char serversock[128];
-			char video_str[140];
-			char remote_display[20];
-			sprintf(serversock, "%s-server-%s.sock", socketpath,
-					rbytes);
-			sprintf(linkage, "%s-server-%s.sock:%s-client-%s.sock",
-					socketpath, rbytes, socketpath, rbytes);
-			sprintf(remote_display, "wayland-%s", rbytes);
-			if (!wayland_display) {
-				wayland_display = remote_display;
-			}
+		int nextra = 12 + debug + oneshot +
+			     2 * (remote_drm_node != NULL) +
+			     2 * (control_path != NULL) +
+			     2 * (config.compression != COMP_NONE) +
+			     config.video_if_possible +
+			     !config.only_linear_dmabuf +
+			     2 * needs_login_shell +
+			     2 * (config.n_worker_threads != 0);
+		char **arglist =
+				calloc((size_t)(argc + nextra), sizeof(char *));
 
-			int nextra = 12 + debug + oneshot +
-				     2 * (remote_drm_node != NULL) +
-				     2 * (control_path != NULL) +
-				     2 * (config.compression != COMP_NONE) +
-				     config.video_if_possible +
-				     !config.only_linear_dmabuf +
-				     2 * needs_login_shell +
-				     2 * (config.n_worker_threads != 0);
-			char **arglist = calloc((size_t)(argc + nextra),
-					sizeof(char *));
+		int offset = 0;
+		arglist[offset++] = "ssh";
+		if (needs_login_shell) {
+			/* Force tty allocation, if we are attempting a login
+			 * shell. The user-override is a -T flag, and a second
+			 * -t will ensure a login  shell even if `waypipe ssh`
+			 * was not run from a pty. Unfortunately, -t disables
+			 * newline translation on the local side; see
+			 * `log_handler`. */
+			arglist[offset++] = "-t";
+		}
+		arglist[offset++] = "-R";
+		arglist[offset++] = linkage;
+		for (int i = 0; i <= dstidx; i++) {
+			arglist[offset + i] = argv[i];
+		}
+		arglist[dstidx + 1 + offset++] = waypipe_binary;
+		if (debug) {
+			arglist[dstidx + 1 + offset++] = "-d";
+		}
+		if (oneshot) {
+			arglist[dstidx + 1 + offset++] = "-o";
+		}
 
-			int offset = 0;
-			arglist[offset++] = "ssh";
-			if (needs_login_shell) {
-				/* Force tty allocation, if we are attempting
-				 * a login shell. The user-override is a -T
-				 * flag, and a second -t will ensure a login
-				 * shell even if waypipe ssh was not run from a
-				 * pty. Unfortunately, -t disables newline
-				 * translation on the local side; see
-				 * `log_handler`. */
-				arglist[offset++] = "-t";
+		/* Always send the compression flag, because the default
+		 * was changed from NONE to LZ4. */
+		arglist[dstidx + 1 + offset++] = "-c";
+		if (!comp_string) {
+			switch (config.compression) {
+			case COMP_LZ4:
+				comp_string = "lz4";
+				break;
+			case COMP_ZSTD:
+				comp_string = "zstd";
+				break;
+			default:
+				comp_string = "none";
+				break;
 			}
-			arglist[offset++] = "-R";
-			arglist[offset++] = linkage;
-			for (int i = 0; i <= dstidx; i++) {
-				arglist[offset + i] = argv[i];
-			}
-			arglist[dstidx + 1 + offset++] = waypipe_binary;
-			if (debug) {
-				arglist[dstidx + 1 + offset++] = "-d";
-			}
-			if (oneshot) {
-				arglist[dstidx + 1 + offset++] = "-o";
-			}
+		}
+		arglist[dstidx + 1 + offset++] = comp_string;
 
-			/* Always send the compression flag, because the default
-			 * was changed from NONE to LZ4. */
-			arglist[dstidx + 1 + offset++] = "-c";
-			if (!comp_string) {
-				switch (config.compression) {
-				case COMP_LZ4:
-					comp_string = "lz4";
-					break;
-				case COMP_ZSTD:
-					comp_string = "zstd";
-					break;
-				default:
-					comp_string = "none";
-					break;
-				}
-			}
-			arglist[dstidx + 1 + offset++] = comp_string;
-
-			if (needs_login_shell) {
+		if (needs_login_shell) {
+			arglist[dstidx + 1 + offset++] = "--login-shell";
+		}
+		if (config.video_if_possible) {
+			if (!config.old_video_mode) {
+				sprintf(video_str, "--video=%s,%s,bpf=%d",
+						config.video_fmt == VIDEO_H264
+								? "h264"
+								: "vp9",
+						config.prefer_hwvideo ? "hw"
+								      : "sw",
+						config.video_bpf);
+				arglist[dstidx + 1 + offset++] = video_str;
+			} else {
 				arglist[dstidx + 1 + offset++] =
-						"--login-shell";
+						config.prefer_hwvideo
+								? "--hwvideo"
+								: "--video";
 			}
-			if (config.video_if_possible) {
-				if (!config.old_video_mode) {
-					sprintf(video_str,
-							"--video=%s,%s,bpf=%d",
-							config.video_fmt == VIDEO_H264
-									? "h264"
-									: "vp9",
-							config.prefer_hwvideo
-									? "hw"
-									: "sw",
-							config.video_bpf);
-					arglist[dstidx + 1 + offset++] =
-							video_str;
-				} else {
-					arglist[dstidx + 1 + offset++] =
-							config.prefer_hwvideo
-									? "--hwvideo"
-									: "--video";
-				}
-			}
-			if (!config.only_linear_dmabuf) {
-				arglist[dstidx + 1 + offset++] =
-						"--allow-tiled";
-			}
-			if (remote_drm_node) {
-				arglist[dstidx + 1 + offset++] = "--drm-node";
-				arglist[dstidx + 1 + offset++] =
-						remote_drm_node;
-			}
-			if (config.n_worker_threads != 0) {
-				arglist[dstidx + 1 + offset++] = "--threads";
-				arglist[dstidx + 1 + offset++] = nthread_string;
-			}
-			if (control_path) {
-				arglist[dstidx + 1 + offset++] = "--control";
-				arglist[dstidx + 1 + offset++] = control_path;
-			}
-			arglist[dstidx + 1 + offset++] = "--unlink-socket";
-			arglist[dstidx + 1 + offset++] = "-s";
-			arglist[dstidx + 1 + offset++] = serversock;
-			arglist[dstidx + 1 + offset++] = "--display";
-			arglist[dstidx + 1 + offset++] = wayland_display;
-			arglist[dstidx + 1 + offset++] = "server";
-			for (int i = dstidx + 1; i < argc; i++) {
-				arglist[offset + i] = argv[i];
-			}
-			arglist[argc + offset] = NULL;
+		}
+		if (!config.only_linear_dmabuf) {
+			arglist[dstidx + 1 + offset++] = "--allow-tiled";
+		}
+		if (remote_drm_node) {
+			arglist[dstidx + 1 + offset++] = "--drm-node";
+			arglist[dstidx + 1 + offset++] = remote_drm_node;
+		}
+		if (config.n_worker_threads != 0) {
+			arglist[dstidx + 1 + offset++] = "--threads";
+			arglist[dstidx + 1 + offset++] = nthread_string;
+		}
+		if (control_path) {
+			arglist[dstidx + 1 + offset++] = "--control";
+			arglist[dstidx + 1 + offset++] = control_path;
+		}
+		arglist[dstidx + 1 + offset++] = "--unlink-socket";
+		arglist[dstidx + 1 + offset++] = "-s";
+		arglist[dstidx + 1 + offset++] = serversock;
+		arglist[dstidx + 1 + offset++] = "--display";
+		arglist[dstidx + 1 + offset++] = wayland_display;
+		arglist[dstidx + 1 + offset++] = "server";
+		for (int i = dstidx + 1; i < argc; i++) {
+			arglist[offset + i] = argv[i];
+		}
+		arglist[argc + offset] = NULL;
 
-			checked_close(channelsock);
-
-			// execvp effectively frees arglist
-			execvp(arglist[0], arglist);
-			wp_error("Failed to execvp \'%s\': %s", arglist[0],
-					strerror(errno));
+		pid_t conn_pid;
+		int err = posix_spawnp(&conn_pid, arglist[0], NULL, NULL,
+				arglist, environ);
+		if (err) {
+			wp_error("Failed to spawn ssh process: %s",
+					strerror(err));
+			close(channelsock);
 			free(arglist);
 			return EXIT_FAILURE;
-		} else {
-			ret = run_client(&clientsock, &config, oneshot,
-					wayland_socket, conn_pid, channelsock);
 		}
+		free(arglist);
+
+		ret = run_client(&clientsock, &config, oneshot, wayland_socket,
+				conn_pid, channelsock);
 	}
 	check_unclosed_fds();
 	return ret;
