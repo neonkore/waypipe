@@ -217,6 +217,18 @@ static ssize_t get_dmabuf_fd_size(int fd)
 	return endp;
 }
 
+static bool dmabuf_info_valid(const struct dmabuf_slice_data *info)
+{
+	if (info->height > (1u << 24) || info->width > (1u << 24) ||
+			info->num_planes > 4) {
+		wp_error("Invalid DMABUF slice data: height " PRIu32
+			 " width " PRIu32 " num_planes " PRIu32,
+				info->height, info->width, info->num_planes);
+		return false;
+	}
+	return true;
+}
+
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		struct dmabuf_slice_data *info, bool read_modifier)
 {
@@ -246,6 +258,10 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD, &data,
 				GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
 	} else {
+		if (!dmabuf_info_valid(info)) {
+			return NULL;
+		}
+
 		/* Multiplanar formats are all rather badly supported by
 		 * drivers/libgbm/libdrm/compositors/applications/everything. */
 		struct gbm_import_fd_modifier_data data;
@@ -326,6 +342,10 @@ struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
 		const struct dmabuf_slice_data *info)
 {
 	struct gbm_bo *bo;
+	if (info && !dmabuf_info_valid(info)) {
+		return NULL;
+	}
+
 retry:
 	if (!info || info->num_planes == 0) {
 		uint32_t width = 512;
