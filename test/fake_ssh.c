@@ -72,10 +72,16 @@ int main(int argc, char **argv)
 				break;
 			}
 		}
+		if (!p2) {
+			fprintf(stderr, "Failed to split forwarding descriptor '%s'\n",
+					p1);
+			return EXIT_FAILURE;
+		}
 		unlink(p1);
 		if (symlink(p2, p1) == -1) {
 			fprintf(stderr, "Symlinking '%s' to '%s' failed\n", p2,
 					p1);
+			return EXIT_FAILURE;
 		}
 	}
 	(void)destination;
