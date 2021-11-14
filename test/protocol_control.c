@@ -151,14 +151,28 @@ static void msg_send_handler(struct transfer_states *ts, struct test_state *src,
 static int setup_tstate(struct transfer_states *ts)
 {
 	memset(ts, 0, sizeof(*ts));
+	ts->send = msg_send_handler;
 	ts->comp = calloc(1, sizeof(struct test_state));
 	ts->app = calloc(1, sizeof(struct test_state));
-	if (setup_state(ts->comp, true, true) == -1 ||
-			setup_state(ts->app, false, true) == -1) {
-		return -1;
+	if (!ts->comp || !ts->app) {
+		goto fail_alloc;
 	}
-	ts->send = msg_send_handler;
+	if (setup_state(ts->comp, true, true) == -1) {
+		goto fail_comp_setup;
+	}
+	if (setup_state(ts->app, false, true) == -1) {
+		goto fail_app_setup;
+	}
 	return 0;
+
+fail_app_setup:
+	cleanup_state(ts->app);
+fail_comp_setup:
+	cleanup_state(ts->comp);
+fail_alloc:
+	free(ts->comp);
+	free(ts->app);
+	return -1;
 }
 static void cleanup_tstate(struct transfer_states *ts)
 {
