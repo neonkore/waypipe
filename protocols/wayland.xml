@@ -296,6 +296,9 @@
 	The drm format codes match the macros defined in drm_fourcc.h, except
 	argb8888 and xrgb8888. The formats actually supported by the compositor
 	will be reported by the format event.
+
+	For all wl_shm formats and unless specified in another protocol
+	extension, pre-multiplied alpha is used for pixel values.
       </description>
       <!-- Note to protocol writers: don't update this list manually, instead
 	   run the automated script that keeps it in sync with drm_fourcc.h. -->
@@ -403,6 +406,10 @@
       <entry name="nv15" value="0x3531564e" summary="2x2 subsampled Cr:Cb plane"/>
       <entry name="q410" value="0x30313451"/>
       <entry name="q401" value="0x31303451"/>
+      <entry name="xrgb16161616" value="0x38345258" summary="[63:0] x:R:G:B 16:16:16:16 little endian"/>
+      <entry name="xbgr16161616" value="0x38344258" summary="[63:0] x:B:G:R 16:16:16:16 little endian"/>
+      <entry name="argb16161616" value="0x38345241" summary="[63:0] A:R:G:B 16:16:16:16 little endian"/>
+      <entry name="abgr16161616" value="0x38344241" summary="[63:0] A:B:G:R 16:16:16:16 little endian"/>
     </enum>
 
     <request name="create_pool">
@@ -953,9 +960,10 @@
 	immediately before receiving keyboard focus and when a new
 	selection is set while the client has keyboard focus.  The
 	data_offer is valid until a new data_offer or NULL is received
-	or until the client loses keyboard focus.  The client must
-	destroy the previous selection data_offer, if any, upon receiving
-	this event.
+	or until the client loses keyboard focus.  Switching surface with
+	keyboard focus within the same client doesn't mean a new selection
+	will be sent.  The client must destroy the previous selection
+	data_offer, if any, upon receiving this event.
       </description>
       <arg name="id" type="object" interface="wl_data_offer" allow-null="true"
 	   summary="selection data_offer object"/>
