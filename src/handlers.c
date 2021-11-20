@@ -367,6 +367,14 @@ void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 		}
 	}
 
+	if (!strcmp(interface, "zwp_linux_dmabuf_v1")) {
+		/* Version 4 will require new Waypipe code to support, so
+		 * downgrade to version 3 */
+		if (ctx->message[2 + 1 + 1 + 5] > 3) {
+			ctx->message[2 + 1 + 1 + 5] = 3;
+		}
+	}
+
 	bool unsupported = false;
 	// requires novel fd translation, not yet supported
 	unsupported |= !strcmp(
