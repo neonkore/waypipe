@@ -304,6 +304,7 @@ enum wmsg_type {
 	WMSG_OPEN_DMAVID_DST_V2,
 };
 const char *wmsg_type_to_str(enum wmsg_type tp);
+bool wmsg_type_is_known(enum wmsg_type tp);
 struct wmsg_open_file {
 	uint32_t size_and_type;
 	int32_t remote_id;

@@ -428,6 +428,10 @@ const char *wmsg_type_to_str(enum wmsg_type tp)
 	}
 	return wmsg_types[tp];
 }
+bool wmsg_type_is_known(enum wmsg_type tp)
+{
+	return (size_t)tp < (sizeof(wmsg_types) / sizeof(wmsg_types[0]));
+}
 
 int transfer_ensure_size(struct transfer_queue *transfers, int count)
 {

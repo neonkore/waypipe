@@ -1474,7 +1474,16 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 	case WMSG_ACK_NBLOCKS:
 	case WMSG_INJECT_RIDS:
 	case WMSG_PROTOCOL: {
-		wp_error("Unexpected update type: %s", wmsg_type_to_str(type));
+		if (wmsg_type_is_known(type)) {
+			wp_error("Unexpected update type: %s",
+					wmsg_type_to_str(type));
+		} else {
+			wp_error("Unidentified update type, number %u. "
+				 "This may be caused by the Waypipe instances "
+				 "on different sides of the connection having "
+				 "incompatible versions or options.",
+					(unsigned)type);
+		}
 		return ERR_FATAL;
 	}
 	/* SFD creation messages */
