@@ -84,13 +84,17 @@ static void fill_random_key(struct connection_token *token)
 	clock_gettime(CLOCK_REALTIME, &tp);
 	token->key[0] += (uint32_t)getpid();
 	token->key[1] += 1 + (uint32_t)tp.tv_sec;
-	token->key[2] += 1 + (uint32_t)tp.tv_nsec;
+	token->key[2] += 2 + (uint32_t)tp.tv_nsec;
 
 	int devrand = open("/dev/urandom", O_RDONLY);
 	if (devrand != -1) {
+		uint32_t tmp[3];
 		errno = 0;
-		(void)read(devrand, token->key, sizeof(token->key));
+		(void)read(devrand, tmp, sizeof(tmp));
 		checked_close(devrand);
+		token->key[0] ^= tmp[0];
+		token->key[1] ^= tmp[1];
+		token->key[2] ^= tmp[2];
 	}
 }
 
