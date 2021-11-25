@@ -8,7 +8,7 @@ project(
 		'warning_level=3',
 		'werror=true',
 	],
-	version: '0.8.1',
+	version: '0.8.2',
 )
 
 # DEFAULT_SOURCE implies POSIX_C_SOURCE 200809L + extras like CMSG_LEN
