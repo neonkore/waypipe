@@ -59,7 +59,7 @@ compressible as images containing pictures.
 	level can be chosen by appending = followed by a number. For example,
 	if *C* is _zstd=7_, waypipe will use level 7 Zstd compression.
 
-	† In a future version, the default will change to be _lz4_.
+	† In a future version, the default will change to _lz4_.
 
 *-d, --debug*
 	Print debug log messages.
