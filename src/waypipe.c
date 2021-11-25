@@ -463,11 +463,7 @@ int main(int argc, char **argv)
 
 	struct main_config config = {.n_worker_threads = 0,
 			.drm_node = NULL,
-#ifdef HAS_LZ4
-			.compression = COMP_LZ4,
-#else
 			.compression = COMP_NONE,
-#endif
 			.compression_level = 0,
 			.no_gpu = false,
 			.only_linear_dmabuf = true,
@@ -842,10 +838,9 @@ int main(int argc, char **argv)
 			wayland_display = remote_display;
 		}
 
-		int nextra = 12 + debug + oneshot +
+		int nextra = 14 + debug + oneshot +
 			     2 * (remote_drm_node != NULL) +
 			     2 * (control_path != NULL) +
-			     2 * (config.compression != COMP_NONE) +
 			     config.video_if_possible +
 			     !config.only_linear_dmabuf +
 			     2 * needs_login_shell +
@@ -878,7 +873,7 @@ int main(int argc, char **argv)
 		}
 
 		/* Always send the compression flag, because the default
-		 * was changed from NONE to LZ4. */
+		 * will be changed from NONE to LZ4. */
 		arglist[dstidx + 1 + offset++] = "-c";
 		if (!comp_string) {
 			switch (config.compression) {
