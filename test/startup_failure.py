@@ -42,12 +42,17 @@ display_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 display_socket.bind(wayland_display_path)
 display_socket.listen()
 
+USE_SOCKETPAIR = 1 << 1
+EXPECT_SUCCESS = 1 << 2
+EXPECT_TIMEOUT = 1 << 3
+EXPECT_FAILURE = 1 << 4
 
-def run_test(name, command, env, use_socketpair, expect_success):
+
+def run_test(name, command, env, flags):
     try_unlink(client_socket_path)
     try_unlink(server_socket_path)
     try_unlink(server_socket_path + ".disp.sock")
-    if use_socketpair:
+    if flags & USE_SOCKETPAIR:
         sockets = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         conn_socket = 999
         os.dup2(sockets[1].fileno(), conn_socket, inheritable=True)
@@ -71,22 +76,27 @@ def run_test(name, command, env, use_socketpair, expect_success):
         # Program began to wait for a connection
         proc.kill()
         output, none = proc.communicate()
-        retcode = 0 if "client" in command else (0 if expect_success else 1)
+        retcode = None
         timed_out = True
     else:
         retcode = proc.returncode
 
-    if use_socketpair:
+    if flags & USE_SOCKETPAIR:
         os.close(conn_socket)
 
     log_path = os.path.join(xdg_runtime_dir, "weston_out.txt")
     with open(log_path, "wb") as out:
         out.write(output)
 
+    result = (
+        "timeout"
+        if timed_out
+        else ("fail({})".format(retcode) if retcode != 0 else "pass")
+    )
+
     global all_succeeding
-    failed = retcode != 0 or timed_out == False
-    if expect_success:
-        if failed:
+    if flags & EXPECT_SUCCESS:
+        if timed_out or retcode != 0:
             print(
                 "Run {} failed when it should have succeeded".format(name),
                 output,
@@ -96,8 +106,8 @@ def run_test(name, command, env, use_socketpair, expect_success):
             all_succeeding = False
         else:
             print("Run {} passed.".format(name), output)
-    else:
-        if not failed:
+    elif flags & EXPECT_FAILURE:
+        if timed_out or retcode == 0:
             print(
                 "Run {} succeeded when it should have failed".format(name),
                 output,
@@ -106,7 +116,19 @@ def run_test(name, command, env, use_socketpair, expect_success):
             )
             all_succeeding = False
         else:
-            print("Run {} passed:".format(name), output)
+            print("Run {} passed.".format(name), output)
+    elif flags & EXPECT_TIMEOUT:
+        if not timed_out:
+            print(
+                "Run {} stopped when it should have continued".format(name),
+                output,
+                retcode,
+            )
+            all_succeeding = False
+        else:
+            print("Run {} passed.".format(name), output)
+    else:
+        raise NotImplementedError
 
 
 wait_cmd = [sleep_path, "0.5"]
@@ -123,116 +145,106 @@ run_test(
     "b_client_long_disp",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(base_env, WAYLAND_DISPLAY=("/" + "x" * 107)),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_client_disp_dne",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(base_env, WAYLAND_DISPLAY=xdg_runtime_dir + "/dne"),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_client_no_env",
     [waypipe_path, "-s", client_socket_path, "client"],
     base_env,
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_server_oneshot_no_env",
     [waypipe_path, "-o", "-s", server_socket_path, "server"] + wait_cmd,
     base_env,
-    False,
-    False,
+    EXPECT_TIMEOUT,
 )
 run_test(
     "b_client_bad_pipe1",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(base_env, WAYLAND_SOCKET="33"),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_client_bad_pipe2",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(base_env, WAYLAND_SOCKET="777777777777777777777777777"),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_client_bad_pipe3",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(base_env, WAYLAND_SOCKET="0x33"),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_client_nxdg_offset",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(base_env, WAYLAND_DISPLAY=wayland_display_short),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "b_server_no_env",
     [waypipe_path, "-s", server_socket_path, "server"] + wait_cmd,
     base_env,
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 run_test(
     "g_ssh_test_nossh_env",
     [waypipe_path, "-o", "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
     dict(standard_env, WAYLAND_DISPLAY=wayland_display_short),
-    False,
-    False,
+    EXPECT_FAILURE,
 )
 
 
 # Configurations that should succeed
 run_test(
+    "g_help",
+    [waypipe_path, "--help"],
+    base_env,
+    EXPECT_SUCCESS,
+)
+run_test(
     "g_server_std_env",
     [waypipe_path, "-s", server_socket_path, "server"] + wait_cmd,
     standard_env,
-    False,
-    True,
+    EXPECT_TIMEOUT,
 )
 run_test(
     "g_client_std_env",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(standard_env, WAYLAND_DISPLAY=wayland_display_path),
-    False,
-    True,
+    EXPECT_TIMEOUT,
 )
 run_test(
     "g_client_offset_sock",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(standard_env, WAYLAND_DISPLAY=wayland_display_short),
-    False,
-    True,
+    EXPECT_TIMEOUT,
 )
 run_test(
     "g_client_pipe_env",
     [waypipe_path, "-s", client_socket_path, "client"],
     dict(standard_env),
-    True,
-    True,
+    EXPECT_TIMEOUT | USE_SOCKETPAIR,
 )
 run_test(
     "g_ssh_test_oneshot",
     [waypipe_path, "-o", "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
     dict(ssh_env, WAYLAND_DISPLAY=wayland_display_short),
-    False,
-    True,
+    EXPECT_TIMEOUT,
 )
 run_test(
     "g_ssh_test_reg",
     [waypipe_path, "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
     dict(ssh_env, WAYLAND_DISPLAY=wayland_display_short),
-    False,
-    True,
+    EXPECT_TIMEOUT,
 )
 run_test(
     "g_ssh_test_remotebin",
@@ -248,8 +260,7 @@ run_test(
     ]
     + wait_cmd,
     dict(ssh_only_env, WAYLAND_DISPLAY=wayland_display_short),
-    False,
-    True,
+    EXPECT_TIMEOUT,
 )
 
 try_unlink(client_socket_path)
