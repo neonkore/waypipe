@@ -508,7 +508,6 @@ int main(int argc, char **argv)
 		/* todo: set opterr to 0 and use custom error handler */
 		int opt = getopt_long(
 				mode_argc, argv, "c:dhnos:", options, NULL);
-
 		if (opt == -1) {
 			break;
 		}
@@ -676,11 +675,9 @@ int main(int argc, char **argv)
 		}
 		fprintf(stdout, "\n");
 		return EXIT_SUCCESS;
-	} else if (argc < 1) {
-		return usage(EXIT_FAILURE);
 	} else if (help) {
 		return usage(EXIT_SUCCESS);
-	} else if (mode == MODE_FAIL) {
+	} else if (mode == MODE_FAIL || argc < 1) {
 		return usage(EXIT_FAILURE);
 	}
 	if (mode == MODE_CLIENT && argc > 1) {
