@@ -127,7 +127,7 @@ startup_envlist += ['TEST_SLEEP_PATH=' + sleep_prog.path()]
 startup_envlist += ['TEST_FAKE_SSH_PATH=' + fake_ssh.full_path()]
 test_startup = join_paths(meson.current_source_dir(), 'startup_failure.py')
 test('That waypipe exits cleanly given a bad setup',
-        python3, args: test_startup, env: startup_envlist, timeout: 10
+        python3, args: test_startup, env: startup_envlist, timeout: 30
 )
 
 fuzz_hook_ext = executable(

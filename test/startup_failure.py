@@ -62,24 +62,33 @@ def run_test(name, command, env, flags):
         pfds = []
 
     timed_out = False
+    log_path = os.path.join(xdg_runtime_dir, "sfail_{}.txt".format(name))
+    logfile = open(log_path, "wb")
+    print(env, " ".join(command))
+
     proc = subprocess.Popen(
         command,
         env=env,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
+        stdout=logfile,
         stderr=subprocess.STDOUT,
         pass_fds=pfds,
+        start_new_session=True,
     )
     try:
-        output, none = proc.communicate(timeout=0.25)
+        output, none = proc.communicate(timeout=1.0)
     except subprocess.TimeoutExpired as e:
-        # Program began to wait for a connection
-        proc.kill()
-        output, none = proc.communicate()
+        # Program is waiting indefinitely for something.
+        # Kill it, and all children.
+        pgrp = os.getpgid(proc.pid)
+        os.killpg(pgrp, signal.SIGKILL)
         retcode = None
         timed_out = True
     else:
         retcode = proc.returncode
+
+    logfile.close()
+    output = open(log_path, "rb").read()
 
     if flags & USE_SOCKETPAIR:
         os.close(conn_socket)
@@ -131,7 +140,7 @@ def run_test(name, command, env, flags):
         raise NotImplementedError
 
 
-wait_cmd = [sleep_path, "0.5"]
+wait_cmd = [sleep_path, "10.0"]
 invalid_hostname = "@"
 fake_ssh_dir = os.path.dirname(fake_ssh_path)
 waypipe_dir = os.path.dirname(waypipe_path)
