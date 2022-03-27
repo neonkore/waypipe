@@ -636,7 +636,6 @@ static void configure_low_latency_enc_context(struct AVCodecContext *ctx,
 	ctx->max_b_frames = 0; // Q: how to get this to zero?
 	// low latency
 	ctx->delay = 0;
-	ctx->thread_count = 1;
 
 	if (sw) {
 		ctx->bit_rate = bpf * nom_fps;
@@ -1000,7 +999,6 @@ int setup_video_decode(struct shadow_fd *sfd, struct render_data *rd)
 	}
 
 	ctx->delay = 0;
-	ctx->thread_count = 1;
 	if (has_hw) {
 		/* If alignment permits, use hardware decoding */
 		has_hw = pad_hardware_size((int)sfd->dmabuf_info.width,
