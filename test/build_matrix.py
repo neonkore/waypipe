@@ -69,7 +69,7 @@ main_options = ["video", "dmabuf", "lz4", "zstd", "vaapi"]
 bool_map = {True: "enabled", False: "disabled"}
 for compiler in ["gcc", "clang"]:
     for flags in range(2 ** len(main_options)):
-        bool_options = [(2 ** i) & flags != 0 for i in range(len(main_options))]
+        bool_options = [(2**i) & flags != 0 for i in range(len(main_options))]
         name = "-".join(
             ["poly", compiler] + [m for m, b in zip(main_options, bool_options) if b]
         )
