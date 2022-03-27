@@ -109,6 +109,16 @@ def write_enum(is_header, ostream, iface_name, enum):
     print("};", file=ostream)
 
 
+def write_version(is_header, ostream, iface_name, version):
+    if not is_header:
+        return
+
+    print(
+        "#define " + iface_name.upper() + "_INTERFACE_VERSION " + str(version),
+        file=ostream,
+    )
+
+
 def is_exportable(func_name, export_list):
     for e in export_list:
         if fnmatch.fnmatchcase(func_name, e):
@@ -415,6 +425,10 @@ if __name__ == "__main__":
                 if interface.tag != "interface":
                     continue
                 iface_name = interface.attrib["name"]
+
+                write_version(
+                    is_header, ostream, iface_name, interface.attrib["version"]
+                )
 
                 func_data = []
                 for item in interface:
