@@ -84,6 +84,12 @@ void cleanup_message_tracker(struct message_tracker *mt);
 
 /** Read message size from header; the 8 bytes beyond data must exist */
 int peek_message_size(const void *data);
+/** Generate the second uint32_t field of a message header; this assumes no
+ * fds or equivalently no fd count subfield */
+static inline uint32_t message_header_2(uint32_t size_bytes, uint32_t msgno)
+{
+	return (size_bytes << 16) | msgno;
+}
 const char *get_nth_packed_string(const char *pack, int n);
 enum parse_state { PARSE_KNOWN, PARSE_UNKNOWN, PARSE_ERROR };
 /**

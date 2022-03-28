@@ -141,6 +141,35 @@ struct obj_zwp_linux_dmabuf_params {
 	int nplanes;
 };
 
+struct format_table_entry {
+	uint32_t format;
+	uint32_t padding;
+	uint64_t modifier;
+};
+
+struct dmabuf_tranche {
+	uint32_t flags;
+	uint16_t *tranche;
+	size_t tranche_size;
+};
+
+struct obj_zwp_linux_dmabuf_feedback {
+	struct wp_object base;
+
+	struct format_table_entry *table;
+	size_t table_len;
+
+	dev_t main_device;
+
+	/* the tranche being edited until tranche_done is called */
+	dev_t current_device;
+	/* the tranche being edited until tranche_done is called */
+	struct dmabuf_tranche current;
+	/* list of all tranches */
+	struct dmabuf_tranche *tranches;
+	size_t tranche_count;
+};
+
 struct obj_wlr_export_dmabuf_frame {
 	struct wp_object base;
 
@@ -261,6 +290,16 @@ void destroy_wp_object(struct wp_object *object)
 				shadow_decref_protocol(r->objects[i].buffer);
 			}
 		}
+	} else if (object->type == &intf_zwp_linux_dmabuf_feedback_v1) {
+		struct obj_zwp_linux_dmabuf_feedback *r =
+				(struct obj_zwp_linux_dmabuf_feedback *)object;
+		free(r->table);
+		if (r->tranche_count > 0) {
+			for (size_t i = 0; i < r->tranche_count; i++) {
+				free(r->tranches[i].tranche);
+			}
+			free(r->tranches);
+		}
 	}
 	free(object);
 }
@@ -285,6 +324,8 @@ struct wp_object *create_wp_object(uint32_t id, const struct wp_interface *type)
 		sz = sizeof(struct obj_zwp_linux_dmabuf_params);
 	} else if (type == &intf_zwlr_export_dmabuf_frame_v1) {
 		sz = sizeof(struct obj_wlr_export_dmabuf_frame);
+	} else if (type == &intf_zwp_linux_dmabuf_feedback_v1) {
+		sz = sizeof(struct obj_zwp_linux_dmabuf_feedback);
 	} else {
 		sz = sizeof(struct wp_object);
 	}
@@ -1157,7 +1198,7 @@ void do_wl_drm_evt_device(struct context *ctx, const char *name)
 	memcpy(ctx->message + 3, ctx->g->render.drm_node_path,
 			(size_t)path_len);
 	uint32_t meth = (ctx->message[1] << 16) >> 16;
-	ctx->message[1] = meth | ((uint32_t)message_bytes << 16);
+	ctx->message[1] = message_header_2(message_bytes, meth);
 }
 void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 		struct wp_object *id, int name, int32_t width, int32_t height,
@@ -1216,6 +1257,20 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 			ctx->drop_this_msg = true;
 		}
 	}
+}
+void do_zwp_linux_dmabuf_v1_req_get_default_feedback(
+		struct context *ctx, struct wp_object *id)
+{
+	// todo: use this to find the correct main device
+	(void)ctx;
+	(void)id;
+}
+void do_zwp_linux_dmabuf_v1_req_get_surface_feedback(struct context *ctx,
+		struct wp_object *id, struct wp_object *surface)
+{
+	(void)ctx;
+	(void)id;
+	(void)surface;
 }
 void do_zwp_linux_buffer_params_v1_evt_created(
 		struct context *ctx, struct wp_object *buffer)
@@ -1450,6 +1505,226 @@ void do_zwp_linux_buffer_params_v1_req_create_immed(struct context *ctx,
 	do_zwp_linux_buffer_params_v1_req_create(
 			ctx, width, height, format, flags);
 	do_zwp_linux_buffer_params_v1_evt_created(ctx, buffer_id);
+}
+
+void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
+{
+
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+
+	bool has_any_linear = false;
+	int worst_case_space = 2;
+	for (size_t i = 0; i < obj->tranche_count; i++) {
+		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
+			uint16_t idx = obj->tranches[i].tranche[j];
+			if (idx > obj->table_len) {
+				wp_error("Tranche format index %u out of bounds [0,%zu)",
+						idx, obj->table_len);
+				return;
+			}
+			uint64_t modifier = obj->table[idx].modifier;
+			if (modifier == 0) {
+				has_any_linear = true;
+			}
+		}
+
+		worst_case_space +=
+				2 + 3 + 3 + 3 + ((int)sizeof(dev_t) + 3) / 4 +
+				((int)obj->tranches[i].tranche_size + 1) / 2;
+	}
+
+	if (ctx->message_available_space < worst_case_space * 4) {
+		wp_error("Not enough space to introduce all tranche fields");
+		return;
+	}
+
+	/* Inject messages for filtered tranche parameters here */
+	size_t m = 0;
+	for (size_t i = 0; i < obj->tranche_count; i++) {
+		ctx->message[m] = obj->base.obj_id;
+
+		size_t w = 0;
+		uint16_t *fmts = (uint16_t *)&ctx->message[m + 3];
+		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
+			uint16_t idx = obj->tranches[i].tranche[j];
+			uint64_t modifier = obj->table[idx].modifier;
+			bool keep = modifier == 0 ||
+				    (!has_any_linear &&
+						    modifier == ((1uLL << 56) - 1));
+			if (keep) {
+				fmts[w++] = idx;
+			}
+		}
+		if (w == 0) {
+			/* discard tranche, has no entries */
+			continue;
+		}
+
+		size_t s = 3 + ((w + 1) / 2);
+		ctx->message[m + 1] =
+				message_header_2(4 * s, 5); // tranche_formats
+		ctx->message[m + 2] = 2 * w;
+		m += s;
+
+		s = 3 + ((sizeof(dev_t) + 3) / 4);
+		ctx->message[m] = obj->base.obj_id;
+		ctx->message[m + 1] = message_header_2(
+				4 * s, 4); // tranche_target_device
+		ctx->message[m + 2] = sizeof(dev_t);
+		memcpy(&ctx->message[m + 3], &obj->main_device, sizeof(dev_t));
+		m += s;
+
+		s = 3;
+		ctx->message[m] = obj->base.obj_id;
+		ctx->message[m + 1] =
+				message_header_2(4 * s, 6); // tranche_flags
+		ctx->message[m + 2] = obj->tranches[i].flags;
+		m += s;
+
+		s = 2;
+		ctx->message[m] = obj->base.obj_id;
+		ctx->message[m + 1] =
+				message_header_2(4 * s, 3); // tranche_done
+		m += s;
+	}
+
+	ctx->message[m] = obj->base.obj_id;
+	ctx->message[m + 1] = message_header_2(8, 0); // done
+	m += 2;
+
+	ctx->message_length = m * 4;
+
+	for (size_t i = 0; i < obj->tranche_count; i++) {
+		free(obj->tranches[i].tranche);
+	}
+	free(obj->tranches);
+	obj->tranches = NULL;
+	obj->tranche_count = 0;
+}
+void do_zwp_linux_dmabuf_feedback_v1_evt_format_table(
+		struct context *ctx, int fd, uint32_t size)
+{
+	size_t fdsz = 0;
+	enum fdcat fdtype = get_fd_type(fd, &fdsz);
+	if (fdtype == FDC_UNKNOWN) {
+		fdtype = FDC_FILE;
+	}
+	if (fdtype != FDC_FILE || fdsz != size) {
+		wp_error("format tabl fd %d was not file-like (type=%s), and size=%zu did not match %u",
+				fd, fdcat_to_str(fdtype), fdsz, size);
+		return;
+	}
+	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
+			FDC_FILE, size, NULL, false, false);
+	if (!sfd) {
+		return;
+	}
+	/* Mark the shadow structure as owned by the protocol, but do not
+	 * increase the protocol refcount, so that as soon as it gets
+	 * transferred it is destroyed */
+	sfd->has_owner = true;
+
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+	free(obj->table);
+	obj->table_len = sfd->buffer_size / sizeof(struct format_table_entry);
+	obj->table = calloc(obj->table_len, sizeof(struct format_table_entry));
+	if (!obj->table) {
+		wp_error("failed to allocate copy of dmabuf feedback format table");
+		return;
+	}
+	memcpy(obj->table, sfd->mem_local,
+			obj->table_len * sizeof(struct format_table_entry));
+}
+void do_zwp_linux_dmabuf_feedback_v1_evt_main_device(struct context *ctx,
+		int device_count, const uint8_t *device_val)
+{
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+	if ((size_t)device_count != sizeof(dev_t)) {
+		wp_error("Invalid dev_t size %zu, should be %zu",
+				(size_t)device_count, sizeof(dev_t));
+		return;
+	}
+	memcpy(&obj->main_device, device_val, sizeof(dev_t));
+
+	/* todo: add support for changing render devices in waypipe */
+}
+void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_done(struct context *ctx)
+{
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+	if (obj->main_device != obj->current_device) {
+		/* Filter out/ignore all tranches for anything but the main
+		 * device. */
+		return;
+	}
+
+	void *next = realloc(obj->tranches,
+			(obj->tranche_count + 1) * sizeof(*obj->tranches));
+	if (!next) {
+		wp_error("Failed to resize tranche list");
+		return;
+	}
+	obj->tranches = next;
+	obj->tranches[obj->tranche_count] = obj->current;
+	obj->tranche_count++;
+	/* it is unclear whether flags/device get in a valid use of the
+	 * protocol, but assuming they do not costs nothing. */
+	// todo: what about the tranche?
+	obj->current.tranche = NULL;
+	obj->current.tranche_size = 0;
+
+	/* discard message, will be resent later if needed */
+	ctx->drop_this_msg = true;
+}
+void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_target_device(
+		struct context *ctx, int device_count,
+		const uint8_t *device_val)
+{
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+	if ((size_t)device_count != sizeof(dev_t)) {
+		wp_error("Invalid dev_t size %zu, should be %zu",
+				(size_t)device_count, sizeof(dev_t));
+	}
+	memcpy(&obj->current_device, device_val, sizeof(dev_t));
+
+	/* discard message, will be resent later if needed */
+	ctx->drop_this_msg = true;
+}
+void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_formats(struct context *ctx,
+		int indices_count, const uint8_t *indices_val)
+{
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+
+	int num_indices = indices_count / 2;
+
+	free(obj->current.tranche);
+	obj->current.tranche_size = num_indices;
+	obj->current.tranche = calloc(num_indices, sizeof(uint16_t));
+	if (!obj->current.tranche) {
+		wp_error("failed to allocate for tranche");
+		return;
+	}
+	// todo: translation to formats+modifiers should be performed
+	// immediately, in case format table changes between tranches
+	memcpy(obj->current.tranche, indices_val,
+			num_indices * sizeof(uint16_t));
+
+	/* discard message, will be resent later if needed */
+	ctx->drop_this_msg = true;
+}
+void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_flags(
+		struct context *ctx, uint32_t flags)
+{
+	struct obj_zwp_linux_dmabuf_feedback *obj =
+			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
+	obj->current.flags = flags;
+	/* discard message, will be resent later if needed */
+	ctx->drop_this_msg = true;
 }
 
 void do_zwlr_export_dmabuf_frame_v1_evt_frame(struct context *ctx,
