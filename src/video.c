@@ -666,10 +666,6 @@ static void configure_low_latency_enc_context(struct AVCodecContext *ctx,
 		if (fmt == VIDEO_H264) {
 			/* with i965/gen8, hardware encoding is faster but has
 			 * significantly worse quality per bitrate than x264 */
-			if (av_opt_set(ctx->priv_data, "quality", "7", 0) !=
-					0) {
-				wp_error("Failed to set h264 encode quality");
-			}
 			if (av_opt_set(ctx->priv_data, "profile", "main", 0) !=
 					0) {
 				wp_error("Failed to set h264 encode main profile");
