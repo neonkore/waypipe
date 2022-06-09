@@ -872,7 +872,7 @@ static int advance_waymsg_progread(struct way_msg_state *wmsg,
 		if (rc == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
 			// do nothing
 		} else if (rc == 0 || (rc == -1 && errno == ECONNRESET)) {
-			wp_error("%s has closed", progdesc);
+			wp_debug("%s has closed", progdesc);
 			// state transitions handled in main loop
 			return ERR_STOP;
 		} else if (rc == -1) {
