@@ -79,7 +79,8 @@ compressible as images containing pictures.
 	Use *S* as the path for the Unix socket. The default socket path for
 	server mode is _/tmp/waypipe-server.sock_; for client mode, it is
 	_/tmp/waypipe-client.sock_; and in ssh mode, *S* gives the prefix used by
-	both the client and the server for their socket paths.
+	both the client and the server for their socket paths. The default prefix
+	in ssh mode is _/tmp/waypipe_.
 
 *--version*
 	Briefly describe Waypipe's version and the features it was built with,
