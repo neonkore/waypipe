@@ -221,12 +221,19 @@ Given a certificate file, socat can also provide an encrypted connection
 
 Many applications require specific environment variables to use Wayland instead
 of X11. If ssh isn't configured to support loading _~/.ssh/environment_,
-one can use _env_ to set the needed variables each time; or run waypipe without
+one can use *env* to set the needed variables each time; or run waypipe without
 a command, to use the login shell environment.
 
 ```
 	 waypipe ssh user@host env XDG_SESSION_TYPE=wayland dolphin
 ```
+
+In some cases, one may wish to set environment variables for the *waypipe
+server* instance; the above trick with *env* will not do this, because the *env*
+process will be a child of *waypipe server*, not the other way around. Instead,
+one can use _~/.ssh/environment_, or use the *--remote-bin* option to
+change the remote Waypipe instance to a shell script that sets the environment
+before running the actual *waypipe* program.
 
 Waypipe has support for reconnecting a *waypipe client* and a *waypipe server*
 instance when whatever was used to transfer data between their sockets fails.
