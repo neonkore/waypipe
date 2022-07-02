@@ -45,11 +45,6 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	(void)read_modifier;
 	return NULL;
 }
-int is_dmabuf(int fd)
-{
-	(void)fd;
-	return -1;
-}
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo)
 {
@@ -117,35 +112,6 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 #endif
 
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
-
-int is_dmabuf(int fd)
-{
-#ifdef HAS_DETECTING_DMABUF_SYNC
-	// TODO: find a more portable way to do type detection, or just attempt
-	// import instead of checking. Or try DRM_IOCTL_PRIME_FD_TO_HANDLE?
-
-	/* Prepare an invalid request, with a dma-buf specific IOCTL */
-	struct dma_buf_sync arg;
-	arg.flags = 0;
-	if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &arg) != -1) {
-		wp_error("DMAbuf test ioctl succeeded when it should have errored");
-		return -1;
-	}
-	if (errno == EINVAL) {
-		return 1;
-	} else if (errno == ENOTTY) {
-		/* mismatched type = not a dmabuf */
-		return 0;
-	} else {
-		wp_error("Unexpected error from dmabuf detection probe: %d, %s",
-				errno, strerror(errno));
-		return -1;
-	}
-#else
-	(void)fd;
-	return -1;
-#endif
-}
 
 int init_render_data(struct render_data *data)
 {

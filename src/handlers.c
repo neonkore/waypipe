@@ -1222,14 +1222,6 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 			.using_planes = {true, false, false, false},
 	};
 
-	if (is_dmabuf(name) == 0) {
-		size_t fdsz = 0;
-		enum fdcat fdtype = get_fd_type(name, &fdsz);
-		wp_error("create_prime_buffer candidate fd %d was not a dmabuf (type=%s)",
-				name, fdcat_to_str(fdtype));
-		return;
-	}
-
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render,
 			name, FDC_DMABUF, 0, &info, true, false);
 	if (!sfd) {
@@ -1463,15 +1455,6 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 				info.using_planes[k] = 1;
 				info.modifier = params->add[k].modifier;
 			}
-		}
-
-		if (is_dmabuf(params->add[i].fd) == 0) {
-			size_t fdsz = 0;
-			enum fdcat fdtype =
-					get_fd_type(params->add[i].fd, &fdsz);
-			wp_error("fd #%d for linux-dmabuf request was not a dmabuf, instead %s",
-					i, fdcat_to_str(fdtype));
-			continue;
 		}
 
 		enum fdcat res_type = FDC_DMABUF;
@@ -1801,14 +1784,6 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 			.using_planes = {false, false, false, false},
 			.modifier = frame->modifier};
 	info.using_planes[index] = true;
-
-	if (is_dmabuf(fd) == 0) {
-		size_t fdsz = 0;
-		enum fdcat fdtype = get_fd_type(fd, &fdsz);
-		wp_error("fd %d, #%d for wlr-export-dmabuf frame wasn't a dmabuf, instead %s",
-				fd, index, fdcat_to_str(fdtype));
-		return;
-	}
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
 			FDC_DMABUF, 0, &info, false, false);

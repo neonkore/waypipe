@@ -133,20 +133,39 @@ static struct bytebuf combine_transfer_blocks(struct transfer_queue *td)
 }
 
 static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
-		struct gbm_bo *copy_bo)
+		struct gbm_bo *copy_bo, enum fdcat otype, enum fdcat ctype)
 {
-	size_t csz = 0, osz = 0;
-	enum fdcat ctype = get_fd_type(copy_fd, &csz);
-	enum fdcat otype = get_fd_type(orig_fd, &osz);
-	if (ctype != otype || csz != osz) {
-		wp_error("Mirrored file descriptor has different type or size: ot=%d ct=%d | os=%d cs=%d",
-				otype, ctype, (int)osz, (int)csz);
+	if (ctype != otype) {
+		wp_error("Mirrored file descriptor has different type: ot=%d ct=%d",
+				otype, ctype);
 		return false;
 	}
 
 	void *ohandle = NULL, *chandle = NULL;
 	void *cdata = NULL, *odata = NULL;
+	bool pass;
 	if (otype == FDC_FILE) {
+		struct stat ofsdata, cfsdata;
+		memset(&ofsdata, 0, sizeof(ofsdata));
+		memset(&cfsdata, 0, sizeof(cfsdata));
+		if (fstat(orig_fd, &ofsdata) == -1) {
+			wp_error("Failed to stat original file descriptor");
+			return false;
+		}
+		if (fstat(copy_fd, &cfsdata) == -1) {
+			wp_error("Failed to stat copied file descriptor");
+			return false;
+		}
+
+		size_t csz = cfsdata.st_size;
+		size_t osz = ofsdata.st_size;
+
+		if (csz != osz) {
+			wp_error("Mirrored file descriptor has different size: os=%d cs=%d",
+					(int)osz, (int)csz);
+			return false;
+		}
+
 		cdata = mmap(NULL, csz, PROT_READ, MAP_SHARED, copy_fd, 0);
 		if (cdata == MAP_FAILED) {
 			return false;
@@ -156,6 +175,12 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 			munmap(cdata, csz);
 			return false;
 		}
+
+		pass = memcmp(cdata, odata, csz) == 0;
+
+		munmap(odata, osz);
+		munmap(cdata, csz);
+
 	} else if (otype == FDC_DMABUF) {
 		cdata = map_dmabuf(copy_bo, false, &chandle, NULL, NULL);
 		if (cdata == NULL) {
@@ -166,18 +191,14 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 			unmap_dmabuf(copy_bo, chandle);
 			return false;
 		}
-	} else {
-		return false;
-	}
 
-	bool pass = memcmp(cdata, odata, csz) == 0;
+		/* todo: check the file descriptor contents */
+		pass = true;
 
-	if (otype == FDC_FILE) {
-		munmap(odata, osz);
-		munmap(cdata, csz);
-	} else if (otype == FDC_DMABUF) {
 		unmap_dmabuf(orig_bo, ohandle);
 		unmap_dmabuf(copy_bo, chandle);
+	} else {
+		return false;
 	}
 
 	if (!pass) {
@@ -272,7 +293,8 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	struct shadow_fd *dst_shadow = get_shadow_for_rid(dst_map, rid);
 
 	return check_match(src_shadow->fd_local, dst_shadow->fd_local,
-			src_shadow->dmabuf_bo, dst_shadow->dmabuf_bo);
+			src_shadow->dmabuf_bo, dst_shadow->dmabuf_bo,
+			src_shadow->type, dst_shadow->type);
 }
 
 /* This test closes the provided file fd */
@@ -298,6 +320,9 @@ static bool test_mirror(int new_file_fd, size_t sz,
 
 	size_t fdsz = 0;
 	enum fdcat fdtype = get_fd_type(new_file_fd, &fdsz);
+	if (slice_data) {
+		fdtype = FDC_DMABUF;
+	}
 	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
 			fdtype, fdsz, slice_data, false, false);
 	struct shadow_fd *dst_shadow = NULL;
@@ -420,7 +445,7 @@ int main(int argc, char **argv)
 
 				bool pass = test_mirror(file_fd, test_size,
 						update_file, comp_modes[c], gt,
-						rt, rd, &slice_data);
+						rt, rd, NULL);
 
 				printf("  FILE comp=%d src_thread=%d dst_thread=%d, %s\n",
 						(int)c, gt, rt,
