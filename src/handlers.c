@@ -493,6 +493,8 @@ void do_wl_buffer_evt_release(struct context *ctx) { (void)ctx; }
 static int get_shm_bytes_per_pixel(uint32_t format)
 {
 	switch (format) {
+	case 0x34325241: /* DRM_FORMAT_ARGB8888 */
+	case 0x34325258: /* DRM_FORMAT_XRGB8888 */
 	case WL_SHM_FORMAT_ARGB8888:
 	case WL_SHM_FORMAT_XRGB8888:
 		return 4;
@@ -618,8 +620,6 @@ static int get_shm_bytes_per_pixel(uint32_t format)
 		return -1;
 	}
 planar:
-	wp_error("Encountered planar/subsampled wl_shm format %x; marking entire buffer",
-			format);
 	return -1;
 }
 static void compute_damage_coordinates(int *xlow, int *xhigh, int *ylow,
@@ -773,6 +773,8 @@ void do_wl_surface_req_commit(struct context *ctx)
 	sfd->is_dirty = true;
 	int bpp = get_shm_bytes_per_pixel(buf->shm_format);
 	if (bpp == -1) {
+		wp_error("Encountered unknown/planar/subsampled wl_shm format %x; marking entire buffer",
+				buf->shm_format);
 		goto backup;
 	}
 	if (surface->scale <= 0) {
@@ -1257,6 +1259,10 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 			ctx->drop_this_msg = true;
 		}
 	}
+	/* Filter out formats which are not recognized, or multiplane */
+	if (get_shm_bytes_per_pixel(format) == -1) {
+		ctx->drop_this_msg = true;
+	}
 }
 void do_zwp_linux_dmabuf_v1_req_get_default_feedback(
 		struct context *ctx, struct wp_object *id)
@@ -1549,9 +1555,15 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
 			uint16_t idx = obj->tranches[i].tranche[j];
 			uint64_t modifier = obj->table[idx].modifier;
-			bool keep = modifier == 0 ||
-				    (!has_any_linear &&
-						    modifier == ((1uLL << 56) - 1));
+
+			bool is_single_plane =
+					get_shm_bytes_per_pixel(
+							obj->table[idx].format) >
+					0;
+			bool keep = is_single_plane &&
+				    (modifier == 0 ||
+						    (!has_any_linear &&
+								    modifier == ((1uLL << 56) - 1)));
 			if (keep) {
 				fmts[w++] = idx;
 			}
