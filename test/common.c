@@ -114,7 +114,7 @@ void send_wayland_msg(struct test_state *src, const struct msg msg,
 					get_fd_type(fd_window.data[i], &fdsz);
 			sfd = translate_fd(&src->glob.map, &src->glob.render,
 					fd_window.data[i], fdtype, fdsz, NULL,
-					false, false);
+					false);
 		}
 		if (sfd) {
 			fd_window.data[i] = sfd->remote_id;

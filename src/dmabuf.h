@@ -76,7 +76,7 @@ int export_dmabuf(struct gbm_bo *bo);
 /** Import DMABUF to a GBM buffer object; if `read_modifier` is true, then
  * the `info->modifier` will be overwritten with whatever the modifier is */
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		struct dmabuf_slice_data *info, bool read_modifier);
+		const struct dmabuf_slice_data *info);
 void destroy_dmabuf(struct gbm_bo *bo);
 /** Map a DMABUF for reading or for writing */
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
@@ -88,5 +88,9 @@ int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo);
 uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
+
+#ifndef DRM_FORMAT_MOD_INVALID
+#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
+#endif
 
 #endif // WAYPIPE_DMABUF_H

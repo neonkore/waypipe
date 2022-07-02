@@ -931,7 +931,7 @@ void do_wl_keyboard_evt_keymap(
 	}
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_FILE, fdsz, NULL, false, false);
+			FDC_FILE, fdsz, NULL, false);
 	if (!sfd) {
 		wp_error("Failed to create shadow for keymap fd=%d", fd);
 		return;
@@ -972,7 +972,7 @@ void do_wl_shm_req_create_pool(
 	}
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_FILE, fdsz, NULL, false, false);
+			FDC_FILE, fdsz, NULL, false);
 	if (!sfd) {
 		return;
 	}
@@ -1213,7 +1213,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 			.num_planes = 1,
 			.width = (uint32_t)width,
 			.height = (uint32_t)height,
-			.modifier = 0,
+			.modifier = DRM_FORMAT_MOD_INVALID,
 			.format = format,
 			.offsets = {(uint32_t)offset0, (uint32_t)offset1,
 					(uint32_t)offset2, 0},
@@ -1223,7 +1223,7 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 	};
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render,
-			name, FDC_DMABUF, 0, &info, true, false);
+			name, FDC_DMABUF, 0, &info, false);
 	if (!sfd) {
 		return;
 	}
@@ -1247,7 +1247,7 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 	uint64_t modifier = modifier_hi * 0x100000000uLL + modifier_lo;
 	// Prevent all advertisements for dmabufs with modifiers
 	if (ctx->g->config->only_linear_dmabuf) {
-		if (modifier != 0 && modifier != ((1uLL << 56) - 1)) {
+		if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
 			ctx->drop_this_msg = true;
 		}
 	}
@@ -1469,7 +1469,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 
 		struct shadow_fd *sfd = translate_fd(&ctx->g->map,
 				&ctx->g->render, params->add[i].fd, res_type, 0,
-				&info, false, false);
+				&info, false);
 		if (!sfd) {
 			continue;
 		}
@@ -1546,7 +1546,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 			bool keep = is_single_plane &&
 				    (modifier == 0 ||
 						    (!has_any_linear &&
-								    modifier == ((1uLL << 56) - 1)));
+								    modifier == DRM_FORMAT_MOD_INVALID));
 			if (keep) {
 				fmts[w++] = idx;
 			}
@@ -1611,7 +1611,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_format_table(
 		return;
 	}
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_FILE, size, NULL, false, false);
+			FDC_FILE, size, NULL, false);
 	if (!sfd) {
 		return;
 	}
@@ -1786,7 +1786,7 @@ void do_zwlr_export_dmabuf_frame_v1_evt_object(struct context *ctx,
 	info.using_planes[index] = true;
 
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_DMABUF, 0, &info, false, false);
+			FDC_DMABUF, 0, &info, false);
 	if (!sfd) {
 		return;
 	}
@@ -1830,7 +1830,7 @@ static void translate_data_transfer_fd(struct context *context, int32_t fd)
 	 * around should be, according to the protocol, only written into and
 	 * closed */
 	(void)translate_fd(&context->g->map, &context->g->render, fd, FDC_PIPE,
-			0, NULL, false, true);
+			0, NULL, true);
 }
 void do_gtk_primary_selection_offer_req_receive(
 		struct context *ctx, const char *mime_type, int fd)
@@ -1897,7 +1897,7 @@ void do_zwlr_gamma_control_v1_req_set_gamma(struct context *ctx, int fd)
 		return;
 	}
 	struct shadow_fd *sfd = translate_fd(&ctx->g->map, &ctx->g->render, fd,
-			FDC_FILE, fdsz, NULL, false, false);
+			FDC_FILE, fdsz, NULL, false);
 	if (!sfd) {
 		return;
 	}

@@ -170,7 +170,7 @@ static bool test_pipe_mirror(bool close_src, bool can_read, bool can_write,
 
 	/* Step 1: replicate */
 	struct shadow_fd *src_shadow = translate_fd(&src_map, NULL, spec_end,
-			FDC_PIPE, 0, NULL, false, interpret_as_force_iw);
+			FDC_PIPE, 0, NULL, interpret_as_force_iw);
 	shadow_decref_transfer(src_shadow);
 	int rid = src_shadow->remote_id;
 	if (shadow_sync(&src_map, &dst_map) == -1) {

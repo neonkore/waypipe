@@ -324,7 +324,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 		fdtype = FDC_DMABUF;
 	}
 	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
-			fdtype, fdsz, slice_data, false, false);
+			fdtype, fdsz, slice_data, false);
 	struct shadow_fd *dst_shadow = NULL;
 	int rid = src_shadow->remote_id;
 

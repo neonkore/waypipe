@@ -36,13 +36,12 @@ int init_render_data(struct render_data *data)
 }
 void cleanup_render_data(struct render_data *data) { (void)data; }
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		struct dmabuf_slice_data *info, bool read_modifier)
+		const struct dmabuf_slice_data *info)
 {
 	(void)rd;
 	(void)fd;
 	(void)size;
 	(void)info;
-	(void)read_modifier;
 	return NULL;
 }
 int get_unique_dmabuf_handle(
@@ -103,16 +102,6 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 
 #include <gbm.h>
 
-#ifdef __linux__
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
-#include <linux/dma-buf.h>
-#define HAS_DETECTING_DMABUF_SYNC
-#endif
-#endif
-
-#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
-
 int init_render_data(struct render_data *data)
 {
 	/* render node support can be disabled either by choice
@@ -163,26 +152,6 @@ void cleanup_render_data(struct render_data *data)
 	}
 }
 
-/**
- * Estimate the mappable size of a DMABUF. This may be an overestimate,
- * and should only be used if there is no other information about the DMABUF.
- */
-static ssize_t get_dmabuf_fd_size(int fd)
-{
-	ssize_t endp = lseek(fd, 0, SEEK_END);
-	if (endp == -1) {
-		wp_error("Failed to estimate dmabuf size with lseek: %s",
-				strerror(errno));
-		return -1;
-	}
-	if (lseek(fd, 0, SEEK_SET) == -1) {
-		wp_error("Failed to reset dmabuf offset with lseek: %s",
-				strerror(errno));
-		return -1;
-	}
-	return endp;
-}
-
 static bool dmabuf_info_valid(const struct dmabuf_slice_data *info)
 {
 	if (info->height > (1u << 24) || info->width > (1u << 24) ||
@@ -196,86 +165,52 @@ static bool dmabuf_info_valid(const struct dmabuf_slice_data *info)
 }
 
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
-		struct dmabuf_slice_data *info, bool read_modifier)
+		const struct dmabuf_slice_data *info)
 {
 	struct gbm_bo *bo;
-	if (!info) {
-		/* No protocol info, so guess the dimensions */
-		ssize_t endp = get_dmabuf_fd_size(fd);
-		if (endp == -1) {
-			return NULL;
-		}
-
-		struct gbm_import_fd_data data;
-		data.fd = fd;
-		data.width = 256;
-		data.height = (uint32_t)(endp + 1023) / 1024;
-		data.format = GBM_FORMAT_XRGB8888;
-		data.stride = 1024;
-		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD, &data,
-				GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
-	} else if (read_modifier) {
-		struct gbm_import_fd_data data;
-		data.fd = fd;
-		data.width = info->width;
-		data.height = info->height;
-		data.format = info->format;
-		data.stride = info->strides[0];
-		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD, &data,
-				GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
-	} else {
-		if (!dmabuf_info_valid(info)) {
-			return NULL;
-		}
-
-		/* Multiplanar formats are all rather badly supported by
-		 * drivers/libgbm/libdrm/compositors/applications/everything. */
-		struct gbm_import_fd_modifier_data data;
-		// Select all plane metadata associated to planes linked
-		// to this fd
-		data.modifier = info->modifier;
-		data.num_fds = 0;
-		uint32_t simple_format = 0;
-		if (info->num_planes > 4) {
-			wp_error("Failed to import dmabuf: too many planes (%d)",
-					info->num_planes);
-			return NULL;
-		}
-
-		for (int i = 0; i < info->num_planes; i++) {
-			if (info->using_planes[i]) {
-				data.fds[data.num_fds] = fd;
-				data.strides[data.num_fds] =
-						(int)info->strides[i];
-				data.offsets[data.num_fds] =
-						(int)info->offsets[i];
-				data.num_fds++;
-				if (!simple_format) {
-					simple_format = dmabuf_get_simple_format_for_plane(
-							info->format, i);
-				}
-			}
-		}
-		if (!simple_format) {
-			simple_format = info->format;
-		}
-		data.width = info->width;
-		data.height = info->height;
-		data.format = simple_format;
-		bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER, &data,
-				GBM_BO_USE_RENDERING);
-	}
-	if (!bo) {
-		wp_error("Failed to import dmabuf to gbm bo: %s",
-				strerror(errno));
+	if (!dmabuf_info_valid(info)) {
 		return NULL;
 	}
-	if (read_modifier && info) {
-		info->modifier = gbm_bo_get_modifier(bo);
-		if (info->modifier == DRM_FORMAT_MOD_INVALID) {
-			/* gbm_bo_get_modifier can fail */
-			info->modifier = 0;
+
+	/* Multiplanar formats are all rather badly supported by
+	 * drivers/libgbm/libdrm/compositors/applications/everything. */
+	struct gbm_import_fd_modifier_data data;
+	// Select all plane metadata associated to planes linked
+	// to this fd
+	data.modifier = info->modifier;
+	data.num_fds = 0;
+	uint32_t simple_format = 0;
+	if (info->num_planes > 4) {
+		wp_error("Failed to import dmabuf: too many planes (%d)",
+				info->num_planes);
+		return NULL;
+	}
+
+	for (int i = 0; i < info->num_planes; i++) {
+		if (info->using_planes[i]) {
+			data.fds[data.num_fds] = fd;
+			data.strides[data.num_fds] = (int)info->strides[i];
+			data.offsets[data.num_fds] = (int)info->offsets[i];
+			data.num_fds++;
+			if (!simple_format) {
+				simple_format = dmabuf_get_simple_format_for_plane(
+						info->format, i);
+			}
 		}
+	}
+	if (!simple_format) {
+		simple_format = info->format;
+	}
+	data.width = info->width;
+	data.height = info->height;
+	data.format = simple_format;
+	bo = gbm_bo_import(rd->dev, GBM_BO_IMPORT_FD_MODIFIER, &data,
+			GBM_BO_USE_RENDERING);
+	if (!bo) {
+		wp_error("Failed to import dmabuf (format %x, modifier %" PRIx64
+			 ") to gbm bo: %s",
+				info->format, info->modifier, strerror(errno));
+		return NULL;
 	}
 
 	/* todo: find out how to correctly map multiplanar formats */

@@ -145,7 +145,7 @@ static int translate_fds(struct fd_translation_map *map,
 			size_t fdsz = 0;
 			enum fdcat fdtype = get_fd_type(fds[i], &fdsz);
 			sfd = translate_fd(map, render, fds[i], fdtype, fdsz,
-					NULL, false, false);
+					NULL, false);
 		}
 		if (sfd) {
 			ids[i] = sfd->remote_id;
