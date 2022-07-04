@@ -60,10 +60,10 @@ void do_xtype_evt_yellow(struct context *ctx, uint32_t c)
 }
 void do_ytype_req_green(struct context *ctx, uint32_t a, const char *b,
 		const char *c, int d, const char *e, struct wp_object *f,
-		int g_count, const uint8_t *g_val)
+		uint32_t g_count, const uint8_t *g_val)
 {
 	char buf[256];
-	sprintf(buf, "%u %s %s %d %s %u %d %x|%x|%x|%x|%x|%x|%x|%x", a, b, c, d,
+	sprintf(buf, "%u %s %s %d %s %u %u %x|%x|%x|%x|%x|%x|%x|%x", a, b, c, d,
 			e, f ? f->obj_id : 0, g_count, g_val[0], g_val[1],
 			g_val[2], g_val[3], g_val[4], g_val[5], g_val[6],
 			g_val[7]);
@@ -75,11 +75,11 @@ void do_ytype_req_green(struct context *ctx, uint32_t a, const char *b,
 void do_ytype_evt_red(struct context *ctx, struct wp_object *a, int32_t b,
 		int c, struct wp_object *d, int32_t e, int32_t f,
 		struct wp_object *g, int32_t h, uint32_t i, const char *j,
-		int k, int l_count, const uint8_t *l_val, uint32_t n,
+		int k, uint32_t l_count, const uint8_t *l_val, uint32_t n,
 		const char *m, struct wp_object *o, int p, struct wp_object *q)
 {
 	char buf[256];
-	sprintf(buf, "%u %d %d %u %d %d %u %d %u %s %d %d %x|%x|%x %u %s %u %d %u",
+	sprintf(buf, "%u %d %d %u %d %d %u %d %u %s %d %u %x|%x|%x %u %s %u %d %u",
 			a ? a->obj_id : 0, b, c, d ? d->obj_id : 0, e, f,
 			g ? g->obj_id : 0, h, i, j, k, l_count, l_val[0],
 			l_val[1], l_val[2], n, m, o ? o->obj_id : 0, p,

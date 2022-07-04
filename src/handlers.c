@@ -1200,7 +1200,7 @@ void do_wl_drm_evt_device(struct context *ctx, const char *name)
 	memcpy(ctx->message + 3, ctx->g->render.drm_node_path,
 			(size_t)path_len);
 	uint32_t meth = (ctx->message[1] << 16) >> 16;
-	ctx->message[1] = message_header_2(message_bytes, meth);
+	ctx->message[1] = message_header_2((uint32_t)message_bytes, meth);
 }
 void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 		struct wp_object *id, int name, int32_t width, int32_t height,
@@ -1557,30 +1557,30 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 		}
 
 		size_t s = 3 + ((w + 1) / 2);
-		ctx->message[m + 1] =
-				message_header_2(4 * s, 5); // tranche_formats
-		ctx->message[m + 2] = 2 * w;
+		ctx->message[m + 1] = message_header_2(
+				4 * (uint32_t)s, 5); // tranche_formats
+		ctx->message[m + 2] = (uint32_t)(2 * w);
 		m += s;
 
 		s = 3 + ((sizeof(dev_t) + 3) / 4);
 		ctx->message[m] = obj->base.obj_id;
 		ctx->message[m + 1] = message_header_2(
-				4 * s, 4); // tranche_target_device
+				4 * (uint32_t)s, 4); // tranche_target_device
 		ctx->message[m + 2] = sizeof(dev_t);
 		memcpy(&ctx->message[m + 3], &obj->main_device, sizeof(dev_t));
 		m += s;
 
 		s = 3;
 		ctx->message[m] = obj->base.obj_id;
-		ctx->message[m + 1] =
-				message_header_2(4 * s, 6); // tranche_flags
+		ctx->message[m + 1] = message_header_2(
+				4 * (uint32_t)s, 6); // tranche_flags
 		ctx->message[m + 2] = obj->tranches[i].flags;
 		m += s;
 
 		s = 2;
 		ctx->message[m] = obj->base.obj_id;
-		ctx->message[m + 1] =
-				message_header_2(4 * s, 3); // tranche_done
+		ctx->message[m + 1] = message_header_2(
+				4 * (uint32_t)s, 3); // tranche_done
 		m += s;
 	}
 
@@ -1588,7 +1588,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 	ctx->message[m + 1] = message_header_2(8, 0); // done
 	m += 2;
 
-	ctx->message_length = m * 4;
+	ctx->message_length = (int)(m * 4);
 
 	for (size_t i = 0; i < obj->tranche_count; i++) {
 		free(obj->tranches[i].tranche);
@@ -1633,7 +1633,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_format_table(
 			obj->table_len * sizeof(struct format_table_entry));
 }
 void do_zwp_linux_dmabuf_feedback_v1_evt_main_device(struct context *ctx,
-		int device_count, const uint8_t *device_val)
+		uint32_t device_count, const uint8_t *device_val)
 {
 	struct obj_zwp_linux_dmabuf_feedback *obj =
 			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
@@ -1675,7 +1675,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_done(struct context *ctx)
 	ctx->drop_this_msg = true;
 }
 void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_target_device(
-		struct context *ctx, int device_count,
+		struct context *ctx, uint32_t device_count,
 		const uint8_t *device_val)
 {
 	struct obj_zwp_linux_dmabuf_feedback *obj =
@@ -1690,12 +1690,12 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_target_device(
 	ctx->drop_this_msg = true;
 }
 void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_formats(struct context *ctx,
-		int indices_count, const uint8_t *indices_val)
+		uint32_t indices_count, const uint8_t *indices_val)
 {
 	struct obj_zwp_linux_dmabuf_feedback *obj =
 			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
 
-	int num_indices = indices_count / 2;
+	size_t num_indices = (size_t)indices_count / 2;
 
 	free(obj->current.tranche);
 	obj->current.tranche_size = num_indices;

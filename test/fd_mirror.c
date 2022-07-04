@@ -157,8 +157,8 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 			return false;
 		}
 
-		size_t csz = cfsdata.st_size;
-		size_t osz = ofsdata.st_size;
+		size_t csz = (size_t)cfsdata.st_size;
+		size_t osz = (size_t)ofsdata.st_size;
 
 		if (csz != osz) {
 			wp_error("Mirrored file descriptor has different size: os=%d cs=%d",

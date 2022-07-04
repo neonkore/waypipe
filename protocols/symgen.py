@@ -157,7 +157,7 @@ def write_func(is_header, ostream, func_name, func):
             continue
 
         if arg_type == "array":
-            c_sig.append("int " + arg_name + "_count")
+            c_sig.append("uint32_t " + arg_name + "_count")
             c_sig.append("const uint8_t *" + arg_name + "_val")
         else:
             c_sig.append(wltype_to_ctypes[arg_type] + arg_name)
@@ -201,7 +201,7 @@ def write_func(is_header, ostream, func_name, func):
                         i
                     )
                 )
-                W("\tint arg{}_a = (int)payload[i];".format(i))
+                W("\tuint32_t arg{}_a = payload[i];".format(i))
                 if n_reg_left > 0:
                     W("\ti += 1 + (unsigned int)((arg{}_a + 0x3) >> 2);".format(i))
 
