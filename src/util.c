@@ -259,12 +259,12 @@ void check_unclosed_fds(void)
 					wp_debug("Known issue, leaked fd %d to /var/lib/sss/mc/passwd",
 							i);
 				} else {
-					wp_error("Unexpected open fd %d: %s", i,
+					wp_debug("Unexpected open fd %d: %s", i,
 							link);
 				}
 			}
 #else
-			wp_error("Unexpected open fd %d", i);
+			wp_debug("Unexpected open fd %d", i);
 #endif
 		}
 	}
