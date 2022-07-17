@@ -148,6 +148,12 @@ int set_cloexec(int fd)
 	return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
+int open_folder(const char *name)
+{
+	/* note: on Linux, O_PATH would be appropriate here */
+	return open(name[0] ? name : ".", O_RDONLY | O_DIRECTORY);
+}
+
 int setup_nb_socket(int cwd_fd, struct socket_path path, int nmaxclients,
 		int *folder_fd_out, int *socket_fd_out)
 {
@@ -174,7 +180,7 @@ int setup_nb_socket(int cwd_fd, struct socket_path path, int nmaxclients,
 		return -1;
 	}
 
-	int folder_fd = open(path.folder, O_RDONLY | O_DIRECTORY);
+	int folder_fd = open_folder(path.folder);
 	if (folder_fd == -1) {
 		wp_error("Error opening folder in which to connect to socket: %s",
 				strerror(errno));
@@ -265,8 +271,7 @@ int connect_to_socket_at_folder(int cwd_fd, int folder_fd,
 int connect_to_socket(int cwd_fd, struct socket_path path, int *folder_fd_out,
 		int *socket_fd_out)
 {
-	/* note: on Linux, O_PATH would be appropriate here */
-	int folder_fd = open(path.folder, O_RDONLY | O_DIRECTORY);
+	int folder_fd = open_folder(path.folder);
 	if (folder_fd == -1) {
 		wp_error("Error opening folder in which to connect to socket: %s",
 				strerror(errno));
@@ -286,8 +291,13 @@ int connect_to_socket(int cwd_fd, struct socket_path path, int *folder_fd_out,
 int split_socket_path(char *src_path, struct sockaddr_un *rel_socket)
 {
 	size_t l = strlen(src_path);
+	if (l == 0) {
+		wp_error("Socket path to split is empty");
+		return -1;
+	}
 	size_t s = l;
-	while (src_path[s] != '/' && s-- > 0) {
+	while (src_path[s] != '/' && s > 0) {
+		s--;
 	}
 	if (l - s >= sizeof(rel_socket->sun_path)) {
 		wp_error("Filename part '%s' of socket path is too long: %zu bytes >= sizeof(sun_path) = %zu",
@@ -295,12 +305,13 @@ int split_socket_path(char *src_path, struct sockaddr_un *rel_socket)
 				sizeof(rel_socket->sun_path));
 		return -1;
 	}
-	if (src_path[s] == '/') {
-		src_path[s] = '\0';
-	}
+
+	size_t t = (src_path[s] == '/') ? s + 1 : 0;
 	rel_socket->sun_family = AF_UNIX;
-	memset(rel_socket->sun_path, 0, sizeof(rel_socket->sun_path));
-	memcpy(rel_socket->sun_path, src_path + s + 1, l - s - 1);
+	memset(rel_socket->sun_path, 0x3f, sizeof(rel_socket->sun_path));
+	memcpy(rel_socket->sun_path, src_path + t, l - t + 1);
+	src_path[s] = '\0';
+
 	return 0;
 }
 

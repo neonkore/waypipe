@@ -406,8 +406,7 @@ static int run_multi_server(int cwd_fd, int control_pipe,
 	token.header = conntoken_header(config, control_pipe != -1, false);
 	wp_debug("Connection token header: %08" PRIx32, token.header);
 
-	int current_folder_fd =
-			open(current_sockaddr.folder, O_RDONLY | O_DIRECTORY);
+	int current_folder_fd = open_folder(current_sockaddr.folder);
 	if (current_folder_fd == -1) {
 		wp_error("Failed to open folder '%s' for connection socket: %s",
 				current_sockaddr.folder, strerror(errno));
@@ -455,8 +454,7 @@ static int run_multi_server(int cwd_fd, int control_pipe,
 					.filename = &new_sockaddr_filename,
 					.folder = new_sockaddr_folder,
 			};
-			int new_folder_fd = open(new_sockaddr_folder,
-					O_RDONLY | O_DIRECTORY);
+			int new_folder_fd = open_folder(new_sockaddr_folder);
 			if (new_folder_fd == -1) {
 				wp_error("Failed to open folder '%s' for proposed reconnection socket: %s",
 						new_sockaddr_folder,

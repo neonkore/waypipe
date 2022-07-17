@@ -725,7 +725,7 @@ int main(int argc, char **argv)
 	 * by changing the current working directory of the process to
 	 * the desired folder, performing the operation, and then going
 	 * back. */
-	int cwd_fd = open(".", O_RDONLY | O_DIRECTORY);
+	int cwd_fd = open_folder(".");
 	if (cwd_fd == -1) {
 		wp_error("Error: cannot open current directory.\n");
 		return EXIT_FAILURE;
