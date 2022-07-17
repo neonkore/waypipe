@@ -41,11 +41,11 @@
 static ssize_t iovec_read(
 		int conn, char *buf, size_t buflen, struct int_window *fds)
 {
-	char cmsgdata[(CMSG_LEN(MAX_LIBWAY_FDS * sizeof(int32_t)))];
+	char cmsgdata[(CMSG_LEN(MAX_LIBWAY_FDS * sizeof(int32_t)))] = {0};
 	struct iovec the_iovec;
 	the_iovec.iov_len = buflen;
 	the_iovec.iov_base = buf;
-	struct msghdr msg;
+	struct msghdr msg = {0};
 	msg.msg_name = NULL;
 	msg.msg_namelen = 0;
 	msg.msg_iov = &the_iovec;
@@ -54,6 +54,9 @@ static ssize_t iovec_read(
 	msg.msg_controllen = sizeof(cmsgdata);
 	msg.msg_flags = 0;
 	ssize_t ret = recvmsg(conn, &msg, 0);
+	if (msg.msg_flags & MSG_CTRUNC) {
+		wp_error("Warning, control data was truncated in recvmsg");
+	}
 
 	// Read cmsg
 	struct cmsghdr *header = CMSG_FIRSTHDR(&msg);
