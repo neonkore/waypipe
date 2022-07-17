@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -581,6 +582,8 @@ static void setup_login_shell_command(char shell[static 256],
 	}
 }
 
+extern char **environ;
+
 int run_server(int cwd_fd, struct socket_path socket_path,
 		const char *display_suffix, const char *control_path,
 		const struct main_config *config, bool oneshot,
@@ -606,6 +609,14 @@ int run_server(int cwd_fd, struct socket_path socket_path,
 		}
 		wayland_socket = csockpair[1];
 		server_link = csockpair[0];
+
+		/* only set cloexec for `server_link`, as `wayland_socket`
+		 * is meant to be inherited */
+		if (set_cloexec(server_link) == -11) {
+			close(wayland_socket);
+			close(server_link);
+			return EXIT_FAILURE;
+		}
 	} else {
 		// Bind a socket for WAYLAND_DISPLAY, and listen
 		int nmaxclients = 128;
@@ -654,37 +665,34 @@ int run_server(int cwd_fd, struct socket_path socket_path,
 			// Error messages already made
 			return EXIT_FAILURE;
 		}
+
+		if (set_cloexec(display_folder_fd) == -1 ||
+				set_cloexec(wdisplay_socket) == -1) {
+			close(display_folder_fd);
+			close(wdisplay_socket);
+			return EXIT_FAILURE;
+		}
+	}
+
+	/* Set env variables for child process */
+	if (oneshot) {
+		char bufs2[16];
+		sprintf(bufs2, "%d", wayland_socket);
+
+		// Provide the other socket in the pair to child
+		// application
+		unsetenv("WAYLAND_DISPLAY");
+		setenv("WAYLAND_SOCKET", bufs2, 1);
+	} else {
+		// Since Wayland 1.15, absolute paths are supported in
+		// WAYLAND_DISPLAY
+		unsetenv("WAYLAND_SOCKET");
+		setenv("WAYLAND_DISPLAY", display_suffix, 1);
 	}
 
 	// Launch program.
-	pid_t pid = fork();
-	// TODO: ^ use posix_spawnp instead
-	if (pid == -1) {
-		wp_error("Fork failure: %s", strerror(errno));
-		if (!oneshot) {
-			unlink_at_folder(cwd_fd, display_folder_fd, NULL,
-					display_path.sun_path);
-			checked_close(display_folder_fd);
-		}
-		return EXIT_FAILURE;
-	} else if (pid == 0) {
-		if (oneshot) {
-			char bufs2[16];
-			sprintf(bufs2, "%d", wayland_socket);
-
-			// Provide the other socket in the pair to child
-			// application
-			unsetenv("WAYLAND_DISPLAY");
-			setenv("WAYLAND_SOCKET", bufs2, 1);
-			checked_close(server_link);
-		} else {
-			// Since Wayland 1.15, absolute paths are supported in
-			// WAYLAND_DISPLAY
-			unsetenv("WAYLAND_SOCKET");
-			setenv("WAYLAND_DISPLAY", display_suffix, 1);
-			checked_close(wdisplay_socket);
-		}
-
+	pid_t pid = -1;
+	{
 		const char *application = app_argv[0];
 		char shell[256];
 		char shellname[256];
@@ -696,11 +704,27 @@ int run_server(int cwd_fd, struct socket_path socket_path,
 			app_argv = shellcmd;
 		}
 
-		execvp(application, app_argv);
-		wp_error("Failed to execvp \'%s\': %s", application,
-				strerror(errno));
-		return EXIT_FAILURE;
+		int err = posix_spawnp(&pid, application, NULL, NULL, app_argv,
+				environ);
+		if (err) {
+			wp_error("Spawn failure for '%s': %s", application,
+					strerror(err));
+			if (!oneshot) {
+				unlink_at_folder(cwd_fd, display_folder_fd,
+						NULL, display_path.sun_path);
+				checked_close(display_folder_fd);
+				checked_close(wdisplay_socket);
+			} else {
+				checked_close(wayland_socket);
+				checked_close(server_link);
+			}
+			return EXIT_FAILURE;
+		}
 	}
+
+	/* Drop any env variables that were set for the child process */
+	unsetenv("WAYLAND_SOCKET");
+	unsetenv("WAYLAND_DISPLAY");
 	if (oneshot) {
 		// We no longer need to see this side
 		checked_close(wayland_socket);

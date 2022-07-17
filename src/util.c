@@ -145,7 +145,7 @@ int set_cloexec(int fd)
 	if (flags == -1) {
 		return -1;
 	}
-	return fcntl(fd, F_SETFD, flags | O_CLOEXEC);
+	return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
 int setup_nb_socket(int cwd_fd, struct socket_path path, int nmaxclients,
@@ -275,9 +275,6 @@ int connect_to_socket(int cwd_fd, struct socket_path path, int *folder_fd_out,
 
 	int ret = connect_to_socket_at_folder(
 			cwd_fd, folder_fd, path.filename, socket_fd_out);
-	if (fchdir(cwd_fd) == -1) {
-		wp_error("Error returning to current working directory");
-	}
 	if (folder_fd_out && ret == 0) {
 		*folder_fd_out = folder_fd;
 	} else {

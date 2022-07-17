@@ -156,6 +156,9 @@ void set_initial_fds(void);
 /** Verify that all file descriptors (except for the initial ones) are closed */
 void check_unclosed_fds(void);
 
+/** Set the file descriptor to be close-on-exec; return -1 if unsuccessful */
+int set_cloexec(int fd);
+
 /** Write the Wayland wire representation of a wl_display.error(error_code,
  * message) event into array `dest`. Return its length in bytes, or 0 if there
  * is not enough space. */

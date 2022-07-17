@@ -443,7 +443,9 @@ static const struct arg_permissions arg_permissions[] = {
 		{ARG_BENCH_TEST_SIZE, MODE_BENCH},
 };
 
+/* envp is nonstandard, so use environ */
 extern char **environ;
+
 int main(int argc, char **argv)
 {
 	bool help = false;
@@ -723,11 +725,15 @@ int main(int argc, char **argv)
 	 * by changing the current working directory of the process to
 	 * the desired folder, performing the operation, and then going
 	 * back. */
-	int cwd_fd = open(".", O_RDONLY);
+	int cwd_fd = open(".", O_RDONLY | O_DIRECTORY);
 	if (cwd_fd == -1) {
-		fprintf(stderr, "Error: cannot open current directory.\n");
+		wp_error("Error: cannot open current directory.\n");
+		return EXIT_FAILURE;
 	}
-	// fchdir()
+	if (set_cloexec(cwd_fd) == -1) {
+		wp_error("Error: cannot set cloexec on current directory fd.\n");
+		return EXIT_FAILURE;
+	}
 
 	const char *wayland_socket = getenv("WAYLAND_SOCKET");
 	if (wayland_socket != NULL) {
@@ -871,8 +877,11 @@ int main(int argc, char **argv)
 			close(cwd_fd);
 			return EXIT_FAILURE;
 		}
-		if (set_cloexec(channelsock) == -1) {
-			wp_error("Failed to make client socket cloexec");
+		if (set_cloexec(channelsock) == -1 ||
+				set_cloexec(channel_folder_fd) == -1) {
+			wp_error("Failed to make client socket or its folder cloexec");
+			close(channel_folder_fd);
+			close(channelsock);
 			close(cwd_fd);
 			return EXIT_FAILURE;
 		}
@@ -1006,6 +1015,7 @@ int main(int argc, char **argv)
 				free(arglist);
 				return EXIT_FAILURE;
 			}
+
 			free(arglist);
 		}
 
