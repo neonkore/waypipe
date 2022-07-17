@@ -52,11 +52,10 @@ int get_unique_dmabuf_handle(
 	(void)temporary_bo;
 	return -1;
 }
-struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
-		const struct dmabuf_slice_data *info)
+struct gbm_bo *make_dmabuf(
+		struct render_data *rd, const struct dmabuf_slice_data *info)
 {
 	(void)rd;
-	(void)size;
 	(void)info;
 	return NULL;
 }
