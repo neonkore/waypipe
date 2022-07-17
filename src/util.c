@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -147,10 +148,19 @@ int set_cloexec(int fd)
 	return fcntl(fd, F_SETFD, flags | O_CLOEXEC);
 }
 
-int setup_nb_socket(const struct sockaddr_un *socket_addr, int nmaxclients)
+int setup_nb_socket(int cwd_fd, struct socket_path path, int nmaxclients,
+		int *folder_fd_out, int *socket_fd_out)
 {
-	struct sockaddr_un saddr = *socket_addr;
-	saddr.sun_family = AF_UNIX;
+	if (path.filename->sun_family != AF_UNIX) {
+		wp_error("Address family should be AF_UNIX, was %d",
+				path.filename->sun_family);
+		return -1;
+	}
+	if (strchr(path.filename->sun_path, '/')) {
+		wp_error("Address '%s' should be a pure filename and not contain any forward slashes",
+				path.filename->sun_path);
+		return -1;
+	}
 
 	int sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sock == -1) {
@@ -163,41 +173,173 @@ int setup_nb_socket(const struct sockaddr_un *socket_addr, int nmaxclients)
 		checked_close(sock);
 		return -1;
 	}
-	if (bind(sock, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_error("Error binding socket at %s: %s", saddr.sun_path,
+
+	int folder_fd = open(path.folder, O_RDONLY | O_DIRECTORY);
+	if (folder_fd == -1) {
+		wp_error("Error opening folder in which to connect to socket: %s",
 				strerror(errno));
 		checked_close(sock);
+		return -1;
+	}
+	if (fchdir(folder_fd) == -1) {
+		wp_error("Error changing to folder '%s'", path.folder);
+		checked_close(sock);
+		checked_close(folder_fd);
+		return -1;
+	}
+
+	if (bind(sock, (struct sockaddr *)path.filename,
+			    sizeof(*path.filename)) == -1) {
+		wp_error("Error binding socket at %s: %s",
+				path.filename->sun_path, strerror(errno));
+		checked_close(sock);
+		checked_close(folder_fd);
+		if (fchdir(cwd_fd) == -1) {
+			wp_error("Error returning to current working directory");
+		}
 		return -1;
 	}
 	if (listen(sock, nmaxclients) == -1) {
-		wp_error("Error listening to socket at %s: %s", saddr.sun_path,
-				strerror(errno));
+		wp_error("Error listening to socket at %s: %s",
+				path.filename->sun_path, strerror(errno));
 		checked_close(sock);
-		unlink(saddr.sun_path);
+		checked_close(folder_fd);
+		unlink(path.filename->sun_path);
+
+		if (fchdir(cwd_fd) == -1) {
+			wp_error("Error returning to current working directory");
+		}
 		return -1;
 	}
-	return sock;
+
+	if (fchdir(cwd_fd) == -1) {
+		wp_error("Error returning to current working directory");
+	}
+	*folder_fd_out = folder_fd;
+	*socket_fd_out = sock;
+	return 0;
 }
 
-int connect_to_socket(const struct sockaddr_un *socket_addr)
+int connect_to_socket_at_folder(int cwd_fd, int folder_fd,
+		const struct sockaddr_un *filename, int *socket_fd)
 {
-	struct sockaddr_un saddr = *socket_addr;
-	int chanfd;
-	saddr.sun_family = AF_UNIX;
+	if (filename->sun_family != AF_UNIX) {
+		wp_error("Address family should be AF_UNIX, was %d",
+				filename->sun_family);
+		return -1;
+	}
+	if (strchr(filename->sun_path, '/')) {
+		wp_error("Address '%s' should be a pure filename and not contain any forward slashes",
+				filename->sun_path);
+		return -1;
+	}
 
-	chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	int chanfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (chanfd == -1) {
 		wp_error("Error creating socket: %s", strerror(errno));
 		return -1;
 	}
-
-	if (connect(chanfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-		wp_error("Error connecting to socket (%s): %s", saddr.sun_path,
-				strerror(errno));
+	if (fchdir(folder_fd) == -1) {
+		wp_error("Error changing to folder\n");
 		checked_close(chanfd);
 		return -1;
 	}
-	return chanfd;
+
+	if (connect(chanfd, (struct sockaddr *)filename, sizeof(*filename)) ==
+			-1) {
+		wp_error("Error connecting to socket (%s): %s",
+				filename->sun_path, strerror(errno));
+		checked_close(chanfd);
+		if (fchdir(cwd_fd) == -1) {
+			wp_error("Error returning to current working directory");
+		}
+		return -1;
+	}
+	if (fchdir(cwd_fd) == -1) {
+		wp_error("Error returning to current working directory");
+	}
+	*socket_fd = chanfd;
+	return 0;
+}
+
+int connect_to_socket(int cwd_fd, struct socket_path path, int *folder_fd_out,
+		int *socket_fd_out)
+{
+	/* note: on Linux, O_PATH would be appropriate here */
+	int folder_fd = open(path.folder, O_RDONLY | O_DIRECTORY);
+	if (folder_fd == -1) {
+		wp_error("Error opening folder in which to connect to socket: %s",
+				strerror(errno));
+		return -1;
+	}
+
+	int ret = connect_to_socket_at_folder(
+			cwd_fd, folder_fd, path.filename, socket_fd_out);
+	if (fchdir(cwd_fd) == -1) {
+		wp_error("Error returning to current working directory");
+	}
+	if (folder_fd_out && ret == 0) {
+		*folder_fd_out = folder_fd;
+	} else {
+		checked_close(folder_fd);
+	}
+	return ret;
+}
+
+int split_socket_path(char *src_path, struct sockaddr_un *rel_socket)
+{
+	size_t l = strlen(src_path);
+	size_t s = l;
+	while (src_path[s] != '/' && s-- > 0) {
+	}
+	if (l - s >= sizeof(rel_socket->sun_path)) {
+		wp_error("Filename part '%s' of socket path is too long: %zu bytes >= sizeof(sun_path) = %zu",
+				src_path + s, l - s,
+				sizeof(rel_socket->sun_path));
+		return -1;
+	}
+	if (src_path[s] == '/') {
+		src_path[s] = '\0';
+	}
+	rel_socket->sun_family = AF_UNIX;
+	memset(rel_socket->sun_path, 0, sizeof(rel_socket->sun_path));
+	memcpy(rel_socket->sun_path, src_path + s + 1, l - s - 1);
+	return 0;
+}
+
+void unlink_at_folder(int orig_dir_fd, int target_dir_fd,
+		const char *target_dir_name, const char *filename)
+{
+	if (fchdir(target_dir_fd) == -1) {
+		wp_error("Error switching folder to '%s': %s",
+				target_dir_name ? target_dir_name : "(null)",
+				strerror(errno));
+		return;
+	}
+	if (unlink(filename) == -1) {
+		wp_error("Unlinking '%s' in '%s' failed: %s", filename,
+				target_dir_name ? target_dir_name : "(null)",
+				strerror(errno));
+	}
+	if (fchdir(orig_dir_fd) == -1) {
+		wp_error("Error switching folder back to cwd: %s",
+				strerror(errno));
+	}
+}
+
+bool files_equiv(int fd_a, int fd_b)
+{
+	struct stat stat_a, stat_b;
+	if (fstat(fd_a, &stat_a) == -1) {
+		wp_error("fstat failed, %s", strerror(errno));
+		return false;
+	}
+	if (fstat(fd_b, &stat_b) == -1) {
+		wp_error("fstat failed, %s", strerror(errno));
+		return false;
+	}
+	return (stat_a.st_dev == stat_b.st_dev) &&
+	       (stat_a.st_ino == stat_b.st_ino);
 }
 
 void set_initial_fds(void)

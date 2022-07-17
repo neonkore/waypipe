@@ -98,31 +98,27 @@ static void fill_random_key(struct connection_token *token)
 	}
 }
 
-static int read_sockaddr(int control_pipe, struct sockaddr_un *sockaddr)
+static int read_path(int control_pipe, char *path, size_t path_space)
 {
 	/* It is unlikely that a signal would interrupt a read of a ~100 byte
 	 * sockaddr; and if used properly, the control pipe should never be
 	 * sent much more data than that */
-	char path[4096];
-	ssize_t amt = read(control_pipe, path, sizeof(path) - 1);
+	ssize_t amt = read(control_pipe, path, path_space - 1);
 	if (amt == -1) {
 		wp_error("Failed to read from control pipe: %s",
 				strerror(errno));
 		return -1;
-	}
-	path[amt] = '\0';
-	if (strlen(path) >= sizeof(sockaddr->sun_path)) {
-		wp_error("Socket path read from control pipe is too long (%zu bytes, expected <= %zu): %s",
-				strlen(path), sizeof(sockaddr->sun_path) - 1,
-				path);
+	} else if (amt == (ssize_t)path_space - 1) {
+		wp_error("Too much data sent to control pipe\n");
 		return -1;
 	}
-	strcpy(sockaddr->sun_path, path);
+
+	path[amt] = '\0';
 	return 0;
 }
 
-static int run_single_server_reconnector(int control_pipe, int linkfd,
-		const struct connection_token *flagged_token)
+static int run_single_server_reconnector(int cwd_fd, int control_pipe,
+		int linkfd, const struct connection_token *flagged_token)
 {
 	int retcode = EXIT_SUCCESS;
 	while (!shutdown_flag) {
@@ -150,16 +146,28 @@ static int run_single_server_reconnector(int control_pipe, int linkfd,
 			break;
 		}
 		if (pf[0].revents & POLLIN) {
-			struct sockaddr_un new_sockaddr;
-			if (read_sockaddr(control_pipe, &new_sockaddr) == -1) {
-				retcode = EXIT_FAILURE;
-				break;
+			char sockaddr_folder[512];
+			if (read_path(control_pipe, sockaddr_folder,
+					    sizeof(sockaddr_folder)) == -1) {
+				continue;
 			}
+			struct sockaddr_un sockaddr_filename = {0};
+			if (split_socket_path(sockaddr_folder,
+					    &sockaddr_filename)) {
+				continue;
+			}
+			struct socket_path sockaddr_path = {
+					.filename = &sockaddr_filename,
+					.folder = sockaddr_folder,
+			};
 
-			int new_conn = connect_to_socket(&new_sockaddr);
-			if (new_conn == -1) {
-				wp_error("Socket path \"%s\" was invalid: %s",
-						new_sockaddr.sun_path,
+			int new_conn = -1;
+			if (connect_to_socket(cwd_fd, sockaddr_path, NULL,
+					    &new_conn) == -1) {
+				wp_error("Socket path \"%s\"/\"%s\" was invalid: %s",
+						sockaddr_path.folder,
+						sockaddr_path.filename
+								->sun_path,
 						strerror(errno));
 				/* Socket path was invalid */
 				continue;
@@ -186,18 +194,21 @@ static int run_single_server_reconnector(int control_pipe, int linkfd,
 	return retcode;
 }
 
-static int run_single_server(int control_pipe,
-		const struct sockaddr_un *socket_addr, bool unlink_at_end,
+static int run_single_server(int cwd_fd, int control_pipe,
+		struct socket_path socket_path, bool unlink_at_end,
 		int server_link, const struct main_config *config)
 {
-	int chanfd = connect_to_socket(socket_addr);
-	if (chanfd == -1) {
+	int chanfd = -1, chanfolder_fd = -1;
+	if (connect_to_socket(cwd_fd, socket_path, &chanfolder_fd, &chanfd) ==
+			-1) {
 		goto fail_srv;
 	}
 	/* Only unlink the socket if it actually was a socket */
 	if (unlink_at_end) {
-		unlink(socket_addr->sun_path);
+		unlink_at_folder(cwd_fd, chanfolder_fd, socket_path.folder,
+				socket_path.filename->sun_path);
 	}
+	checked_close(chanfolder_fd);
 	bool reconnectable = control_pipe != -1;
 
 	struct connection_token token;
@@ -231,7 +242,7 @@ static int run_single_server(int control_pipe,
 
 			/* Further uses of the token will be to reconnect */
 			token.header |= CONN_UPDATE_BIT;
-			int rc = run_single_server_reconnector(
+			int rc = run_single_server_reconnector(cwd_fd,
 					control_pipe, linkfds[1], &token);
 			exit(rc);
 		}
@@ -250,8 +261,8 @@ fail_srv:
 	return EXIT_FAILURE;
 }
 
-static int handle_new_server_connection(
-		const struct sockaddr_un *current_sockaddr, int control_pipe,
+static int handle_new_server_connection(int cwd_fd,
+		struct socket_path current_sockaddr, int control_pipe,
 		int wdisplay_socket, int appfd, struct conn_map *connmap,
 		const struct main_config *config,
 		const struct connection_token *new_token)
@@ -265,8 +276,8 @@ static int handle_new_server_connection(
 		goto fail_appfd;
 	}
 
-	int chanfd = connect_to_socket(current_sockaddr);
-	if (chanfd == -1) {
+	int chanfd = -1;
+	if (connect_to_socket(cwd_fd, current_sockaddr, NULL, &chanfd) == -1) {
 		goto fail_appfd;
 	}
 	if (write(chanfd, new_token, sizeof(*new_token)) !=
@@ -333,16 +344,17 @@ fail_appfd:
 	return -1;
 }
 
-static int update_connections(struct sockaddr_un *current_sockaddr,
-		const struct sockaddr_un *new_sockaddr,
-		struct conn_map *connmap, bool unlink_at_end)
+static int update_connections(int cwd_fd, struct socket_path new_sock,
+		int new_sock_folder, struct conn_map *connmap)
 {
 	/* TODO: what happens if there's a partial failure? */
 	for (int i = 0; i < connmap->count; i++) {
-		int chanfd = connect_to_socket(new_sockaddr);
-		if (chanfd == -1) {
-			wp_error("Failed to connect to socket at \"%s\": %s",
-					new_sockaddr->sun_path,
+		int chanfd = -1;
+		if (connect_to_socket_at_folder(cwd_fd, new_sock_folder,
+				    new_sock.filename, &chanfd) == -1) {
+			wp_error("Failed to connect to socket at \"%s\"/\"%s\": %s",
+					new_sock.folder,
+					new_sock.filename->sun_path,
 					strerror(errno));
 			return -1;
 		}
@@ -353,32 +365,33 @@ static int update_connections(struct sockaddr_un *current_sockaddr,
 			wp_error("Failed to write token to replacement connection: %s",
 					strerror(errno));
 			checked_close(chanfd);
-			return -1;
+			continue;
 		}
 
-		if (send_one_fd(connmap->data[i].linkfd, chanfd) == -1) {
-			// TODO: what happens if data has changed?
-			checked_close(chanfd);
-			return -1;
-		}
+		/* ignore return value -- errors like the other process having
+		 * closed the connection do not count as this processes' problem
+		 */
+		(void)send_one_fd(connmap->data[i].linkfd, chanfd);
 		checked_close(chanfd);
 	}
-	/* If switching connections succeeded, adopt the new socket */
-	if (unlink_at_end && strcmp(current_sockaddr->sun_path,
-					     new_sockaddr->sun_path)) {
-		unlink(current_sockaddr->sun_path);
-	}
-	*current_sockaddr = *new_sockaddr;
 	return 0;
 }
 
-static int run_multi_server(int control_pipe,
-		const struct sockaddr_un *socket_addr, bool unlink_at_end,
+static int run_multi_server(int cwd_fd, int control_pipe,
+		struct socket_path socket_addr, bool unlink_at_end,
 		int wdisplay_socket, const struct main_config *config,
 		pid_t *child_pid)
 {
 	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
-	struct sockaddr_un current_sockaddr = *socket_addr;
+
+	struct sockaddr_un current_sockaddr_filename = *socket_addr.filename;
+	char current_sockaddr_folder[256] = {0};
+
+	int retcode = EXIT_SUCCESS;
+	struct socket_path current_sockaddr = socket_addr;
+
+	// TODO: grab the folder, on startup; then connectat within the folder
+	// we do not need to remember the folder name, thankfully
 
 	struct pollfd pfs[2];
 	pfs[0].fd = wdisplay_socket;
@@ -387,11 +400,20 @@ static int run_multi_server(int control_pipe,
 	pfs[1].fd = control_pipe;
 	pfs[1].events = POLLIN;
 	pfs[1].revents = 0;
-	int retcode = EXIT_SUCCESS;
 	struct connection_token token;
 	memset(&token, 0, sizeof(token));
 	token.header = conntoken_header(config, control_pipe != -1, false);
 	wp_debug("Connection token header: %08" PRIx32, token.header);
+
+	int current_folder_fd =
+			open(current_sockaddr.folder, O_RDONLY | O_DIRECTORY);
+	if (current_folder_fd == -1) {
+		wp_error("Failed to open folder '%s' for connection socket: %s",
+				current_sockaddr.folder, strerror(errno));
+		retcode = EXIT_FAILURE;
+		shutdown_flag = true;
+	}
+
 	while (!shutdown_flag) {
 		int status = -1;
 		if (wait_for_pid_and_clean(
@@ -415,14 +437,68 @@ static int run_multi_server(int control_pipe,
 			continue;
 		}
 		if (pfs[1].revents & POLLIN) {
-			struct sockaddr_un new_sockaddr;
-			if (read_sockaddr(control_pipe, &new_sockaddr) == -1) {
+			struct sockaddr_un new_sockaddr_filename = {0};
+			char new_sockaddr_folder[sizeof(
+					current_sockaddr_folder)] = {0};
 
-			} else {
-				update_connections(&current_sockaddr,
-						&new_sockaddr, &connmap,
-						unlink_at_end);
+			if (read_path(control_pipe, new_sockaddr_folder,
+					    sizeof(new_sockaddr_folder)) ==
+					-1) {
+				goto end_new_path;
 			}
+			if (split_socket_path(new_sockaddr_folder,
+					    &new_sockaddr_filename) == -1) {
+				goto end_new_path;
+			}
+			struct socket_path new_sockaddr = {
+					.filename = &new_sockaddr_filename,
+					.folder = new_sockaddr_folder,
+			};
+			int new_folder_fd = open(new_sockaddr_folder,
+					O_RDONLY | O_DIRECTORY);
+			if (new_folder_fd == -1) {
+				wp_error("Failed to open folder '%s' for proposed reconnection socket: %s",
+						new_sockaddr_folder,
+						strerror(errno));
+				goto end_new_path;
+			}
+
+			if (update_connections(cwd_fd, new_sockaddr,
+					    new_folder_fd, &connmap) == -1) {
+				/* failed to connect to the new socket */
+				goto end_new_path;
+			}
+
+			bool same_path =
+					!strcmp(current_sockaddr.filename
+									->sun_path,
+							new_sockaddr.filename
+									->sun_path) &&
+					files_equiv(current_folder_fd,
+							new_folder_fd);
+
+			/* If switching connections succeeded, adopt the new
+			 * socket. (We avoid deleting if the old socket was
+			 * replaced by a new socket at the same name in the
+			 * same folder.) */
+			if (unlink_at_end && !same_path) {
+				unlink_at_folder(cwd_fd, current_folder_fd,
+						current_sockaddr.folder,
+						current_sockaddr.filename
+								->sun_path);
+			}
+			checked_close(current_folder_fd);
+			current_folder_fd = new_folder_fd;
+			memcpy(current_sockaddr_folder, new_sockaddr_folder,
+					sizeof(current_sockaddr_folder));
+			memcpy(&current_sockaddr_filename,
+					&new_sockaddr_filename,
+					sizeof(current_sockaddr_filename));
+			current_sockaddr = (struct socket_path){
+					.filename = &current_sockaddr_filename,
+					.folder = current_sockaddr_folder,
+			};
+		end_new_path:;
 		}
 
 		if (pfs[0].revents & POLLIN) {
@@ -440,8 +516,8 @@ static int run_multi_server(int control_pipe,
 			} else {
 				wp_debug("New connection to server");
 				fill_random_key(&token);
-				if (handle_new_server_connection(
-						    &current_sockaddr,
+				if (handle_new_server_connection(cwd_fd,
+						    current_sockaddr,
 						    control_pipe,
 						    wdisplay_socket, appfd,
 						    &connmap, config,
@@ -453,13 +529,15 @@ static int run_multi_server(int control_pipe,
 		}
 	}
 	if (unlink_at_end) {
-		unlink(current_sockaddr.sun_path);
+		unlink_at_folder(cwd_fd, current_folder_fd,
+				current_sockaddr.folder,
+				current_sockaddr.filename->sun_path);
 	}
 	checked_close(wdisplay_socket);
 	if (control_pipe != -1) {
 		checked_close(control_pipe);
 	}
-
+	checked_close(current_folder_fd);
 	for (int i = 0; i < connmap.count; i++) {
 		checked_close(connmap.data[i].linkfd);
 	}
@@ -503,52 +581,20 @@ static void setup_login_shell_command(char shell[static 256],
 	}
 }
 
-int run_server(const struct sockaddr_un *socket_addr,
-		const char *wayland_display, const char *control_path,
+int run_server(int cwd_fd, struct socket_path socket_path,
+		const char *display_suffix, const char *control_path,
 		const struct main_config *config, bool oneshot,
 		bool unlink_at_end, char *const app_argv[],
 		bool login_shell_if_backup)
 {
-	wp_debug("I'm a server connecting on %s, running: %s",
-			socket_addr->sun_path, app_argv[0]);
+	wp_debug("I'm a server connecting on %s x %s, running: %s",
+			socket_path.folder, socket_path.filename->sun_path,
+			app_argv[0]);
 	wp_debug("version: %s", WAYPIPE_VERSION);
 
 	struct sockaddr_un display_path;
 	memset(&display_path, 0, sizeof(display_path));
-	if (!oneshot) {
-		if (wayland_display[0] == '/') {
-			if (strlen(wayland_display) >=
-					sizeof(display_path.sun_path)) {
-				wp_error("Absolute path '%s' specified for WAYLAND_DISPLAY is too long (%zu bytes > %zu)",
-						wayland_display,
-						strlen(wayland_display),
-						sizeof(display_path.sun_path) -
-								1);
-				return EXIT_FAILURE;
-			}
-			strcpy(display_path.sun_path, wayland_display);
-		} else {
-			const char *xdg_dir = getenv("XDG_RUNTIME_DIR");
-			if (!xdg_dir) {
-				wp_error("Env. var XDG_RUNTIME_DIR not available, cannot place display socket for WAYLAND_DISPLAY=\"%s\"",
-						wayland_display);
-				return EXIT_FAILURE;
-			}
-			if (strlen(xdg_dir) + 1 + strlen(wayland_display) >=
-					sizeof(display_path.sun_path)) {
-				wp_error("Path '%s/%s' specified for WAYLAND_DISPLAY is too long (%zu + 1 + %zu bytes > %zu)",
-						xdg_dir, wayland_display,
-						strlen(xdg_dir),
-						strlen(wayland_display),
-						sizeof(display_path.sun_path) -
-								1);
-				return EXIT_FAILURE;
-			}
-			multi_strcat(display_path.sun_path,
-					sizeof(display_path.sun_path), xdg_dir,
-					"/", wayland_display, NULL);
-		}
-	}
+	int display_folder_fd = -1;
 
 	// Setup connection to program
 	int wayland_socket = -1, server_link = -1, wdisplay_socket = -1;
@@ -563,19 +609,62 @@ int run_server(const struct sockaddr_un *socket_addr,
 	} else {
 		// Bind a socket for WAYLAND_DISPLAY, and listen
 		int nmaxclients = 128;
-		wdisplay_socket = setup_nb_socket(&display_path, nmaxclients);
-		if (wdisplay_socket == -1) {
+
+		char display_folder[512];
+		memset(&display_folder, 0, sizeof(display_folder));
+
+		if (display_suffix[0] == '/') {
+			if (strlen(display_suffix) >= sizeof(display_folder)) {
+				wp_error("Absolute path '%s' specified for WAYLAND_DISPLAY is far long (%zu bytes >= %zu)",
+						display_suffix,
+						strlen(display_suffix),
+						sizeof(display_folder));
+				return EXIT_FAILURE;
+			}
+			strcpy(display_folder, display_suffix);
+		} else {
+			const char *xdg_dir = getenv("XDG_RUNTIME_DIR");
+			if (!xdg_dir) {
+				wp_error("Env. var XDG_RUNTIME_DIR not available, cannot place display socket for WAYLAND_DISPLAY=\"%s\"",
+						display_suffix);
+				return EXIT_FAILURE;
+			}
+			if (multi_strcat(display_folder, sizeof(display_folder),
+					    xdg_dir, "/", display_suffix,
+					    NULL) == 0) {
+				wp_error("Path '%s'/'%s' specified for WAYLAND_DISPLAY is far long (%zu bytes >= %zu)",
+						xdg_dir, display_suffix,
+						strlen(xdg_dir) + 1 +
+								strlen(display_suffix),
+						sizeof(display_folder));
+				return EXIT_FAILURE;
+			}
+		}
+		if (split_socket_path(display_folder, &display_path) == -1) {
+			return EXIT_FAILURE;
+		}
+
+		struct socket_path path;
+		path.filename = &display_path;
+		path.folder = display_folder;
+
+		if (setup_nb_socket(cwd_fd, path, nmaxclients,
+				    &display_folder_fd,
+				    &wdisplay_socket) == -1) {
 			// Error messages already made
 			return EXIT_FAILURE;
 		}
 	}
 
-	// Launch program
+	// Launch program.
 	pid_t pid = fork();
+	// TODO: ^ use posix_spawnp instead
 	if (pid == -1) {
 		wp_error("Fork failure: %s", strerror(errno));
 		if (!oneshot) {
-			unlink(display_path.sun_path);
+			unlink_at_folder(cwd_fd, display_folder_fd, NULL,
+					display_path.sun_path);
+			checked_close(display_folder_fd);
 		}
 		return EXIT_FAILURE;
 	} else if (pid == 0) {
@@ -592,7 +681,7 @@ int run_server(const struct sockaddr_un *socket_addr,
 			// Since Wayland 1.15, absolute paths are supported in
 			// WAYLAND_DISPLAY
 			unsetenv("WAYLAND_SOCKET");
-			setenv("WAYLAND_DISPLAY", wayland_display, 1);
+			setenv("WAYLAND_DISPLAY", display_suffix, 1);
 			checked_close(wdisplay_socket);
 		}
 
@@ -638,17 +727,19 @@ int run_server(const struct sockaddr_un *socket_addr,
 	/* These functions will close server_link, wdisplay_socket, and
 	 * control_pipe */
 	if (oneshot) {
-		retcode = run_single_server(control_pipe, socket_addr,
+		retcode = run_single_server(cwd_fd, control_pipe, socket_path,
 				unlink_at_end, server_link, config);
 	} else {
-		retcode = run_multi_server(control_pipe, socket_addr,
+		retcode = run_multi_server(cwd_fd, control_pipe, socket_path,
 				unlink_at_end, wdisplay_socket, config, &pid);
 	}
 	if (control_pipe != -1) {
 		unlink(control_path);
 	}
 	if (!oneshot) {
-		unlink(display_path.sun_path);
+		unlink_at_folder(cwd_fd, display_folder_fd, NULL,
+				display_path.sun_path);
+		checked_close(display_folder_fd);
 	}
 
 	// Wait for child processes to exit

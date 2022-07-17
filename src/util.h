@@ -92,13 +92,60 @@ int set_cloexec(int fd);
 /* socket path lengths being overly constrained, it is perhaps best to enforce
  * this constraint as early as possible by using this type */
 struct sockaddr_un;
+struct socket_path {
+	const char *folder;
+	const struct sockaddr_un *filename;
+};
 
-/** Create a nonblocking AF_UNIX/SOCK_STREAM socket, and listen with
- * nmaxclients. Prints its own error messages; returns -1 on failure. */
-int setup_nb_socket(const struct sockaddr_un *socket_addr, int nmaxclients);
-/** Connect to the socket at the given path, returning created fd if
- * successful, else -1.*/
-int connect_to_socket(const struct sockaddr_un *socket_addr);
+/** Create a nonblocking AF_UNIX/SOCK_STREAM socket at folder/filename,
+ *  and listen with nmaxclients.
+ *
+ *  Prints its own error messages; returns -1 on failure.
+ *
+ *  If successful, sets the value of folder_fd to the folder, and socket_fd
+ *  to the created socket.
+ *
+ *  After creating the socket, will fchdir back to cwd_fd.
+ */
+int setup_nb_socket(int cwd_fd, struct socket_path socket_path, int nmaxclients,
+		int *folder_fd, int *socket_fd);
+/** Opens folder, and connects to a (relative) socket in that
+ * folder given by filename. Abstract sockets?
+ *
+ * After opening folder, will fchdir back to cwd_fd.
+ *
+ * If successful, sets the value of folder_fd to the folder, and socket_fd
+ * to the created socket. (If folder_fd is NULL, then nothing is returned
+ *there.)
+ *
+ * If successful, returns the created socket fd; otherwise returns -1.
+ **/
+int connect_to_socket(int cwd_fd, struct socket_path socket_path,
+		int *folder_fd, int *socket_fd);
+int connect_to_socket_at_folder(int cwd_fd, int folder_fd,
+		const struct sockaddr_un *socket_filename, int *socket_fd);
+/** Return true iff fd_a/fd_b correspond to the same filesystem file.
+ *  If fstat fails, files are assumed to be unequal.
+ */
+bool files_equiv(int fd_a, int fd_b);
+
+/**
+ * Reads src_path, trims off the filename part, and places the filename
+ * in rel_socket ; if the file name is too long, returns -1, otherwise
+ * returns 0. Sets the SA_FAMILY of `rel_socket` to AF_UNIX. If src_path
+ * contains no folder seperations, then src_path is truncated down to the
+ * empty string.
+ */
+int split_socket_path(char *src_path, struct sockaddr_un *rel_socket);
+
+/**
+ * Unlink `filename` in `target_dir_fd`, and then fchdir back to `orig_dir_fd`.
+ * The value of `target_dir_name` may be NULL, and is only used for error
+ * messages.
+ */
+void unlink_at_folder(int orig_dir_fd, int target_dir_fd,
+		const char *target_dir_name, const char *filename);
+
 /** Call close(fd), logging error when fd is invalid */
 #define checked_close(fd)                                                      \
 	if (close(fd) == -1) {                                                 \

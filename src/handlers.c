@@ -417,6 +417,13 @@ void do_wl_registry_evt_global(struct context *ctx, uint32_t name,
 					ZWP_LINUX_DMABUF_V1_INTERFACE_VERSION;
 		}
 	}
+	if (!strcmp(interface, "wl_shm")) {
+		/* Higher versions will very likely require new Waypipe code to
+		 * support, so limit this to what Waypipe supports */
+		if (ctx->message[2 + 1 + 1 + 2] > WL_SHM_INTERFACE_VERSION) {
+			ctx->message[2 + 1 + 1 + 2] = WL_SHM_INTERFACE_VERSION;
+		}
+	}
 
 	bool unsupported = false;
 	// requires novel fd translation, not yet supported

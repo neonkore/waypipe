@@ -60,15 +60,18 @@ struct globals {
  */
 int main_interface_loop(int chanfd, int progfd, int linkfd,
 		const struct main_config *config, bool display_side);
+
 /** Act as a Wayland server */
-int run_server(const struct sockaddr_un *socket_path, const char *display_path,
-		const char *control_path, const struct main_config *config,
-		bool oneshot, bool unlink_at_end, char *const app_argv[],
+int run_server(int cwd_fd, struct socket_path socket_path,
+		const char *display_suffix, const char *control_path,
+		const struct main_config *config, bool oneshot,
+		bool unlink_at_end, char *const app_argv[],
 		bool login_shell_if_backup);
 /** Act as a Wayland client */
-int run_client(const struct sockaddr_un *socket_path,
-		const struct main_config *config, bool oneshot,
-		const char *wayland_socket, pid_t eol_pid, int channelsock);
+int run_client(int cwd_fd, const char *sock_folder_name, int sock_folder_fd,
+		const char *sock_filename, const struct main_config *config,
+		bool oneshot, const char *wayland_socket, pid_t eol_pid,
+		int channelsock);
 /** Run benchmarking tool; n_worker_threads defined as with \ref main_config */
 int run_bench(float bandwidth_mBps, uint32_t test_size, int n_worker_threads);
 

@@ -190,7 +190,7 @@ static int get_inherited_socket(const char *wayland_socket)
 	return fd;
 }
 
-static int get_display_path(struct sockaddr_un *addr)
+static int get_display_path(char *path, size_t max_len)
 {
 	const char *display = getenv("WAYLAND_DISPLAY");
 	if (!display) {
@@ -203,25 +203,20 @@ static int get_display_path(struct sockaddr_un *addr)
 			wp_error("XDG_RUNTIME_DIR is not set, exiting");
 			return -1;
 		}
-		if (strlen(display) + 1 + strlen(xdg_runtime_dir) >=
-				sizeof(addr->sun_path)) {
-			wp_error("The Wayland socket path '%s/%s' is too long (%zu + 1 + %zu bytes >= %zu)",
-					xdg_runtime_dir, display,
-					strlen(xdg_runtime_dir),
-					strlen(display),
-					sizeof(addr->sun_path) - 1);
-			return -1;
-		}
 
-		multi_strcat(addr->sun_path, sizeof(addr->sun_path),
-				xdg_runtime_dir, "/", display, NULL);
-	} else {
-		if (strlen(display) >= sizeof(addr->sun_path)) {
-			wp_error("WAYLAND_DISPLAY='%s' is longer than %zu bytes (max socket path length), exiting",
-					display, sizeof(addr->sun_path) - 1);
+		if (multi_strcat(path, max_len, xdg_runtime_dir, "/", display,
+				    NULL) == 0) {
+			wp_error("full WAYLAND_DISPLAY path '%s' is longer than %z bytes, exiting",
+					display, max_len);
 			return -1;
 		}
-		strcpy(addr->sun_path, display);
+	} else {
+		if (strlen(display) + 1 >= max_len) {
+			wp_error("WAYLAND_DISPLAY='%s' is longer than %zu bytes, exiting",
+					display, max_len);
+			return -1;
+		}
+		strcpy(path, display);
 	}
 	return 0;
 }
@@ -447,10 +442,10 @@ void send_new_connection_fd(
 	}
 }
 
-static void handle_new_client_connection(struct pollfd *other_fds,
+static void handle_new_client_connection(int cwd_fd, struct pollfd *other_fds,
 		int n_other_fds, int chanclient, struct conn_map *connmap,
 		const struct main_config *config,
-		const struct sockaddr_un *disp_addr,
+		const struct socket_path disp_path,
 		const struct connection_token *conn_id)
 {
 	bool reconnectable = conn_id->header & CONN_RECONNECTABLE_BIT;
@@ -486,15 +481,17 @@ static void handle_new_client_connection(struct pollfd *other_fds,
 			checked_close(connmap->data[i].linkfd);
 		}
 
-		int dfd = connect_to_socket(disp_addr);
-		if (dfd == -1) {
+		int display_fd = -1;
+		if (connect_to_socket(cwd_fd, disp_path, NULL, &display_fd) ==
+				-1) {
 			exit(EXIT_FAILURE);
 		}
+		checked_close(cwd_fd);
 
 		struct main_config mod_config = *config;
 		apply_conn_header(conn_id->header, &mod_config);
-		int rc = main_interface_loop(
-				chanclient, dfd, linkfds[1], &mod_config, true);
+		int rc = main_interface_loop(chanclient, display_fd, linkfds[1],
+				&mod_config, true);
 		check_unclosed_fds();
 		exit(rc);
 	} else if (npid == -1) {
@@ -539,9 +536,9 @@ static void drop_incoming_connection(struct pollfd *fds,
 	bytes_read[incomplete - 1] = 0;
 }
 
-static int run_multi_client(int channelsock, pid_t *eol_pid,
+static int run_multi_client(int cwd_fd, int channelsock, pid_t *eol_pid,
 		const struct main_config *config,
-		const struct sockaddr_un *disp_addr)
+		const struct socket_path disp_path)
 {
 	struct conn_map connmap = {.data = NULL, .count = 0, .size = 0};
 
@@ -640,9 +637,9 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 			/* Failures here are logged, but should not
 			 * affect this process' ability to e.g. handle
 			 * reconnections. */
-			handle_new_client_connection(fds, 1 + incomplete,
-					cur_fd, &connmap, config, disp_addr,
-					&tokens[i]);
+			handle_new_client_connection(cwd_fd, fds,
+					1 + incomplete, cur_fd, &connmap,
+					config, disp_path, &tokens[i]);
 			drop_incoming_connection(fds + 1, tokens, bytes_read, i,
 					incomplete);
 			incomplete--;
@@ -700,58 +697,55 @@ static int run_multi_client(int channelsock, pid_t *eol_pid,
 	return retcode;
 }
 
-int run_client(const struct sockaddr_un *socket_addr,
-		const struct main_config *config, bool oneshot,
-		const char *wayland_socket, pid_t eol_pid, int channelsock)
+int run_client(int cwd_fd, const char *sock_folder_name, int sock_folder_fd,
+		const char *sock_filename, const struct main_config *config,
+		bool oneshot, const char *wayland_socket, pid_t eol_pid,
+		int channelsock)
 {
-	wp_debug("I'm a client listening on %s", socket_addr->sun_path);
+	wp_debug("I'm a client listening on '%s' / '%s'", sock_folder_name,
+			sock_filename);
 	wp_debug("version: %s", WAYPIPE_VERSION);
 
 	/* Connect to Wayland display. We don't use the wayland-client
 	 * function here, because its errors aren't immediately useful,
 	 * and older Wayland versions have edge cases */
 	int dispfd = -1;
-	struct sockaddr_un disp_addr;
-	memset(&disp_addr, 0, sizeof(disp_addr));
+	struct sockaddr_un display_filename = {0};
+	char display_folder[256] = {0};
 
 	if (wayland_socket) {
 		dispfd = get_inherited_socket(wayland_socket);
 		if (dispfd == -1) {
-			if (eol_pid) {
-				waitpid(eol_pid, NULL, 0);
-			}
-			close(channelsock);
-			unlink(socket_addr->sun_path);
-			return EXIT_FAILURE;
+			goto fail;
 		}
 		/* This socket is inherited and meant to be closed by Waypipe */
 		if (dispfd >= 0 && dispfd < 256) {
 			inherited_fds[dispfd / 64] &= ~(1uLL << (dispfd % 64));
 		}
 	} else {
-		if (get_display_path(&disp_addr) == -1) {
-			if (eol_pid) {
-				waitpid(eol_pid, NULL, 0);
-			}
-			close(channelsock);
-			unlink(socket_addr->sun_path);
-			return EXIT_FAILURE;
+		if (get_display_path(display_folder, sizeof(display_folder)) ==
+				-1) {
+			goto fail;
+		}
+		if (split_socket_path(display_folder, &display_filename) ==
+				-1) {
+			goto fail;
 		}
 	}
 
+	struct socket_path display_path = {
+			.folder = display_folder,
+			.filename = &display_filename,
+	};
 	if (oneshot) {
 		if (!wayland_socket) {
-			dispfd = connect_to_socket(&disp_addr);
+			connect_to_socket(cwd_fd, display_path, NULL, &dispfd);
 		}
 	} else {
-		int test_conn = connect_to_socket(&disp_addr);
-		if (test_conn == -1) {
-			if (eol_pid) {
-				waitpid(eol_pid, NULL, 0);
-			}
-			close(channelsock);
-			unlink(socket_addr->sun_path);
-			return EXIT_FAILURE;
+		int test_conn = -1;
+		if (connect_to_socket(cwd_fd, display_path, NULL, &test_conn) ==
+				-1) {
+			goto fail;
 		}
 		checked_close(test_conn);
 	}
@@ -763,10 +757,11 @@ int run_client(const struct sockaddr_un *socket_addr,
 		retcode = run_single_client(
 				channelsock, &eol_pid, config, dispfd);
 	} else {
-		retcode = run_multi_client(
-				channelsock, &eol_pid, config, &disp_addr);
+		retcode = run_multi_client(cwd_fd, channelsock, &eol_pid,
+				config, display_path);
 	}
-	unlink(socket_addr->sun_path);
+	unlink_at_folder(cwd_fd, sock_folder_fd, sock_folder_name,
+			sock_filename);
 	int cleanup_type = shutdown_flag ? WNOHANG : 0;
 
 	int status = -1;
@@ -775,4 +770,13 @@ int run_client(const struct sockaddr_un *socket_addr,
 		retcode = WEXITSTATUS(status);
 	}
 	return retcode;
+
+fail:
+	close(channelsock);
+	if (eol_pid) {
+		waitpid(eol_pid, NULL, 0);
+	}
+	unlink_at_folder(cwd_fd, sock_folder_fd, sock_folder_name,
+			sock_filename);
+	return EXIT_FAILURE;
 }

@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -458,7 +459,7 @@ int main(int argc, char **argv)
 	char *wayland_display = NULL;
 	char *waypipe_binary = "waypipe";
 	char *control_path = NULL;
-	const char *socketpath = NULL;
+	char *socketpath = NULL;
 	uint32_t bench_test_size = (1u << 22) + 13;
 
 	struct main_config config = {.n_worker_threads = 0,
@@ -715,6 +716,19 @@ int main(int argc, char **argv)
 
 	set_initial_fds();
 
+	/* Waypipe connects/binds/unlinks sockets using relative paths,
+	 * to work around a) bad Unix socket API which limits path lengths
+	 * b) race conditions when directories are moved and renamed.
+	 * Unfortunately, for lack of connectat/bindat, this is done
+	 * by changing the current working directory of the process to
+	 * the desired folder, performing the operation, and then going
+	 * back. */
+	int cwd_fd = open(".", O_RDONLY);
+	if (cwd_fd == -1) {
+		fprintf(stderr, "Error: cannot open current directory.\n");
+	}
+	// fchdir()
+
 	const char *wayland_socket = getenv("WAYLAND_SOCKET");
 	if (wayland_socket != NULL) {
 		oneshot = true;
@@ -735,24 +749,33 @@ int main(int argc, char **argv)
 	} else if (mode == MODE_CLIENT) {
 		struct sockaddr_un sockaddr;
 		memset(&sockaddr, 0, sizeof(sockaddr));
-		if (socketpath && strlen(socketpath) >=
-						  sizeof(sockaddr.sun_path)) {
-			wp_error("Socket path '%s' is too long (%zu bytes > %zu)",
-					socketpath, strlen(socketpath),
-					sizeof(sockaddr.sun_path) - 1);
+		if (socketpath && split_socket_path(socketpath, &sockaddr) ==
+						  -1) {
 			ret = EXIT_FAILURE;
 		} else {
-			strcpy(sockaddr.sun_path,
-					socketpath ? socketpath
-						   : "/tmp/waypipe-client.sock");
+			struct socket_path client_sock_path;
+			client_sock_path.folder =
+					socketpath ? socketpath : "/tmp/";
+			client_sock_path.filename = &sockaddr;
+			if (!socketpath) {
+				sockaddr.sun_family = AF_UNIX;
+				strcpy(sockaddr.sun_path,
+						"waypipe-client.sock");
+			}
+
 			int nmaxclients = oneshot ? 1 : 128;
-			int channelsock =
-					setup_nb_socket(&sockaddr, nmaxclients);
-			if (channelsock == -1) {
+			int client_folder_fd = -1, channelsock = -1;
+			if (setup_nb_socket(cwd_fd, client_sock_path,
+					    nmaxclients, &client_folder_fd,
+					    &channelsock) == -1) {
 				return EXIT_FAILURE;
 			}
-			ret = run_client(&sockaddr, &config, oneshot,
-					wayland_socket, 0, channelsock);
+			ret = run_client(cwd_fd, client_sock_path.folder,
+					client_folder_fd,
+					client_sock_path.filename->sun_path,
+					&config, oneshot, wayland_socket, 0,
+					channelsock);
+			checked_close(client_folder_fd);
 		}
 	} else if (mode == MODE_SERVER) {
 		char *const *app_argv = (char *const *)argv;
@@ -768,31 +791,53 @@ int main(int argc, char **argv)
 
 		struct sockaddr_un sockaddr;
 		memset(&sockaddr, 0, sizeof(sockaddr));
-		if (socketpath && strlen(socketpath) >=
-						  sizeof(sockaddr.sun_path)) {
-			wp_error("Socket path '%s' is too long (%zu bytes > %zu)",
-					socketpath, strlen(socketpath),
-					sizeof(sockaddr.sun_path) - 1);
+		if (socketpath && split_socket_path(socketpath, &sockaddr) ==
+						  -1) {
 			ret = EXIT_FAILURE;
 		} else {
-			strcpy(sockaddr.sun_path,
-					socketpath ? socketpath
-						   : "/tmp/waypipe-server.sock");
+			struct socket_path server_sock_path;
+			server_sock_path.folder =
+					socketpath ? socketpath : "/tmp/";
+			server_sock_path.filename = &sockaddr;
+			if (!socketpath) {
+				sockaddr.sun_family = AF_UNIX;
+				strcpy(sockaddr.sun_path,
+						"waypipe-server.sock");
+			}
 
-			ret = run_server(&sockaddr, wayland_display,
-					control_path, &config, oneshot,
-					unlink_at_end, app_argv, login_shell);
+			ret = run_server(cwd_fd, server_sock_path,
+					wayland_display, control_path, &config,
+					oneshot, unlink_at_end, app_argv,
+					login_shell);
 		}
 	} else {
-		if (!socketpath) {
+		struct sockaddr_un clientsock = {0};
+		char socket_folder[512] = {0};
+		if (socketpath) {
+			if (strlen(socketpath) >= sizeof(socket_folder)) {
+				wp_error("Socket path prefix is too long\n");
+				close(cwd_fd);
+				return EXIT_FAILURE;
+			}
+			strcpy(socket_folder, socketpath);
+			if (split_socket_path(socket_folder, &clientsock) ==
+					-1) {
+				close(cwd_fd);
+				return EXIT_FAILURE;
+			}
+		} else {
+			clientsock.sun_family = AF_UNIX;
+			strcpy(clientsock.sun_path, "waypipe");
+			strcpy(socket_folder, "/tmp/");
 			socketpath = "/tmp/waypipe";
 		}
-		const size_t spsz =
-				sizeof(((struct sockaddr_un *)NULL)->sun_path);
-		if (strlen(socketpath) + 22 >= spsz) {
-			wp_error("Socket path prefix '%s' is too long (more than %zu bytes).\n",
-					socketpath, spsz - 23);
-			return EXIT_FAILURE;
+		if (strlen(clientsock.sun_path) +
+						sizeof("-server-88888888.sock") >=
+				sizeof(clientsock.sun_path)) {
+			wp_error("Socket path prefix filename '%s' is too long (more than %zu bytes).\n",
+					socketpath,
+					sizeof(clientsock.sun_path) -
+							sizeof("-server-88888888.sock"));
 		}
 
 		bool allocates_pty = false;
@@ -800,6 +845,7 @@ int main(int argc, char **argv)
 				argc, argv, &allocates_pty);
 		if (dstidx < 0) {
 			fprintf(stderr, "waypipe: Failed to locate destination in ssh command string\n");
+			close(cwd_fd);
 			return EXIT_FAILURE;
 		}
 		/* If there are no arguments following the destination */
@@ -811,147 +857,165 @@ int main(int argc, char **argv)
 		char rbytes[9];
 		fill_rand_token(rbytes);
 		rbytes[8] = 0;
-
-		struct sockaddr_un clientsock;
-		memset(&clientsock, 0, sizeof(clientsock));
-		sprintf(clientsock.sun_path, "%s-client-%s.sock", socketpath,
-				rbytes);
+		sprintf(clientsock.sun_path + strlen(clientsock.sun_path),
+				"-client-%s.sock", rbytes);
+		struct socket_path client_sock_path = {
+				.filename = &clientsock,
+				.folder = socket_folder,
+		};
 
 		int nmaxclients = oneshot ? 1 : 128;
-		int channelsock = setup_nb_socket(&clientsock, nmaxclients);
-		if (channelsock == -1) {
+		int channel_folder_fd = -1, channelsock = -1;
+		if (setup_nb_socket(cwd_fd, client_sock_path, nmaxclients,
+				    &channel_folder_fd, &channelsock) == -1) {
+			close(cwd_fd);
 			return EXIT_FAILURE;
 		}
 		if (set_cloexec(channelsock) == -1) {
 			wp_error("Failed to make client socket cloexec");
+			close(cwd_fd);
 			return EXIT_FAILURE;
 		}
-
-		char linkage[256];
-		char serversock[128];
-		char video_str[140];
-		char remote_display[20];
-		sprintf(serversock, "%s-server-%s.sock", socketpath, rbytes);
-		sprintf(linkage, "%s-server-%s.sock:%s-client-%s.sock",
-				socketpath, rbytes, socketpath, rbytes);
-		sprintf(remote_display, "wayland-%s", rbytes);
-		if (!wayland_display) {
-			wayland_display = remote_display;
-		}
-
-		int nextra = 14 + debug + oneshot +
-			     2 * (remote_drm_node != NULL) +
-			     2 * (control_path != NULL) +
-			     config.video_if_possible +
-			     !config.only_linear_dmabuf +
-			     2 * needs_login_shell +
-			     2 * (config.n_worker_threads != 0);
-		char **arglist =
-				calloc((size_t)(argc + nextra), sizeof(char *));
-
-		int offset = 0;
-		arglist[offset++] = "ssh";
-		if (needs_login_shell) {
-			/* Force tty allocation, if we are attempting a login
-			 * shell. The user-override is a -T flag, and a second
-			 * -t will ensure a login  shell even if `waypipe ssh`
-			 * was not run from a pty. Unfortunately, -t disables
-			 * newline translation on the local side; see
-			 * `log_handler`. */
-			arglist[offset++] = "-t";
-		}
-		arglist[offset++] = "-R";
-		arglist[offset++] = linkage;
-		for (int i = 0; i <= dstidx; i++) {
-			arglist[offset + i] = argv[i];
-		}
-		arglist[dstidx + 1 + offset++] = waypipe_binary;
-		if (debug) {
-			arglist[dstidx + 1 + offset++] = "-d";
-		}
-		if (oneshot) {
-			arglist[dstidx + 1 + offset++] = "-o";
-		}
-
-		/* Always send the compression flag, because the default
-		 * was changed from NONE to LZ4. */
-		arglist[dstidx + 1 + offset++] = "-c";
-		if (!comp_string) {
-			switch (config.compression) {
-			case COMP_LZ4:
-				comp_string = "lz4";
-				break;
-			case COMP_ZSTD:
-				comp_string = "zstd";
-				break;
-			default:
-				comp_string = "none";
-				break;
-			}
-		}
-		arglist[dstidx + 1 + offset++] = comp_string;
-
-		if (needs_login_shell) {
-			arglist[dstidx + 1 + offset++] = "--login-shell";
-		}
-		if (config.video_if_possible) {
-			if (!config.old_video_mode) {
-				sprintf(video_str, "--video=%s,%s,bpf=%d",
-						config.video_fmt == VIDEO_H264
-								? "h264"
-								: "vp9",
-						config.prefer_hwvideo ? "hw"
-								      : "sw",
-						config.video_bpf);
-				arglist[dstidx + 1 + offset++] = video_str;
-			} else {
-				arglist[dstidx + 1 + offset++] =
-						config.prefer_hwvideo
-								? "--hwvideo"
-								: "--video";
-			}
-		}
-		if (!config.only_linear_dmabuf) {
-			arglist[dstidx + 1 + offset++] = "--allow-tiled";
-		}
-		if (remote_drm_node) {
-			arglist[dstidx + 1 + offset++] = "--drm-node";
-			arglist[dstidx + 1 + offset++] = remote_drm_node;
-		}
-		if (config.n_worker_threads != 0) {
-			arglist[dstidx + 1 + offset++] = "--threads";
-			arglist[dstidx + 1 + offset++] = nthread_string;
-		}
-		if (control_path) {
-			arglist[dstidx + 1 + offset++] = "--control";
-			arglist[dstidx + 1 + offset++] = control_path;
-		}
-		arglist[dstidx + 1 + offset++] = "--unlink-socket";
-		arglist[dstidx + 1 + offset++] = "-s";
-		arglist[dstidx + 1 + offset++] = serversock;
-		arglist[dstidx + 1 + offset++] = "--display";
-		arglist[dstidx + 1 + offset++] = wayland_display;
-		arglist[dstidx + 1 + offset++] = "server";
-		for (int i = dstidx + 1; i < argc; i++) {
-			arglist[offset + i] = argv[i];
-		}
-		arglist[argc + offset] = NULL;
 
 		pid_t conn_pid;
-		int err = posix_spawnp(&conn_pid, arglist[0], NULL, NULL,
-				arglist, environ);
-		if (err) {
-			wp_error("Failed to spawn ssh process: %s",
-					strerror(err));
-			close(channelsock);
-			free(arglist);
-			return EXIT_FAILURE;
-		}
-		free(arglist);
+		{
+			char linkage[512];
+			char serversock[256];
+			char video_str[140];
+			char remote_display[20];
+			sprintf(serversock, "%s-server-%s.sock", socketpath,
+					rbytes);
+			sprintf(linkage, "%s-server-%s.sock:%s-client-%s.sock",
+					socketpath, rbytes, socketpath, rbytes);
+			sprintf(remote_display, "wayland-%s", rbytes);
+			if (!wayland_display) {
+				wayland_display = remote_display;
+			}
 
-		ret = run_client(&clientsock, &config, oneshot, wayland_socket,
-				conn_pid, channelsock);
+			int nextra = 14 + debug + oneshot +
+				     2 * (remote_drm_node != NULL) +
+				     2 * (control_path != NULL) +
+				     config.video_if_possible +
+				     !config.only_linear_dmabuf +
+				     2 * needs_login_shell +
+				     2 * (config.n_worker_threads != 0);
+			char **arglist = calloc((size_t)(argc + nextra),
+					sizeof(char *));
+
+			int offset = 0;
+			arglist[offset++] = "ssh";
+			if (needs_login_shell) {
+				/* Force tty allocation, if we are attempting a
+				 * login shell. The user-override is a -T flag,
+				 * and a second -t will ensure a login  shell
+				 * even if `waypipe ssh` was not run from a pty.
+				 * Unfortunately, -t disables newline
+				 * translation on the local side; see
+				 * `log_handler`. */
+				arglist[offset++] = "-t";
+			}
+			arglist[offset++] = "-R";
+			arglist[offset++] = linkage;
+			for (int i = 0; i <= dstidx; i++) {
+				arglist[offset + i] = argv[i];
+			}
+			arglist[dstidx + 1 + offset++] = waypipe_binary;
+			if (debug) {
+				arglist[dstidx + 1 + offset++] = "-d";
+			}
+			if (oneshot) {
+				arglist[dstidx + 1 + offset++] = "-o";
+			}
+
+			/* Always send the compression flag, because the default
+			 * was changed from NONE to LZ4. */
+			arglist[dstidx + 1 + offset++] = "-c";
+			if (!comp_string) {
+				switch (config.compression) {
+				case COMP_LZ4:
+					comp_string = "lz4";
+					break;
+				case COMP_ZSTD:
+					comp_string = "zstd";
+					break;
+				default:
+					comp_string = "none";
+					break;
+				}
+			}
+			arglist[dstidx + 1 + offset++] = comp_string;
+
+			if (needs_login_shell) {
+				arglist[dstidx + 1 + offset++] =
+						"--login-shell";
+			}
+			if (config.video_if_possible) {
+				if (!config.old_video_mode) {
+					sprintf(video_str,
+							"--video=%s,%s,bpf=%d",
+							config.video_fmt == VIDEO_H264
+									? "h264"
+									: "vp9",
+							config.prefer_hwvideo
+									? "hw"
+									: "sw",
+							config.video_bpf);
+					arglist[dstidx + 1 + offset++] =
+							video_str;
+				} else {
+					arglist[dstidx + 1 + offset++] =
+							config.prefer_hwvideo
+									? "--hwvideo"
+									: "--video";
+				}
+			}
+			if (!config.only_linear_dmabuf) {
+				arglist[dstidx + 1 + offset++] =
+						"--allow-tiled";
+			}
+			if (remote_drm_node) {
+				arglist[dstidx + 1 + offset++] = "--drm-node";
+				arglist[dstidx + 1 + offset++] =
+						remote_drm_node;
+			}
+			if (config.n_worker_threads != 0) {
+				arglist[dstidx + 1 + offset++] = "--threads";
+				arglist[dstidx + 1 + offset++] = nthread_string;
+			}
+			if (control_path) {
+				arglist[dstidx + 1 + offset++] = "--control";
+				arglist[dstidx + 1 + offset++] = control_path;
+			}
+			arglist[dstidx + 1 + offset++] = "--unlink-socket";
+			arglist[dstidx + 1 + offset++] = "-s";
+			arglist[dstidx + 1 + offset++] = serversock;
+			arglist[dstidx + 1 + offset++] = "--display";
+			arglist[dstidx + 1 + offset++] = wayland_display;
+			arglist[dstidx + 1 + offset++] = "server";
+			for (int i = dstidx + 1; i < argc; i++) {
+				arglist[offset + i] = argv[i];
+			}
+			arglist[argc + offset] = NULL;
+
+			int err = posix_spawnp(&conn_pid, arglist[0], NULL,
+					NULL, arglist, environ);
+			if (err) {
+				wp_error("Failed to spawn ssh process: %s",
+						strerror(err));
+				close(channelsock);
+				free(arglist);
+				return EXIT_FAILURE;
+			}
+			free(arglist);
+		}
+
+		ret = run_client(cwd_fd, client_sock_path.folder,
+				channel_folder_fd,
+				client_sock_path.filename->sun_path, &config,
+				oneshot, wayland_socket, conn_pid, channelsock);
+		checked_close(channel_folder_fd);
 	}
+	checked_close(cwd_fd);
 	check_unclosed_fds();
 	return ret;
 }
