@@ -17,6 +17,20 @@ def try_unlink(path):
         pass
 
 
+def make_socket(path):
+    folder, filename = os.path.split(path)
+    cwdir = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
+
+    display_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    os.chdir(folder)
+    display_socket.bind(filename)
+    display_socket.listen()
+    os.fchdir(cwdir)
+    os.close(cwdir)
+
+    return display_socket
+
+
 waypipe_path = os.environ["TEST_WAYPIPE_PATH"]
 sleep_path = os.environ["TEST_SLEEP_PATH"]
 fake_ssh_path = os.environ["TEST_FAKE_SSH_PATH"]
@@ -30,17 +44,14 @@ os.chmod(xdg_runtime_dir, 0o700)
 
 all_succeeding = True
 
-# These must be kept short to fall within path length limits on CI
-wayland_display_short = "s_disp"
-client_socket_path = xdg_runtime_dir + "/s_cli"
-server_socket_path = xdg_runtime_dir + "/s_srv"
-ssh_socket_path = xdg_runtime_dir + "/S"
-wayland_display_path = xdg_runtime_dir + "/" + wayland_display_short
+wayland_display = "wayland-display"
+client_socket_path = xdg_runtime_dir + "/client-socket"
+server_socket_path = xdg_runtime_dir + "/server-socket"
+ssh_socket_path = xdg_runtime_dir + "/ssh-socket"
+wayland_display_path = xdg_runtime_dir + "/" + wayland_display
 
 try_unlink(wayland_display_path)
-display_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-display_socket.bind(wayland_display_path)
-display_socket.listen()
+display_socket = make_socket(wayland_display_path)
 
 USE_SOCKETPAIR = 1 << 1
 EXPECT_SUCCESS = 1 << 2
@@ -195,7 +206,7 @@ run_test(
 run_test(
     "b_client_nxdg_offset",
     [waypipe_path, "-s", client_socket_path, "client"],
-    dict(base_env, WAYLAND_DISPLAY=wayland_display_short),
+    dict(base_env, WAYLAND_DISPLAY=wayland_display),
     EXPECT_FAILURE,
 )
 run_test(
@@ -207,7 +218,7 @@ run_test(
 run_test(
     "g_ssh_test_nossh_env",
     [waypipe_path, "-o", "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
-    dict(standard_env, WAYLAND_DISPLAY=wayland_display_short),
+    dict(standard_env, WAYLAND_DISPLAY=wayland_display),
     EXPECT_FAILURE,
 )
 
@@ -234,7 +245,7 @@ run_test(
 run_test(
     "g_client_offset_sock",
     [waypipe_path, "-s", client_socket_path, "client"],
-    dict(standard_env, WAYLAND_DISPLAY=wayland_display_short),
+    dict(standard_env, WAYLAND_DISPLAY=wayland_display),
     EXPECT_TIMEOUT,
 )
 run_test(
@@ -246,13 +257,13 @@ run_test(
 run_test(
     "g_ssh_test_oneshot",
     [waypipe_path, "-o", "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
-    dict(ssh_env, WAYLAND_DISPLAY=wayland_display_short),
+    dict(ssh_env, WAYLAND_DISPLAY=wayland_display),
     EXPECT_TIMEOUT,
 )
 run_test(
     "g_ssh_test_reg",
     [waypipe_path, "-s", ssh_socket_path, "ssh", invalid_hostname] + wait_cmd,
-    dict(ssh_env, WAYLAND_DISPLAY=wayland_display_short),
+    dict(ssh_env, WAYLAND_DISPLAY=wayland_display),
     EXPECT_TIMEOUT,
 )
 run_test(
@@ -268,7 +279,7 @@ run_test(
         invalid_hostname,
     ]
     + wait_cmd,
-    dict(ssh_only_env, WAYLAND_DISPLAY=wayland_display_short),
+    dict(ssh_only_env, WAYLAND_DISPLAY=wayland_display),
     EXPECT_TIMEOUT,
 )
 
