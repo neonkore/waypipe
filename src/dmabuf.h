@@ -70,11 +70,10 @@ static_assert(sizeof(struct dmabuf_slice_data) == 64, "size check");
 
 int init_render_data(struct render_data *);
 void cleanup_render_data(struct render_data *);
-struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
-		const struct dmabuf_slice_data *info);
+struct gbm_bo *make_dmabuf(
+		struct render_data *rd, const struct dmabuf_slice_data *info);
 int export_dmabuf(struct gbm_bo *bo);
-/** Import DMABUF to a GBM buffer object; if `read_modifier` is true, then
- * the `info->modifier` will be overwritten with whatever the modifier is */
+/** Import DMABUF to a GBM buffer object. */
 struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 		const struct dmabuf_slice_data *info);
 void destroy_dmabuf(struct gbm_bo *bo);

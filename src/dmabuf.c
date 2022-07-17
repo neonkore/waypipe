@@ -155,7 +155,7 @@ void cleanup_render_data(struct render_data *data)
 static bool dmabuf_info_valid(const struct dmabuf_slice_data *info)
 {
 	if (info->height > (1u << 24) || info->width > (1u << 24) ||
-			info->num_planes > 4) {
+			info->num_planes > 4 || info->num_planes == 0) {
 		wp_error("Invalid DMABUF slice data: height " PRIu32
 			 " width " PRIu32 " num_planes " PRIu32,
 				info->height, info->width, info->num_planes);
@@ -180,11 +180,6 @@ struct gbm_bo *import_dmabuf(struct render_data *rd, int fd, size_t *size,
 	data.modifier = info->modifier;
 	data.num_fds = 0;
 	uint32_t simple_format = 0;
-	if (info->num_planes > 4) {
-		wp_error("Failed to import dmabuf: too many planes (%d)",
-				info->num_planes);
-		return NULL;
-	}
 
 	for (int i = 0; i < info->num_planes; i++) {
 		if (info->using_planes[i]) {
@@ -239,28 +234,16 @@ int get_unique_dmabuf_handle(
 	return handle;
 }
 
-struct gbm_bo *make_dmabuf(struct render_data *rd, size_t size,
-		const struct dmabuf_slice_data *info)
+struct gbm_bo *make_dmabuf(
+		struct render_data *rd, const struct dmabuf_slice_data *info)
 {
 	struct gbm_bo *bo;
-	if (info && !dmabuf_info_valid(info)) {
+	if (!dmabuf_info_valid(info)) {
 		return NULL;
 	}
 
 retry:
-	if (!info || info->num_planes == 0) {
-		uint32_t width = 512;
-		uint32_t height =
-				(uint32_t)(size + 4 * width - 1) / (4 * width);
-		uint32_t format = GBM_FORMAT_XRGB8888;
-		/* Set modifiers to linear, the most likely/portable format */
-		bo = gbm_bo_create(rd->dev, width, height, format,
-				GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
-		if (!bo) {
-			wp_error("Failed to make dmabuf: %s", strerror(errno));
-			return NULL;
-		}
-	} else if (!rd->supports_modifiers ||
+	if (!rd->supports_modifiers ||
 			info->modifier == DRM_FORMAT_MOD_INVALID) {
 		uint32_t simple_format = dmabuf_get_simple_format_for_plane(
 				info->format, 0);

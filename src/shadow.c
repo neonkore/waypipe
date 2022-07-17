@@ -1572,8 +1572,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return 0;
 		}
 
-		sfd->dmabuf_bo = make_dmabuf(
-				render, sfd->buffer_size, &sfd->dmabuf_info);
+		sfd->dmabuf_bo = make_dmabuf(render, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			sfd->fd_local = -1;
 			return 0;
@@ -1635,8 +1634,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			sfd->fd_local = -1;
 			return 0;
 		}
-		sfd->dmabuf_bo = make_dmabuf(
-				render, sfd->buffer_size, &sfd->dmabuf_info);
+		sfd->dmabuf_bo = make_dmabuf(render, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			wp_error("FDC_DMAVID_IW: RID=%d make_dmabuf failure, sz=%d (%d)",
 					sfd->remote_id, (int)sfd->buffer_size,
@@ -1706,8 +1704,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return 0;
 		}
 
-		sfd->dmabuf_bo = make_dmabuf(
-				render, sfd->buffer_size, &sfd->dmabuf_info);
+		sfd->dmabuf_bo = make_dmabuf(render, &sfd->dmabuf_info);
 		if (!sfd->dmabuf_bo) {
 			wp_error("FDC_DMAVID_IR: RID=%d make_dmabuf failure",
 					sfd->remote_id);

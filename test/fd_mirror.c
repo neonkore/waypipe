@@ -453,8 +453,8 @@ int main(int argc, char **argv)
 				all_success &= pass;
 
 				if (has_dmabuf) {
-					struct gbm_bo *bo = make_dmabuf(rd,
-							test_size, &slice_data);
+					struct gbm_bo *bo = make_dmabuf(
+							rd, &slice_data);
 					if (!bo) {
 						has_dmabuf = false;
 						continue;

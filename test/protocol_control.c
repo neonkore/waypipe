@@ -382,7 +382,7 @@ static int create_dmabuf(void)
 	if (init_render_data(&rd) == -1) {
 		return -1;
 	}
-	struct gbm_bo *bo = make_dmabuf(&rd, test_size, &slice_data);
+	struct gbm_bo *bo = make_dmabuf(&rd, &slice_data);
 	if (!bo) {
 		goto end;
 	}
