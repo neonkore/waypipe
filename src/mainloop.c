@@ -729,8 +729,9 @@ static int advance_waymsg_chanwrite(struct way_msg_state *wmsg,
 							&wmsg->ack_msgs[i]) {
 				not_in_prog_msg = &wmsg->ack_msgs[1 - i];
 			}
-			if (wmsg->transfers.vecs[next_slot].iov_base ==
-					&wmsg->ack_msgs[i]) {
+			if (next_slot < wmsg->transfers.end &&
+					wmsg->transfers.vecs[next_slot].iov_base ==
+							&wmsg->ack_msgs[i]) {
 				queued_msg = &wmsg->ack_msgs[i];
 			}
 		}
