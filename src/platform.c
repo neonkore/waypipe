@@ -121,16 +121,21 @@ void *zeroed_aligned_realloc(size_t old_size_bytes, size_t new_size_bytes,
 {
 	/* warning: this might copy a lot of data */
 	if (new_size_bytes <= 2 * old_size_bytes) {
+		void *old_handle = *handle;
+		ptrdiff_t old_offset = (uint8_t *)data - (uint8_t *)old_handle;
+
 		void *new_handle = realloc(
-				*handle, new_size_bytes + alignment - 1);
+				old_handle, new_size_bytes + alignment - 1);
 		if (!new_handle) {
 			return NULL;
 		}
 		void *new_data = align_ptr(new_handle, alignment);
-		if (((uint8_t *)data - (uint8_t *)*handle) !=
-				((uint8_t *)new_data - (uint8_t *)new_handle)) {
+		ptrdiff_t new_offset =
+				(uint8_t *)new_data - (uint8_t *)new_handle;
+		if (old_offset != new_offset) {
 			/* realloc broke alignment offset */
-			memmove(new_data, data,
+			memmove((uint8_t *)new_data + new_offset,
+					(uint8_t *)new_data + old_offset,
 					new_size_bytes > old_size_bytes
 							? old_size_bytes
 							: new_size_bytes);
