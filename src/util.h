@@ -97,12 +97,6 @@ struct socket_path {
 	const struct sockaddr_un *filename;
 };
 
-/** Returns a file descriptor for the folder than can be fchdir'd to, or
- * -1 on failure, setting errno. If `name` is the empty string, opens the
- * current directory.
- */
-int open_folder(const char *name);
-
 /** Create a nonblocking AF_UNIX/SOCK_STREAM socket at folder/filename,
  *  and listen with nmaxclients.
  *
@@ -504,5 +498,10 @@ void *zeroed_aligned_alloc(size_t bytes, size_t alignment, void **handle);
 void *zeroed_aligned_realloc(size_t old_size_bytes, size_t new_size_bytes,
 		size_t alignment, void *data, void **handle);
 void zeroed_aligned_free(void *data, void **handle);
+/** Returns a file descriptor for the folder than can be fchdir'd to, or
+ * -1 on failure, setting errno. If `name` is the empty string, opens the
+ * current directory.
+ */
+int open_folder(const char *name);
 
 #endif // WAYPIPE_UTIL_H

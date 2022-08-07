@@ -54,6 +54,10 @@
 #endif
 #endif
 
+#if defined(__linux__)
+#define HAS_O_PATH 1
+#endif
+
 int create_anon_file(void)
 {
 	int new_fileno;
@@ -157,4 +161,14 @@ void zeroed_aligned_free(void *data, void **handle)
 	(void)data;
 	free(*handle);
 	*handle = NULL;
+}
+
+int open_folder(const char *name)
+{
+	const char *path = name[0] ? name : ".";
+#ifdef HAS_O_PATH
+	return open(path, O_PATH);
+#else
+	return open(path, O_RDONLY | O_DIRECTORY);
+#endif
 }

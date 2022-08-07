@@ -148,12 +148,6 @@ int set_cloexec(int fd)
 	return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-int open_folder(const char *name)
-{
-	/* note: on Linux, O_PATH would be appropriate here */
-	return open(name[0] ? name : ".", O_RDONLY | O_DIRECTORY);
-}
-
 int setup_nb_socket(int cwd_fd, struct socket_path path, int nmaxclients,
 		int *folder_fd_out, int *socket_fd_out)
 {
