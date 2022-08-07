@@ -145,9 +145,7 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 	void *cdata = NULL, *odata = NULL;
 	bool pass;
 	if (otype == FDC_FILE) {
-		struct stat ofsdata, cfsdata;
-		memset(&ofsdata, 0, sizeof(ofsdata));
-		memset(&cfsdata, 0, sizeof(cfsdata));
+		struct stat ofsdata = {0}, cfsdata = {0};
 		if (fstat(orig_fd, &ofsdata) == -1) {
 			wp_error("Failed to stat original file descriptor");
 			return false;
@@ -240,7 +238,7 @@ static void wait_for_thread_pool(struct thread_pool *pool)
 static bool test_transfer(struct fd_translation_map *src_map,
 		struct fd_translation_map *dst_map,
 		struct thread_pool *src_pool, struct thread_pool *dst_pool,
-		int rid, int ndiff, struct render_data *render_data)
+		int rid, bool expect_changes, struct render_data *render_data)
 {
 	struct transfer_queue transfer_data;
 	memset(&transfer_data, 0, sizeof(struct transfer_queue));
@@ -253,7 +251,7 @@ static bool test_transfer(struct fd_translation_map *src_map,
 	finish_update(src_shadow);
 	transfer_load_async(&transfer_data);
 
-	if (ndiff == 0) {
+	if (!expect_changes) {
 		size_t ns = 0;
 		for (int i = transfer_data.start; i < transfer_data.end; i++) {
 			ns += transfer_data.vecs[i].iov_len;
@@ -319,9 +317,11 @@ static bool test_mirror(int new_file_fd, size_t sz,
 			n_dst_threads);
 
 	size_t fdsz = 0;
-	enum fdcat fdtype = get_fd_type(new_file_fd, &fdsz);
+	enum fdcat fdtype;
 	if (slice_data) {
 		fdtype = FDC_DMABUF;
+	} else {
+		fdtype = get_fd_type(new_file_fd, &fdsz);
 	}
 	struct shadow_fd *src_shadow = translate_fd(&src_map, rd, new_file_fd,
 			fdtype, fdsz, slice_data, false);
@@ -329,14 +329,15 @@ static bool test_mirror(int new_file_fd, size_t sz,
 	int rid = src_shadow->remote_id;
 
 	bool pass = true;
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < 7; i++) {
 		bool fwd = i == 0 || i % 2;
 
 		int target_fd = fwd ? src_shadow->fd_local
 				    : dst_shadow->fd_local;
 		struct gbm_bo *target_bo = fwd ? src_shadow->dmabuf_bo
 					       : dst_shadow->dmabuf_bo;
-		if (i == 5 && src_shadow->type == FDC_FILE) {
+		bool expect_changes = false;
+		if (i == 5 && fdtype == FDC_FILE) {
 			sz = (sz * 7) / 5;
 			if (ftruncate(target_fd, (off_t)sz) == -1) {
 				wp_error("failed to resize file");
@@ -344,6 +345,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 			}
 			extend_shm_shadow(fwd ? &src_pool : &dst_pool,
 					fwd ? src_shadow : dst_shadow, sz);
+			expect_changes = true;
 		}
 
 		int ndiff = i > 0 ? (*update)(target_fd, target_bo, sz, i)
@@ -352,17 +354,18 @@ static bool test_mirror(int new_file_fd, size_t sz,
 			pass = false;
 			break;
 		}
+		expect_changes = expect_changes || (ndiff > 0);
 		bool subpass;
 		if (fwd) {
 			src_shadow->is_dirty = true;
 			damage_everything(&src_shadow->damage);
 			subpass = test_transfer(&src_map, &dst_map, &src_pool,
-					&dst_pool, rid, ndiff, rd);
+					&dst_pool, rid, expect_changes, rd);
 		} else {
 			dst_shadow->is_dirty = true;
 			damage_everything(&dst_shadow->damage);
 			subpass = test_transfer(&dst_map, &src_map, &dst_pool,
-					&dst_pool, rid, ndiff, rd);
+					&dst_pool, rid, expect_changes, rd);
 		}
 		pass &= subpass;
 		if (!pass) {
