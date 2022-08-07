@@ -466,11 +466,7 @@ int main(int argc, char **argv)
 
 	struct main_config config = {.n_worker_threads = 0,
 			.drm_node = NULL,
-#ifdef HAS_LZ4
-			.compression = COMP_LZ4,
-#else
 			.compression = COMP_NONE,
-#endif
 			.compression_level = 0,
 			.no_gpu = false,
 			.only_linear_dmabuf = true,
@@ -937,7 +933,7 @@ int main(int argc, char **argv)
 			}
 
 			/* Always send the compression flag, because the default
-			 * was changed from NONE to LZ4. */
+			 * will be changed from NONE to LZ4. */
 			arglist[dstidx + 1 + offset++] = "-c";
 			if (!comp_string) {
 				switch (config.compression) {

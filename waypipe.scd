@@ -55,12 +55,11 @@ compressible as images containing pictures.
 *-c C, --compress C*
 	Select the compression method applied to data transfers. Options are
 	_none_ (for high-bandwidth networks), _lz4_ (intermediate), _zstd_
-	(slow connection). The default compression is _lz4_.† The compression
+	(slow connection). The default compression is _none_.† The compression
 	level can be chosen by appending = followed by a number. For example,
 	if *C* is _zstd=7_, waypipe will use level 7 Zstd compression.
 
-	† Unless *waypipe* is built without LZ4 support, in which case the default
-	compression will be _none_.
+	† In a future version, the default will change to _lz4_.
 
 *-d, --debug*
 	Print debug log messages.
