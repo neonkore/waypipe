@@ -1006,8 +1006,8 @@ void do_wl_shm_pool_req_resize(struct context *ctx, int32_t size)
 	}
 	/* The display side will be updated already via buffer update msg */
 	if (!ctx->on_display_side) {
-		extend_shm_shadow(&ctx->g->map, &ctx->g->threads,
-				the_shm_pool->owned_buffer, (size_t)size);
+		extend_shm_shadow(&ctx->g->threads, the_shm_pool->owned_buffer,
+				(size_t)size);
 	}
 }
 void do_wl_shm_pool_req_create_buffer(struct context *ctx, struct wp_object *id,

@@ -334,8 +334,7 @@ void decref_transferred_rids(
 
 /** If sfd->type == FDC_FILE, increase the size of the backing data to support
  * at least new_size, and mark the new part of underlying file as dirty */
-void extend_shm_shadow(struct fd_translation_map *map,
-		struct thread_pool *threads, struct shadow_fd *sfd,
+void extend_shm_shadow(struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size);
 
 /** Notify the threads so that they can start working on the tasks in the pool,

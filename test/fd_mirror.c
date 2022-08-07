@@ -342,8 +342,7 @@ static bool test_mirror(int new_file_fd, size_t sz,
 				wp_error("failed to resize file");
 				break;
 			}
-			extend_shm_shadow(fwd ? &src_map : &dst_map,
-					fwd ? &src_pool : &dst_pool,
+			extend_shm_shadow(fwd ? &src_pool : &dst_pool,
 					fwd ? src_shadow : dst_shadow, sz);
 		}
 

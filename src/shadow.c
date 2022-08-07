@@ -2285,8 +2285,7 @@ void read_readable_pipes(struct fd_translation_map *map)
 	}
 }
 
-void extend_shm_shadow(struct fd_translation_map *map,
-		struct thread_pool *threads, struct shadow_fd *sfd,
+void extend_shm_shadow(struct thread_pool *threads, struct shadow_fd *sfd,
 		size_t new_size)
 {
 	if (sfd->buffer_size >= new_size) {
@@ -2307,7 +2306,6 @@ void extend_shm_shadow(struct fd_translation_map *map,
 	}
 
 	increase_buffer_sizes(sfd, threads, new_size);
-	(void)map;
 
 	// leave `sfd->remote_bufsize` unchanged, and mark dirty
 	sfd->is_dirty = true;
