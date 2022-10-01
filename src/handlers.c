@@ -486,7 +486,7 @@ void do_wl_registry_req_bind(struct context *ctx, uint32_t name,
 	}
 
 fail:
-	wp_debug("Binding fail name=%d %s id=%d (v%d)", name, interface,
+	wp_debug("Unhandled protocol %s name=%d id=%d (v%d)", interface, name,
 			the_object->obj_id, version);
 
 	tracker_remove(ctx->tracker, the_object);
