@@ -101,9 +101,9 @@ able to parse all messages that the programs it connects send. Fortunately, the
 Wayland wire protocol is partially self-describing, so Waypipe can parse the
 messages it needs (those related to resources shared with file descriptors)
 while ignoring the rest. This makes Waypipe partially forward-compatible: if a
-future protocol comes out concerns details (for example, about window
-positioning) which require that file descriptors be sent, then applications
-will be able to use that protocol even with older versions of Waypipe. The
+future protocol comes out about details (for example, about window positioning)
+which do not require that file descriptors be sent, then applications will be
+able to use that protocol even with older versions of Waypipe. The
 tradeoff to allowing messages that Waypipe can not parse is that Waypipe can
 only make minor modifications to the wire protocol. In particular, adding or
 removing any Wayland protocol objects would require changing all messages that
