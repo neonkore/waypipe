@@ -1292,15 +1292,16 @@ int main_interface_loop(int chanfd, int progfd, int linkfd,
 				chan_msg.state == CM_WAITING_FOR_CHANNEL &&
 				chan_msg.recv_unhandled_messages > 0;
 
-		int poll_delay = -1;
+		int poll_delay;
 		if (unread_chan_msgs) {
 			/* There is work to do, so continue */
 			poll_delay = 0;
-		}
-		if (own_msg_pending) {
+		} else if (own_msg_pending) {
 			/* To coalesce acknowledgements, we wait for a minimum
 			 * amount */
 			poll_delay = 20;
+		} else {
+			poll_delay = -1;
 		}
 		int r = poll(pfds, (nfds_t)npoll, poll_delay);
 		if (r == -1) {
