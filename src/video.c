@@ -481,8 +481,8 @@ void destroy_video_data(struct shadow_fd *sfd)
 	}
 }
 
-static void copy_onto_video_mirror(const char *buffer, AVFrame *frame,
-		const struct dmabuf_slice_data *info)
+static void copy_onto_video_mirror(const char *buffer, uint32_t map_stride,
+		AVFrame *frame, const struct dmabuf_slice_data *info)
 {
 	for (int i = 0; i < info->num_planes; i++) {
 		int j = i;
@@ -493,13 +493,16 @@ static void copy_onto_video_mirror(const char *buffer, AVFrame *frame,
 			uint8_t *dst = frame->data[j] +
 				       frame->linesize[j] * (int)r;
 			const char *src = buffer + (size_t)info->offsets[i] +
-					  (size_t)info->strides[i] * r;
-			memcpy(dst, src, (size_t)info->strides[i]);
+					  (size_t)map_stride * r;
+			/* todo: handle multiplanar strides properly */
+			size_t common = minu(map_stride,
+					(uint64_t)frame->linesize[j]);
+			memcpy(dst, src, common);
 		}
 	}
 }
-static void copy_from_video_mirror(char *buffer, const AVFrame *frame,
-		const struct dmabuf_slice_data *info)
+static void copy_from_video_mirror(char *buffer, uint32_t map_stride,
+		const AVFrame *frame, const struct dmabuf_slice_data *info)
 {
 	for (int i = 0; i < info->num_planes; i++) {
 		int j = i;
@@ -510,8 +513,11 @@ static void copy_from_video_mirror(char *buffer, const AVFrame *frame,
 			const uint8_t *src = frame->data[j] +
 					     frame->linesize[j] * (int)r;
 			char *dst = buffer + (size_t)info->offsets[i] +
-				    (size_t)info->strides[i] * r;
-			memcpy(dst, src, (size_t)info->strides[i]);
+				    (size_t)map_stride * r;
+			/* todo: handle multiplanar strides properly */
+			size_t common = minu(map_stride,
+					(uint64_t)frame->linesize[j]);
+			memcpy(dst, src, common);
 		}
 	}
 }
@@ -1059,12 +1065,13 @@ void collect_video_from_mirror(
 	if (sfd->video_color_context) {
 		/* If using software encoding, need to convert to YUV */
 		void *handle = NULL;
-		void *data = map_dmabuf(
-				sfd->dmabuf_bo, false, &handle, NULL, NULL);
+		uint32_t map_stride = 0;
+		void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle,
+				&map_stride, NULL);
 		if (!data) {
 			return;
 		}
-		copy_onto_video_mirror(data, sfd->video_local_frame,
+		copy_onto_video_mirror(data, map_stride, sfd->video_local_frame,
 				&sfd->dmabuf_info);
 		unmap_dmabuf(sfd->dmabuf_bo, handle);
 
@@ -1232,13 +1239,15 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 				return;
 			}
 			/* Copy data onto DMABUF */
+			uint32_t map_stride = 0;
 			void *handle = NULL;
 			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle,
-					NULL, NULL);
+					&map_stride, NULL);
 			if (!data) {
 				return;
 			}
-			copy_from_video_mirror(data, sfd->video_local_frame,
+			copy_from_video_mirror(data, map_stride,
+					sfd->video_local_frame,
 					&sfd->dmabuf_info);
 			unmap_dmabuf(sfd->dmabuf_bo, handle);
 		} else {

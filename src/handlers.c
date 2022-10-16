@@ -1320,7 +1320,7 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 	params->add[plane_idx].modifier =
 			modifier_lo + modifier_hi * 0x100000000uLL;
 	// Only perform rearrangement on the client side, for now
-	if (!ctx->on_display_side) {
+	if (true) {
 		ctx->drop_this_msg = true;
 	}
 }
@@ -1360,8 +1360,9 @@ static void deduplicate_dmabuf_fds(struct context *context,
 }
 
 static uint32_t append_zwp_linux_buffer_params_v1_req_add(uint32_t *msg,
-		uint32_t obj_id, uint32_t plane_idx, uint32_t offset,
-		uint32_t stride, uint32_t modifier_hi, uint32_t modifier_lo)
+		bool display_side, uint32_t obj_id, uint32_t plane_idx,
+		uint32_t offset, uint32_t stride, uint32_t modifier_hi,
+		uint32_t modifier_lo)
 {
 	uint32_t msg_size = 2;
 	if (msg) {
@@ -1371,8 +1372,11 @@ static uint32_t append_zwp_linux_buffer_params_v1_req_add(uint32_t *msg,
 		msg[msg_size++] = stride;
 		msg[msg_size++] = modifier_hi;
 		msg[msg_size++] = modifier_lo;
+		msg[1] = ((uint32_t)msg_size << 18) | 1;
 		/* Tag the message as having one file descriptor */
-		msg[1] = ((uint32_t)msg_size << 18) | 1 | (uint32_t)(1 << 11);
+		if (!display_side) {
+			msg[1] |= (uint32_t)(1 << 11);
+		}
 	} else {
 		msg_size += 5;
 	}
@@ -1418,11 +1422,13 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 			}
 		}
 
+		bool using_video = false;
 		enum fdcat res_type = FDC_DMABUF;
 		if (ctx->g->config->video_if_possible) {
 			// TODO: multibuffer support
 			if (all_same_fds && video_supports_dmabuf_format(format,
 							    info.modifier)) {
+				using_video = true;
 				res_type = ctx->on_display_side ? FDC_DMAVID_IW
 								: FDC_DMAVID_IR;
 			}
@@ -1434,6 +1440,18 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		if (!sfd) {
 			continue;
 		}
+		/* until the regular diff-based replication is fixed, only fix
+		 * the stride mismatch bug when using video encoding.
+		 * TODO: enable this in all cases */
+		if (ctx->on_display_side && using_video) {
+			/* the new dmabuf being created is not guaranteed to
+			 * have the original offset/stride parameters, so reset
+			 * them */
+			params->add[i].offset = 0;
+			params->add[i].stride =
+					dmabuf_get_stride(sfd->dmabuf_bo);
+		}
+
 		/* increment for each extra time this fd will be sent */
 		if (sfd->has_owner) {
 			shadow_incref_transfer(sfd);
@@ -1442,7 +1460,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		params->add[i].buffer = shadow_incref_protocol(sfd);
 	}
 
-	if (!ctx->on_display_side) {
+	if (true) {
 		// Update file descriptors
 		int nfds = params->nplanes;
 		if (nfds > ctx->fds->size - ctx->fds->zone_end) {
@@ -1470,6 +1488,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		uint32_t extra = 0;
 		for (int i = 0; i < params->nplanes; i++) {
 			extra += append_zwp_linux_buffer_params_v1_req_add(NULL,
+					ctx->on_display_side,
 					params->base.obj_id, (uint32_t)i,
 					params->add[i].offset,
 					params->add[i].stride,
@@ -1489,6 +1508,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		for (int i = 0; i < params->nplanes; i++) {
 			uint32_t step = append_zwp_linux_buffer_params_v1_req_add(
 					(uint32_t *)(cmsg + start),
+					ctx->on_display_side,
 					params->base.obj_id, (uint32_t)i,
 					params->add[i].offset,
 					params->add[i].stride,

@@ -87,6 +87,7 @@ int unmap_dmabuf(struct gbm_bo *bo, void *map_handle);
 int get_unique_dmabuf_handle(
 		struct render_data *rd, int fd, struct gbm_bo **temporary_bo);
 uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
+uint32_t dmabuf_get_stride(struct gbm_bo *bo);
 
 #ifndef DRM_FORMAT_MOD_INVALID
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL

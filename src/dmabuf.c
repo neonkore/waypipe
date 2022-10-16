@@ -89,6 +89,11 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 	return 0;
 }
 
+uint32_t dmabuf_get_stride(struct gbm_bo *bo)
+{
+	(void)bo;
+	return 0;
+}
 #else /* HAS_DMABUF */
 
 #include <errno.h>
@@ -401,5 +406,6 @@ uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane)
 	}
 	return format;
 }
+uint32_t dmabuf_get_stride(struct gbm_bo *bo) { return gbm_bo_get_stride(bo); }
 
 #endif /* HAS_DMABUF */
