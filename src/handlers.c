@@ -1588,7 +1588,8 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 			bool keep = is_single_plane &&
 				    (modifier == 0 ||
 						    (!has_any_linear &&
-								    modifier == DRM_FORMAT_MOD_INVALID));
+								    modifier == DRM_FORMAT_MOD_INVALID) ||
+						    !ctx->g->config->only_linear_dmabuf);
 			if (keep) {
 				fmts[w++] = idx;
 			}
