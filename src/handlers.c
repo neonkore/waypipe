@@ -135,8 +135,6 @@ struct obj_zwp_linux_dmabuf_params {
 		uint32_t offset;
 		uint32_t stride;
 		uint64_t modifier;
-		char *msg;
-		int msg_len;
 	} add[MAX_DMABUF_PLANES];
 	int nplanes;
 };
@@ -277,9 +275,6 @@ void destroy_wp_object(struct wp_object *object)
 						r->add[k].fd = -1;
 					}
 				}
-			}
-			if (r->add[i].msg) {
-				free(r->add[i].msg);
 			}
 		}
 	} else if (object->type == &intf_zwlr_export_dmabuf_frame_v1) {
@@ -1326,69 +1321,10 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 			modifier_lo + modifier_hi * 0x100000000uLL;
 	// Only perform rearrangement on the client side, for now
 	if (!ctx->on_display_side) {
-		params->add[plane_idx].msg =
-				malloc((size_t)ctx->message_length);
-		memcpy(params->add[plane_idx].msg, ctx->message,
-				(size_t)ctx->message_length);
-		params->add[plane_idx].msg_len = ctx->message_length;
-
 		ctx->drop_this_msg = true;
 	}
 }
-static int reintroduce_add_msgs(struct context *context,
-		struct obj_zwp_linux_dmabuf_params *params)
-{
-	int net_length = context->message_length;
-	int nfds = 0;
-	for (int i = 0; i < params->nplanes; i++) {
-		net_length += params->add[i].msg_len;
-		nfds++;
-	}
-	if (net_length > context->message_available_space) {
-		wp_error("Not enough space to reintroduce zwp_linux_buffer_params_v1.add message data");
-		return -1;
-	}
-	if (nfds > context->fds->size - context->fds->zone_end) {
-		wp_error("Not enough space to reintroduce zwp_linux_buffer_params_v1.add message fds");
-		return -1;
-	}
-	// Update fds
-	int nmoved = (context->fds->zone_end - context->fds->zone_start);
-	memmove(context->fds->data + context->fds->zone_start + nfds,
-			context->fds->data + context->fds->zone_start,
-			(size_t)nmoved * sizeof(int));
-	for (int i = 0; i < params->nplanes; i++) {
-		context->fds->data[context->fds->zone_start + i] =
-				params->add[i].fd;
-	}
-	/* We inject `nfds` new file descriptors, and advance the zone
-	 * of queued file descriptors forward, since the injected file
-	 * descriptors will not be used by the parser, but will still
-	 * be transported out. */
-	context->fds->zone_start += nfds;
-	context->fds->zone_end += nfds;
 
-	// Update data
-	char *cmsg = (char *)context->message;
-	memmove(cmsg + net_length - context->message_length, cmsg,
-			(size_t)context->message_length);
-	int start = 0;
-	for (int i = 0; i < params->nplanes; i++) {
-		memcpy(cmsg + start, params->add[i].msg,
-				(size_t)params->add[i].msg_len);
-		/* Tag the message as having one file descriptor */
-		((uint32_t *)(cmsg + start))[1] |= (uint32_t)(1 << 11);
-		start += params->add[i].msg_len;
-		free(params->add[i].msg);
-		params->add[i].msg = NULL;
-		params->add[i].msg_len = 0;
-	}
-	wp_debug("Reintroducing add requests for zwp_linux_buffer_params_v1, going from %d to %d bytes",
-			context->message_length, net_length);
-	context->message_length = net_length;
-	context->fds_changed = true;
-	return 0;
-}
 /** After this function is called, all subsets of fds that duplicate an
  * underlying dmabuf will be reduced to select a single fd. */
 static void deduplicate_dmabuf_fds(struct context *context,
@@ -1423,6 +1359,26 @@ static void deduplicate_dmabuf_fds(struct context *context,
 	}
 }
 
+static uint32_t append_zwp_linux_buffer_params_v1_req_add(uint32_t *msg,
+		uint32_t obj_id, uint32_t plane_idx, uint32_t offset,
+		uint32_t stride, uint32_t modifier_hi, uint32_t modifier_lo)
+{
+	uint32_t msg_size = 2;
+	if (msg) {
+		msg[0] = obj_id;
+		msg[msg_size++] = plane_idx;
+		msg[msg_size++] = offset;
+		msg[msg_size++] = stride;
+		msg[msg_size++] = modifier_hi;
+		msg[msg_size++] = modifier_lo;
+		/* Tag the message as having one file descriptor */
+		msg[1] = ((uint32_t)msg_size << 18) | 1 | (uint32_t)(1 << 11);
+	} else {
+		msg_size += 5;
+	}
+	return msg_size;
+}
+
 void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		int32_t width, int32_t height, uint32_t format, uint32_t flags)
 {
@@ -1433,9 +1389,7 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 	params->create_height = height;
 	params->create_format = format;
 	deduplicate_dmabuf_fds(ctx, params);
-	if (!ctx->on_display_side) {
-		reintroduce_add_msgs(ctx, params);
-	}
+
 	struct dmabuf_slice_data info = {.width = (uint32_t)width,
 			.height = (uint32_t)height,
 			.format = format,
@@ -1487,6 +1441,67 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 		// Convert the stored fds to buffer pointers now.
 		params->add[i].buffer = shadow_incref_protocol(sfd);
 	}
+
+	if (!ctx->on_display_side) {
+		// Update file descriptors
+		int nfds = params->nplanes;
+		if (nfds > ctx->fds->size - ctx->fds->zone_end) {
+			wp_error("Not enough space to reintroduce zwp_linux_buffer_params_v1.add message fds");
+			return;
+		}
+		int nmoved = (ctx->fds->zone_end - ctx->fds->zone_start);
+		memmove(ctx->fds->data + ctx->fds->zone_start + nfds,
+				ctx->fds->data + ctx->fds->zone_start,
+				(size_t)nmoved * sizeof(int));
+		for (int i = 0; i < params->nplanes; i++) {
+			ctx->fds->data[ctx->fds->zone_start + i] =
+					params->add[i].fd;
+		}
+		/* We inject `nfds` new file descriptors, and advance the zone
+		 * of queued file descriptors forward, since the injected file
+		 * descriptors will not be used by the parser, but will still
+		 * be transported out. */
+		ctx->fds->zone_start += nfds;
+		ctx->fds->zone_end += nfds;
+		ctx->fds_changed = true;
+
+		// Update data
+		int net_length = ctx->message_length;
+		uint32_t extra = 0;
+		for (int i = 0; i < params->nplanes; i++) {
+			extra += append_zwp_linux_buffer_params_v1_req_add(NULL,
+					params->base.obj_id, (uint32_t)i,
+					params->add[i].offset,
+					params->add[i].stride,
+					(uint32_t)(params->add[i].modifier >>
+							32),
+					(uint32_t)(params->add[i].modifier));
+		}
+		net_length += (int)(sizeof(uint32_t) * extra);
+		if (net_length > ctx->message_available_space) {
+			wp_error("Not enough space to reintroduce zwp_linux_buffer_params_v1.add message data");
+			return;
+		}
+		char *cmsg = (char *)ctx->message;
+		memmove(cmsg + net_length - ctx->message_length, cmsg,
+				(size_t)ctx->message_length);
+		size_t start = 0;
+		for (int i = 0; i < params->nplanes; i++) {
+			uint32_t step = append_zwp_linux_buffer_params_v1_req_add(
+					(uint32_t *)(cmsg + start),
+					params->base.obj_id, (uint32_t)i,
+					params->add[i].offset,
+					params->add[i].stride,
+					(uint32_t)(params->add[i].modifier >>
+							32),
+					(uint32_t)(params->add[i].modifier));
+			start += step * sizeof(uint32_t);
+		}
+		wp_debug("Reintroducing add requests for zwp_linux_buffer_params_v1, going from %d to %d bytes",
+				ctx->message_length, net_length);
+		ctx->message_length = net_length;
+	}
+
 	// Avoid closing in destroy_wp_object
 	for (int i = 0; i < MAX_DMABUF_PLANES; i++) {
 		params->add[i].fd = -1;
