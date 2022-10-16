@@ -195,11 +195,13 @@ static bool needs_vu_flip(uint32_t drm_format)
 
 bool video_supports_dmabuf_format(uint32_t format, uint64_t modifier)
 {
-	if (modifier == DRM_FORMAT_MOD_LINEAR &&
-			drm_to_av(format) != AV_PIX_FMT_NONE) {
-		return true;
+	/* cannot handle CCS modifiers at the moment due to extra 'plane' issues
+	 */
+	if (modifier == fourcc_mod_code(INTEL, 4) /* Y_TILED_CCS */ ||
+			modifier == fourcc_mod_code(INTEL, 5) /* Yf_TILED_CCS */ || modifier == fourcc_mod_code(INTEL, 6) /* Y_TILED_GEN12_RC_CCS */ || modifier == fourcc_mod_code(INTEL, 7) /* Y_TILED_GEN12_MC_CCS */ || modifier == fourcc_mod_code(INTEL, 8) /* Y_TILED_GEN12_RC_CCS_CC */) {
+		return false;
 	}
-	return false;
+	return drm_to_av(format) != AV_PIX_FMT_NONE;
 }
 bool video_supports_shm_format(uint32_t format)
 {
