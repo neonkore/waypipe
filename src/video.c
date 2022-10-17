@@ -497,7 +497,7 @@ static void copy_onto_video_mirror(const char *buffer, uint32_t map_stride,
 			const char *src = buffer + (size_t)info->offsets[i] +
 					  (size_t)map_stride * r;
 			/* todo: handle multiplanar strides properly */
-			size_t common = minu(map_stride,
+			size_t common = (size_t)minu(map_stride,
 					(uint64_t)frame->linesize[j]);
 			memcpy(dst, src, common);
 		}
@@ -517,7 +517,7 @@ static void copy_from_video_mirror(char *buffer, uint32_t map_stride,
 			char *dst = buffer + (size_t)info->offsets[i] +
 				    (size_t)map_stride * r;
 			/* todo: handle multiplanar strides properly */
-			size_t common = minu(map_stride,
+			size_t common = (size_t)minu(map_stride,
 					(uint64_t)frame->linesize[j]);
 			memcpy(dst, src, common);
 		}
