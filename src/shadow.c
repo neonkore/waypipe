@@ -708,7 +708,7 @@ static void *shrink_buffer(void *buf, size_t sz)
 }
 
 /* Construct and optionally compress a diff between sfd->mem_mirror and
- * the actual memmap'd data */
+ * the actual memmap'd data, and synchronize sfd->mem_mirror */
 static void worker_run_compress_diff(
 		struct task_data *task, struct thread_data *local)
 {
@@ -801,11 +801,10 @@ end:
 	DTRACE_PROBE1(waypipe, worker_compdiff_exit, diffsize);
 }
 
-/* Compress data for sfd->mem_mirror */
+/* Compress data for sfd->mem_mirror, and synchronize sfd->mem_mirror */
 static void worker_run_compress_block(
 		struct task_data *task, struct thread_data *local)
 {
-
 	struct shadow_fd *sfd = task->sfd;
 	struct thread_pool *pool = local->pool;
 	if (task->zone_end == task->zone_start) {
@@ -817,6 +816,10 @@ static void worker_run_compress_block(
 	size_t source_start = (size_t)task->zone_start;
 	size_t source_end = (size_t)task->zone_end;
 	DTRACE_PROBE1(waypipe, worker_comp_enter, source_end - source_start);
+
+	/* Update mirror to match local */
+	memcpy(sfd->mem_mirror + source_start, sfd->mem_local + source_start,
+			source_end - source_start);
 
 	size_t sz = 0;
 	uint8_t *msg;
@@ -1196,8 +1199,6 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 				wp_error("Failed to allocate mirror");
 				return;
 			}
-			memcpy(sfd->mem_mirror, sfd->mem_local,
-					sfd->buffer_size);
 
 			sfd->remote_bufsize = 0;
 			queue_fill_transfers(threads, sfd, transfers);
