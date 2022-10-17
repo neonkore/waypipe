@@ -492,7 +492,7 @@ fail:
 }
 
 void do_wl_buffer_evt_release(struct context *ctx) { (void)ctx; }
-static int get_shm_bytes_per_pixel(uint32_t format)
+int get_shm_bytes_per_pixel(uint32_t format)
 {
 	switch (format) {
 	case 0x34325241: /* DRM_FORMAT_ARGB8888 */
@@ -1422,28 +1422,25 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 			}
 		}
 
-		bool using_video = false;
 		enum fdcat res_type = FDC_DMABUF;
 		if (ctx->g->config->video_if_possible) {
 			// TODO: multibuffer support
 			if (all_same_fds && video_supports_dmabuf_format(format,
 							    info.modifier)) {
-				using_video = true;
 				res_type = ctx->on_display_side ? FDC_DMAVID_IW
 								: FDC_DMAVID_IR;
 			}
 		}
 
+		/* note: the``info` provided includes the incoming/as-if stride
+		 * data. */
 		struct shadow_fd *sfd = translate_fd(&ctx->g->map,
 				&ctx->g->render, params->add[i].fd, res_type, 0,
 				&info, false);
 		if (!sfd) {
 			continue;
 		}
-		/* until the regular diff-based replication is fixed, only fix
-		 * the stride mismatch bug when using video encoding.
-		 * TODO: enable this in all cases */
-		if (ctx->on_display_side && using_video) {
+		if (ctx->on_display_side) {
 			/* the new dmabuf being created is not guaranteed to
 			 * have the original offset/stride parameters, so reset
 			 * them */

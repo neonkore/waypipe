@@ -1456,6 +1456,60 @@ static int check_sfd_type(struct shadow_fd *sfd, int remote_id,
 	return check_sfd_type_2(sfd, remote_id, mtype, ftype, ftype);
 }
 
+/*
+ * src, dest are buffers whose meaningful content consists of a series
+ * of rows; the start coordinates of each row are multiples of 'src_stride' and
+ * 'dst_stride', respectively. For example, 'C' in the following diagram
+ * indicates and important byte; '.' indicates a byte whose value does not
+ * matter.
+ *
+ * CCCCCCCCCCC......
+ * CCCCCCCCCCC......
+ * CCCCCCCCCCC......
+ *
+ * This function copies the content bytes of src to the content bytes of dest.
+ * Note: 'src' is the original point of the src buffer, this may be unintuitive.
+ */
+static void stride_shifted_copy(char *dest, const char *src, size_t src_start,
+		size_t copy_length, size_t row_length, size_t src_stride,
+		size_t dst_stride)
+{
+	size_t src_end = src_start + copy_length;
+	size_t lrow = src_start / src_stride;
+	size_t trow = src_end / src_stride;
+	/* special case: inside a segment */
+	if (lrow == trow) {
+		size_t cstart = src_start - lrow * src_stride;
+		size_t cend = src_end - trow * src_stride;
+		cend = cend > row_length ? row_length : cend;
+		memcpy(dest + dst_stride * lrow + cstart, src + src_start,
+				cend - cstart);
+		return;
+	}
+
+	/* leading segment */
+	if (src_start > lrow * src_stride) {
+		size_t igap = src_start - lrow * src_stride;
+		if (igap < row_length) {
+			memcpy(dest + dst_stride * lrow + igap, src + src_start,
+					row_length - igap);
+		}
+	}
+
+	/* main body */
+	size_t srow = (src_start + src_stride - 1) / src_stride;
+	for (size_t i = srow; i < trow; i++) {
+		memcpy(dest + dst_stride * i, src + src_stride * i, row_length);
+	}
+
+	/* trailing segment */
+	if (src_end > trow * src_stride) {
+		size_t local = src_end - trow * src_stride;
+		local = local > row_length ? row_length : local;
+		memcpy(dest + dst_stride * trow, src + src_end - local, local);
+	}
+}
+
 int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		struct render_data *render, enum wmsg_type type, int remote_id,
 		const struct bytebuf *msg)
@@ -1546,13 +1600,15 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 
 		sfd->type = FDC_DMABUF;
-		const struct wmsg_open_dmabuf header =
-				*(const struct wmsg_open_dmabuf *)msg->data;
-		sfd->buffer_size = header.file_size;
 
 		memcpy(&sfd->dmabuf_info,
 				msg->data + sizeof(struct wmsg_open_dmabuf),
 				sizeof(struct dmabuf_slice_data));
+		/* allocate a mirror buffer that matches dimensions of incoming
+		 * data from the remote; this may disagree with the mapped size
+		 * of the buffer */
+		sfd->buffer_size = sfd->dmabuf_info.height *
+				   sfd->dmabuf_info.strides[0];
 		size_t alignment = 1u << threads->diff_alignment_bits;
 		sfd->mem_mirror = zeroed_aligned_alloc(
 				alignz(sfd->buffer_size, alignment), alignment,
@@ -1849,40 +1905,59 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 					act_size, header->end - header->start);
 			return ERR_FATAL;
 		}
-		memcpy(sfd->mem_mirror + header->start, act_buffer,
-				header->end - header->start);
 
-		void *handle = NULL;
-		bool already_mapped = sfd->mem_local != NULL;
-		if (sfd->type == FDC_DMABUF && !already_mapped) {
-			uint32_t stride = 0, height = 0;
-			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
-					&handle, &stride, &height);
-			if (stride * height < sfd->buffer_size) {
-				wp_error("DMABUF mapped with stride %" PRIu32
-					 " height %" PRIu32
-					 ", but expected ize=%zu>%zu, ignoring overlarge update",
-						stride, height,
-						sfd->buffer_size,
-						(size_t)(stride * height));
-				unmap_dmabuf(sfd->dmabuf_bo, handle);
+		if (sfd->type == FDC_DMABUF) {
+			if (sfd->mem_local != NULL) {
+				wp_error("Skipping update of RID=%d, buffer fill while mapped for reading",
+						sfd->remote_id);
 				return 0;
 			}
-		}
-		if (!sfd->mem_local) {
-			wp_error("Failed to fill RID=%d, fd not mapped",
-					sfd->remote_id);
-			return 0;
-		}
-		memcpy(sfd->mem_local + header->start,
-				sfd->mem_mirror + header->start,
-				header->end - header->start);
+			int bpp = get_shm_bytes_per_pixel(
+					sfd->dmabuf_info.format);
+			if (bpp == -1) {
+				wp_error("Skipping update of RID=%d, non-RGBA/monoplane fmt %x",
+						sfd->remote_id,
+						sfd->dmabuf_info.format);
+				return 0;
+			}
 
-		if (sfd->type == FDC_DMABUF && !already_mapped) {
+			memcpy(sfd->mem_mirror + header->start, act_buffer,
+					header->end - header->start);
+
+			void *handle = NULL;
+			uint32_t map_stride = 0;
+			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
+					&handle, &map_stride, NULL);
+			uint32_t in_stride = sfd->dmabuf_info.strides[0];
+			if (map_stride == in_stride) {
+				memcpy(sfd->mem_local + header->start,
+						sfd->mem_mirror + header->start,
+						header->end - header->start);
+			} else {
+				/* stride changing transfer */
+				uint32_t row_length = (uint32_t)bpp *
+						      sfd->dmabuf_info.width;
+
+				uint32_t copy_size = (uint32_t)minu(row_length,
+						minu(map_stride, in_stride));
+
+				stride_shifted_copy(sfd->mem_local,
+						act_buffer - header->start,
+						header->start,
+						header->end - header->start,
+						copy_size, in_stride,
+						map_stride);
+			}
+
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				return 0;
 			}
+		} else {
+			memcpy(sfd->mem_mirror + header->start, act_buffer,
+					header->end - header->start);
+			memcpy(sfd->mem_local + header->start, act_buffer,
+					header->end - header->start);
 		}
 		return 0;
 	}
@@ -1928,41 +2003,91 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			return ERR_FATAL;
 		}
 
-		void *handle = NULL;
-		bool already_mapped = sfd->mem_local != NULL;
-		if (sfd->type == FDC_DMABUF && !already_mapped) {
-			uint32_t stride = 0, height = 0;
-			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
-					&handle, &stride, &height);
-			if (stride * height < sfd->buffer_size) {
-				wp_error("DMABUF mapped with stride %" PRIu32
-					 " height %" PRIu32
-					 ", but expected size=%zu>%zu, ignoring overlarge update",
-						stride, height,
-						sfd->buffer_size,
-						(size_t)(stride * height));
-				unmap_dmabuf(sfd->dmabuf_bo, handle);
+		if (sfd->type == FDC_DMABUF) {
+			if (sfd->mem_local != NULL) {
+				wp_error("Skipping update of RID=%d, buffer diff while mapped for reading",
+						sfd->remote_id);
 				return 0;
 			}
-		}
-		if (!sfd->mem_local) {
-			wp_error("Failed to apply diff to RID=%d, fd not mapped",
-					sfd->remote_id);
-			return 0;
-		}
+			int bpp = get_shm_bytes_per_pixel(
+					sfd->dmabuf_info.format);
+			if (bpp == -1) {
+				wp_error("Skipping update of RID=%d, non-RGBA/monoplane fmt %x",
+						sfd->remote_id,
+						sfd->dmabuf_info.format);
+				return 0;
+			}
 
-		DTRACE_PROBE2(waypipe, apply_diff_enter, sfd->buffer_size,
-				header->diff_size);
-		apply_diff(sfd->buffer_size, sfd->mem_mirror, sfd->mem_local,
-				header->diff_size, header->ntrailing,
-				act_buffer);
-		DTRACE_PROBE(waypipe, apply_diff_exit);
+			void *handle = NULL;
+			uint32_t map_stride = 0;
+			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
+					&handle, &map_stride, NULL);
+			if (!sfd->mem_local) {
+				wp_error("Failed to apply diff to RID=%d, fd not mapped",
+						sfd->remote_id);
+				return 0;
+			}
+			uint32_t in_stride = sfd->dmabuf_info.strides[0];
+			uint32_t row_length =
+					(uint32_t)bpp * sfd->dmabuf_info.width;
+			uint32_t copy_size = (uint32_t)minu(row_length,
+					minu(map_stride, in_stride));
 
-		if (sfd->type == FDC_DMABUF && !already_mapped) {
+			(void)in_stride;
+			size_t nblocks = sfd->buffer_size / sizeof(uint32_t);
+			size_t ndiffblocks =
+					header->diff_size / sizeof(uint32_t);
+			uint32_t *diff_blocks = (uint32_t *)act_buffer;
+			for (size_t i = 0; i < ndiffblocks;) {
+				size_t nfrom = (size_t)diff_blocks[i];
+				size_t nto = (size_t)diff_blocks[i + 1];
+				size_t span = nto - nfrom;
+				if (nto > nblocks || nfrom >= nto ||
+						i + (nto - nfrom) >=
+								ndiffblocks) {
+					wp_error("Invalid copy range [%zu,%zu) > %zu=nblocks or [%zu,%zu) > %zu=ndiffblocks",
+							nfrom, nto, nblocks,
+							i + 1, i + 1 + span,
+							ndiffblocks);
+					break;
+				}
+				memcpy(sfd->mem_mirror + sizeof(uint32_t) * nfrom,
+						diff_blocks + i + 2,
+						sizeof(uint32_t) * span);
+				stride_shifted_copy(sfd->mem_local,
+						(char *)((diff_blocks + i + 2) -
+								nfrom),
+						sizeof(uint32_t) * nfrom,
+						sizeof(uint32_t) * span,
+						copy_size, in_stride,
+						map_stride);
+				i += span + 2;
+			}
+			if (header->ntrailing > 0) {
+				size_t offset = sfd->buffer_size -
+						header->ntrailing;
+				memcpy(sfd->mem_mirror + offset,
+						act_buffer + header->diff_size,
+						header->ntrailing);
+				stride_shifted_copy(sfd->mem_local,
+						(act_buffer + header->diff_size) -
+								offset,
+						offset, header->ntrailing,
+						copy_size, in_stride,
+						map_stride);
+			}
+
 			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				return 0;
 			}
+		} else {
+			DTRACE_PROBE2(waypipe, apply_diff_enter,
+					sfd->buffer_size, header->diff_size);
+			apply_diff(sfd->buffer_size, sfd->mem_mirror,
+					sfd->mem_local, header->diff_size,
+					header->ntrailing, act_buffer);
+			DTRACE_PROBE(waypipe, apply_diff_exit);
 		}
 
 		return 0;

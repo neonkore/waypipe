@@ -89,6 +89,11 @@ int get_unique_dmabuf_handle(
 uint32_t dmabuf_get_simple_format_for_plane(uint32_t format, int plane);
 uint32_t dmabuf_get_stride(struct gbm_bo *bo);
 
+/** Returns the number of bytes per pixel for WL or DRM format 'format', if the
+ * format is an RGBA-type single plane format. For YUV-type or planar formats,
+ * returns -1. */
+int get_shm_bytes_per_pixel(uint32_t format);
+
 #ifndef DRM_FORMAT_MOD_INVALID
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 #endif
