@@ -60,5 +60,22 @@ size_t construct_diff_trailing(size_t size, int alignment_bits,
 void apply_diff(size_t size, char *__restrict__ target1,
 		char *__restrict__ target2, size_t diffsize, size_t ntrailing,
 		const char *__restrict__ diff);
+/**
+ * src, dest are buffers whose meaningful content consists of a series
+ * of rows; the start coordinates of each row are multiples of 'src_stride' and
+ * 'dst_stride', respectively. For example, 'C' in the following diagram
+ * indicates and important byte; '.' indicates a byte whose value does not
+ * matter.
+ *
+ * CCCCCCCCCCC......
+ * CCCCCCCCCCC......
+ * CCCCCCCCCCC......
+ *
+ * This function copies the content bytes of src to the content bytes of dest.
+ * Note: 'src' is the original point of the src buffer, this may be unintuitive.
+ */
+void stride_shifted_copy(char *dest, const char *src, size_t src_start,
+		size_t copy_length, size_t row_length, size_t src_stride,
+		size_t dst_stride);
 
 #endif // WAYPIPE_KERNEL_H

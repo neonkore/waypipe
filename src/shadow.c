@@ -91,6 +91,10 @@ static void destroy_unlinked_sfd(struct shadow_fd *sfd)
 		}
 		destroy_dmabuf(sfd->dmabuf_bo);
 		zeroed_aligned_free(sfd->mem_mirror, &sfd->mem_mirror_handle);
+		if (sfd->dmabuf_warped_handle) {
+			zeroed_aligned_free(sfd->dmabuf_warped,
+					&sfd->dmabuf_warped_handle);
+		}
 	} else if (sfd->type == FDC_PIPE) {
 		if (sfd->pipe.fd != sfd->fd_local && sfd->pipe.fd != -1) {
 			checked_close(sfd->pipe.fd);
@@ -747,15 +751,61 @@ static void worker_run_compress_diff(
 	}
 
 	DTRACE_PROBE1(waypipe, construct_diff_enter, task->damage_len);
+	char *source = sfd->mem_local;
+	if (sfd->type == FDC_DMABUF &&
+			sfd->dmabuf_map_stride != sfd->dmabuf_info.strides[0]) {
+		size_t tx_stride = (size_t)sfd->dmabuf_info.strides[0];
+		size_t common = (size_t)minu(sfd->dmabuf_map_stride, tx_stride);
+		/* copy mapped data to temporary buffer whose stride matches
+		 * what is sent over the wire */
+		for (int i = 0; i < task->damage_len; i++) {
+			size_t start = (size_t)task->damage_intervals[i].start;
+			size_t end = (size_t)task->damage_intervals[i].end;
+			size_t loc_start =
+					(start % tx_stride) +
+					(start / tx_stride) *
+							sfd->dmabuf_map_stride;
+			size_t loc_end = (end % tx_stride) +
+					 (end / tx_stride) *
+							 sfd->dmabuf_map_stride;
+
+			stride_shifted_copy(sfd->dmabuf_warped, sfd->mem_local,
+					loc_start, loc_end - loc_start, common,
+					sfd->dmabuf_map_stride,
+					sfd->dmabuf_info.strides[0]);
+		}
+
+		if (task->damaged_end) {
+			size_t alignment = 1u << pool->diff_alignment_bits;
+			size_t start = alignment *
+				       (sfd->buffer_size / alignment);
+			size_t end = sfd->buffer_size;
+
+			size_t loc_start =
+					(start % tx_stride) +
+					(start / tx_stride) *
+							sfd->dmabuf_map_stride;
+			size_t loc_end = (end % tx_stride) +
+					 (end / tx_stride) *
+							 sfd->dmabuf_map_stride;
+
+			stride_shifted_copy(sfd->dmabuf_warped, sfd->mem_local,
+					loc_start, loc_end - loc_start, common,
+					sfd->dmabuf_map_stride,
+					sfd->dmabuf_info.strides[0]);
+		}
+
+		source = sfd->dmabuf_warped;
+	}
+
 	size_t diffsize = construct_diff_core(pool->diff_func,
 			pool->diff_alignment_bits, task->damage_intervals,
-			task->damage_len, sfd->mem_mirror, sfd->mem_local,
-			diff_target);
+			task->damage_len, sfd->mem_mirror, source, diff_target);
 	size_t ntrailing = 0;
 	if (task->damaged_end) {
 		ntrailing = construct_diff_trailing(sfd->buffer_size,
 				pool->diff_alignment_bits, sfd->mem_mirror,
-				sfd->mem_local, diff_target + diffsize);
+				source, diff_target + diffsize);
 	}
 	DTRACE_PROBE1(waypipe, construct_diff_exit, diffsize);
 
@@ -818,8 +868,27 @@ static void worker_run_compress_block(
 	DTRACE_PROBE1(waypipe, worker_comp_enter, source_end - source_start);
 
 	/* Update mirror to match local */
-	memcpy(sfd->mem_mirror + source_start, sfd->mem_local + source_start,
-			source_end - source_start);
+	if (sfd->type == FDC_DMABUF &&
+			sfd->dmabuf_map_stride != sfd->dmabuf_info.strides[0]) {
+		uint32_t tx_stride = sfd->dmabuf_info.strides[0];
+		size_t common = (size_t)minu(sfd->dmabuf_map_stride,
+				sfd->dmabuf_info.strides[0]);
+		size_t loc_start = (source_start % tx_stride) +
+				   (source_start / tx_stride) *
+						   sfd->dmabuf_map_stride;
+		size_t loc_end = (source_end % tx_stride) +
+				 (source_end / tx_stride) *
+						 sfd->dmabuf_map_stride;
+
+		stride_shifted_copy(sfd->mem_mirror, sfd->mem_local, loc_start,
+				loc_end - loc_start, common,
+				sfd->dmabuf_map_stride,
+				sfd->dmabuf_info.strides[0]);
+	} else {
+		memcpy(sfd->mem_mirror + source_start,
+				sfd->mem_local + source_start,
+				source_end - source_start);
+	}
 
 	size_t sz = 0;
 	uint8_t *msg;
@@ -1185,7 +1254,8 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		}
 		if (!sfd->mem_local) {
 			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, false,
-					&sfd->dmabuf_map_handle, NULL, NULL);
+					&sfd->dmabuf_map_handle,
+					&sfd->dmabuf_map_stride, NULL);
 			if (!sfd->mem_local) {
 				return;
 			}
@@ -1195,7 +1265,10 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 			sfd->mem_mirror = zeroed_aligned_alloc(
 					alignz(sfd->buffer_size, alignment),
 					alignment, &sfd->mem_mirror_handle);
-			if (!sfd->mem_mirror) {
+			sfd->dmabuf_warped = zeroed_aligned_alloc(
+					alignz(sfd->buffer_size, alignment),
+					alignment, &sfd->dmabuf_warped_handle);
+			if (!sfd->mem_mirror || !sfd->dmabuf_warped) {
 				wp_error("Failed to allocate mirror");
 				return;
 			}
@@ -1206,7 +1279,6 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		} else {
 			// TODO: detailed damage tracking
 			damage_everything(&sfd->damage);
-
 			queue_diff_transfers(threads, sfd, transfers);
 		}
 		/* Unmapping will be handled by finish_update() */
@@ -1457,60 +1529,6 @@ static int check_sfd_type(struct shadow_fd *sfd, int remote_id,
 	return check_sfd_type_2(sfd, remote_id, mtype, ftype, ftype);
 }
 
-/*
- * src, dest are buffers whose meaningful content consists of a series
- * of rows; the start coordinates of each row are multiples of 'src_stride' and
- * 'dst_stride', respectively. For example, 'C' in the following diagram
- * indicates and important byte; '.' indicates a byte whose value does not
- * matter.
- *
- * CCCCCCCCCCC......
- * CCCCCCCCCCC......
- * CCCCCCCCCCC......
- *
- * This function copies the content bytes of src to the content bytes of dest.
- * Note: 'src' is the original point of the src buffer, this may be unintuitive.
- */
-static void stride_shifted_copy(char *dest, const char *src, size_t src_start,
-		size_t copy_length, size_t row_length, size_t src_stride,
-		size_t dst_stride)
-{
-	size_t src_end = src_start + copy_length;
-	size_t lrow = src_start / src_stride;
-	size_t trow = src_end / src_stride;
-	/* special case: inside a segment */
-	if (lrow == trow) {
-		size_t cstart = src_start - lrow * src_stride;
-		size_t cend = src_end - trow * src_stride;
-		cend = cend > row_length ? row_length : cend;
-		memcpy(dest + dst_stride * lrow + cstart, src + src_start,
-				cend - cstart);
-		return;
-	}
-
-	/* leading segment */
-	if (src_start > lrow * src_stride) {
-		size_t igap = src_start - lrow * src_stride;
-		if (igap < row_length) {
-			memcpy(dest + dst_stride * lrow + igap, src + src_start,
-					row_length - igap);
-		}
-	}
-
-	/* main body */
-	size_t srow = (src_start + src_stride - 1) / src_stride;
-	for (size_t i = srow; i < trow; i++) {
-		memcpy(dest + dst_stride * i, src + src_stride * i, row_length);
-	}
-
-	/* trailing segment */
-	if (src_end > trow * src_stride) {
-		size_t local = src_end - trow * src_stride;
-		local = local > row_length ? row_length : local;
-		memcpy(dest + dst_stride * trow, src + src_end - local, local);
-	}
-}
-
 int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		struct render_data *render, enum wmsg_type type, int remote_id,
 		const struct bytebuf *msg)
@@ -1614,7 +1632,10 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		sfd->mem_mirror = zeroed_aligned_alloc(
 				alignz(sfd->buffer_size, alignment), alignment,
 				&sfd->mem_mirror_handle);
-		if (!sfd->mem_mirror) {
+		sfd->dmabuf_warped = zeroed_aligned_alloc(
+				alignz(sfd->buffer_size, alignment), alignment,
+				&sfd->dmabuf_warped_handle);
+		if (!sfd->mem_mirror || !sfd->dmabuf_warped) {
 			wp_error("Failed to allocate mirror");
 			return 0;
 		}
@@ -1909,6 +1930,8 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 		if (sfd->type == FDC_DMABUF) {
 			if (sfd->mem_local != NULL) {
+				// todo: establish separate read/write mappings
+				// with independent lifecycles
 				wp_error("Skipping update of RID=%d, buffer fill while mapped for reading",
 						sfd->remote_id);
 				return 0;

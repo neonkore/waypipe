@@ -225,6 +225,11 @@ struct shadow_fd {
 	struct gbm_bo *dmabuf_bo;
 	struct dmabuf_slice_data dmabuf_info;
 	void *dmabuf_map_handle; /* Nonnull when DMABUF is currently mapped */
+	uint32_t dmabuf_map_stride; /* stride at which mem_local is mapped */
+	/* temporary cache of stride-fixed mem_local. Same dimensions as
+	 * mem_mirror */
+	char *dmabuf_warped;
+	void *dmabuf_warped_handle;
 
 	// Video data
 	struct AVCodecContext *video_context;

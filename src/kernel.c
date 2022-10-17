@@ -240,3 +240,43 @@ void apply_diff(size_t size, char *__restrict__ target1,
 		}
 	}
 }
+
+void stride_shifted_copy(char *dest, const char *src, size_t src_start,
+		size_t copy_length, size_t row_length, size_t src_stride,
+		size_t dst_stride)
+{
+	size_t src_end = src_start + copy_length;
+	size_t lrow = src_start / src_stride;
+	size_t trow = src_end / src_stride;
+	/* special case: inside a segment */
+	if (lrow == trow) {
+		size_t cstart = src_start - lrow * src_stride;
+		size_t cend = src_end - trow * src_stride;
+		cend = cend > row_length ? row_length : cend;
+		memcpy(dest + dst_stride * lrow + cstart, src + src_start,
+				cend - cstart);
+		return;
+	}
+
+	/* leading segment */
+	if (src_start > lrow * src_stride) {
+		size_t igap = src_start - lrow * src_stride;
+		if (igap < row_length) {
+			memcpy(dest + dst_stride * lrow + igap, src + src_start,
+					row_length - igap);
+		}
+	}
+
+	/* main body */
+	size_t srow = (src_start + src_stride - 1) / src_stride;
+	for (size_t i = srow; i < trow; i++) {
+		memcpy(dest + dst_stride * i, src + src_stride * i, row_length);
+	}
+
+	/* trailing segment */
+	if (src_end > trow * src_stride) {
+		size_t local = src_end - trow * src_stride;
+		local = local > row_length ? row_length : local;
+		memcpy(dest + dst_stride * trow, src + src_end - local, local);
+	}
+}
