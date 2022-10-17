@@ -251,10 +251,12 @@ void stride_shifted_copy(char *dest, const char *src, size_t src_start,
 	/* special case: inside a segment */
 	if (lrow == trow) {
 		size_t cstart = src_start - lrow * src_stride;
-		size_t cend = src_end - trow * src_stride;
-		cend = cend > row_length ? row_length : cend;
-		memcpy(dest + dst_stride * lrow + cstart, src + src_start,
-				cend - cstart);
+		if (cstart < row_length) {
+			size_t cend = src_end - trow * src_stride;
+			cend = cend > row_length ? row_length : cend;
+			memcpy(dest + dst_stride * lrow + cstart,
+					src + src_start, cend - cstart);
+		}
 		return;
 	}
 
