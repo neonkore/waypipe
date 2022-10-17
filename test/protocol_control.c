@@ -182,7 +182,7 @@ static void cleanup_tstate(struct transfer_states *ts)
 	free(ts->app);
 }
 
-static bool test_fixed_shm_buffer_copy()
+static bool test_fixed_shm_buffer_copy(void)
 {
 	fprintf(stdout, "\n  shm_pool+buffer test\n");
 
@@ -236,7 +236,7 @@ end:
 	return pass;
 }
 
-static bool test_fixed_shm_screencopy_copy()
+static bool test_fixed_shm_screencopy_copy(void)
 {
 	fprintf(stdout, "\n screencopy test\n");
 
@@ -308,7 +308,7 @@ end:
 	return pass;
 }
 
-static bool test_fixed_keymap_copy()
+static bool test_fixed_keymap_copy(void)
 {
 	fprintf(stdout, "\n  Keymap test\n");
 	struct transfer_states T;
@@ -807,7 +807,7 @@ end:
 }
 
 /* Check that gamma_control copies the input file */
-static bool test_gamma_control()
+static bool test_gamma_control(void)
 {
 	fprintf(stdout, "\n  Gamma control test\n");
 	struct transfer_states T;
@@ -862,7 +862,7 @@ end:
 }
 
 /* Check that gamma_control copies the input file */
-static bool test_presentation_time()
+static bool test_presentation_time(void)
 {
 	fprintf(stdout, "\n  Presentation time test\n");
 	struct transfer_states T;

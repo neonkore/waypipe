@@ -29,7 +29,7 @@
 #include <string.h>
 #include <unistd.h>
 
-static int usage()
+static int usage(void)
 {
 	fprintf(stderr, "usage: fake_ssh [-R A:B] [-t] destination command...\n");
 	return EXIT_FAILURE;
