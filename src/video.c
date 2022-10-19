@@ -1068,8 +1068,8 @@ void collect_video_from_mirror(
 		/* If using software encoding, need to convert to YUV */
 		void *handle = NULL;
 		uint32_t map_stride = 0;
-		void *data = map_dmabuf(sfd->dmabuf_bo, false, &handle,
-				&map_stride, NULL);
+		void *data = map_dmabuf(
+				sfd->dmabuf_bo, false, &handle, &map_stride);
 		if (!data) {
 			return;
 		}
@@ -1244,7 +1244,7 @@ void apply_video_packet(struct shadow_fd *sfd, struct render_data *rd,
 			uint32_t map_stride = 0;
 			void *handle = NULL;
 			void *data = map_dmabuf(sfd->dmabuf_bo, true, &handle,
-					&map_stride, NULL);
+					&map_stride);
 			if (!data) {
 				return;
 			}

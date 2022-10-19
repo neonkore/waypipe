@@ -66,13 +66,12 @@ int export_dmabuf(struct gbm_bo *bo)
 }
 void destroy_dmabuf(struct gbm_bo *bo) { (void)bo; }
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
-		uint32_t *exp_stride, uint32_t *exp_height)
+		uint32_t *exp_stride)
 {
 	(void)bo;
 	(void)write;
 	(void)map_handle;
 	(void)exp_stride;
-	(void)exp_height;
 	return NULL;
 }
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle)
@@ -325,7 +324,7 @@ void destroy_dmabuf(struct gbm_bo *bo)
 }
 
 void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
-		uint32_t *exp_stride, uint32_t *exp_height)
+		uint32_t *exp_stride)
 {
 	if (!bo) {
 		wp_error("Tried to map null gbm_bo");
@@ -348,12 +347,7 @@ void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
 		wp_error("Failed to map dmabuf");
 		return NULL;
 	}
-	if (exp_stride) {
-		*exp_stride = stride;
-	}
-	if (exp_height) {
-		*exp_height = height;
-	}
+	*exp_stride = stride;
 	return data;
 }
 int unmap_dmabuf(struct gbm_bo *bo, void *map_handle)

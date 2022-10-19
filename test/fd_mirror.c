@@ -95,7 +95,8 @@ static int update_dmabuf(int file_fd, struct gbm_bo *bo, size_t sz, int seqno)
 	}
 
 	void *map_handle = NULL;
-	void *data = map_dmabuf(bo, true, &map_handle, NULL, NULL);
+	uint32_t stride;
+	void *data = map_dmabuf(bo, true, &map_handle, &stride);
 	if (data == MAP_FAILED) {
 		return -1;
 	}
@@ -180,11 +181,12 @@ static bool check_match(int orig_fd, int copy_fd, struct gbm_bo *orig_bo,
 		munmap(cdata, csz);
 
 	} else if (otype == FDC_DMABUF) {
-		cdata = map_dmabuf(copy_bo, false, &chandle, NULL, NULL);
+		uint32_t copy_stride, orig_stride;
+		cdata = map_dmabuf(copy_bo, false, &chandle, &copy_stride);
 		if (cdata == NULL) {
 			return false;
 		}
-		odata = map_dmabuf(orig_bo, false, &ohandle, NULL, NULL);
+		odata = map_dmabuf(orig_bo, false, &ohandle, &orig_stride);
 		if (odata == NULL) {
 			unmap_dmabuf(copy_bo, chandle);
 			return false;
@@ -463,9 +465,9 @@ int main(int argc, char **argv)
 					}
 
 					void *map_handle = NULL;
+					uint32_t stride;
 					void *data = map_dmabuf(bo, true,
-							&map_handle, NULL,
-							NULL);
+							&map_handle, &stride);
 					if (!data) {
 						destroy_dmabuf(bo);
 						has_dmabuf = false;

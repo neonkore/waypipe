@@ -1255,7 +1255,7 @@ void collect_update(struct thread_pool *threads, struct shadow_fd *sfd,
 		if (!sfd->mem_local) {
 			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, false,
 					&sfd->dmabuf_map_handle,
-					&sfd->dmabuf_map_stride, NULL);
+					&sfd->dmabuf_map_stride);
 			if (!sfd->mem_local) {
 				return;
 			}
@@ -1951,7 +1951,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			void *handle = NULL;
 			uint32_t map_stride = 0;
 			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
-					&handle, &map_stride, NULL);
+					&handle, &map_stride);
 			uint32_t in_stride = sfd->dmabuf_info.strides[0];
 			if (map_stride == in_stride) {
 				memcpy(sfd->mem_local + header->start,
@@ -2045,7 +2045,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 			void *handle = NULL;
 			uint32_t map_stride = 0;
 			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
-					&handle, &map_stride, NULL);
+					&handle, &map_stride);
 			if (!sfd->mem_local) {
 				wp_error("Failed to apply diff to RID=%d, fd not mapped",
 						sfd->remote_id);

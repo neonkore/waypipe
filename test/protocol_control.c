@@ -388,7 +388,8 @@ static int create_dmabuf(void)
 	}
 
 	void *map_handle = NULL;
-	void *data = map_dmabuf(bo, true, &map_handle, NULL, NULL);
+	uint32_t stride;
+	void *data = map_dmabuf(bo, true, &map_handle, &stride);
 	if (!data) {
 		destroy_dmabuf(bo);
 		goto end;
