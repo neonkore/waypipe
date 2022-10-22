@@ -339,9 +339,16 @@ void *map_dmabuf(struct gbm_bo *bo, bool write, void **map_handle,
 	uint32_t stride;
 	uint32_t width = gbm_bo_get_width(bo);
 	uint32_t height = gbm_bo_get_height(bo);
-	void *data = gbm_bo_map(bo, 0, 0, width, height,
-			write ? GBM_BO_TRANSFER_WRITE : GBM_BO_TRANSFER_READ,
-			&stride, map_handle);
+	/* As of writing, with amdgpu, GBM_BO_TRANSFER_WRITE invalidates
+	 * regions not written to during the mapping, while iris preserves
+	 * the original buffer contents. GBM documentation does not say which
+	 * WRITE behavior is correct. What the individual drivers do may change
+	 * in the future. Specifying READ_WRITE preserves the old contents with
+	 * both drivers. */
+	uint32_t flags = write ? GBM_BO_TRANSFER_READ_WRITE
+			       : GBM_BO_TRANSFER_READ;
+	void *data = gbm_bo_map(
+			bo, 0, 0, width, height, flags, &stride, map_handle);
 	if (!data) {
 		// errno is useless here
 		wp_error("Failed to map dmabuf");
