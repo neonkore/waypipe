@@ -1239,6 +1239,14 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 	buf->dmabuf_offsets[0] = (uint32_t)offset0;
 	buf->dmabuf_strides[0] = (uint32_t)stride0;
 	buf->unique_id = ctx->g->tracker.buffer_seqno++;
+
+	if (ctx->on_display_side) {
+		/* the new dmabuf being created is not guaranteed to
+		 * have the original offset/stride parameters, so reset
+		 * them */
+		ctx->message[6] = 0;
+		ctx->message[7] = dmabuf_get_stride(sfd->dmabuf_bo);
+	}
 }
 
 void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
