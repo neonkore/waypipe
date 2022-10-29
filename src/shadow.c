@@ -1929,13 +1929,6 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 
 		if (sfd->type == FDC_DMABUF) {
-			if (sfd->mem_local != NULL) {
-				// todo: establish separate read/write mappings
-				// with independent lifecycles
-				wp_error("Skipping update of RID=%d, buffer fill while mapped for reading",
-						sfd->remote_id);
-				return 0;
-			}
 			int bpp = get_shm_bytes_per_pixel(
 					sfd->dmabuf_info.format);
 			if (bpp == -1) {
@@ -1950,11 +1943,16 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 			void *handle = NULL;
 			uint32_t map_stride = 0;
-			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
+			char *mem_local = map_dmabuf(sfd->dmabuf_bo, true,
 					&handle, &map_stride);
+			if (!mem_local) {
+				wp_error("Failed to apply fill to RID=%d, fd not mapped",
+						sfd->remote_id);
+				return 0;
+			}
 			uint32_t in_stride = sfd->dmabuf_info.strides[0];
 			if (map_stride == in_stride) {
-				memcpy(sfd->mem_local + header->start,
+				memcpy(mem_local + header->start,
 						sfd->mem_mirror + header->start,
 						header->end - header->start);
 			} else {
@@ -1965,7 +1963,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				uint32_t copy_size = (uint32_t)minu(row_length,
 						minu(map_stride, in_stride));
 
-				stride_shifted_copy(sfd->mem_local,
+				stride_shifted_copy(mem_local,
 						act_buffer - header->start,
 						header->start,
 						header->end - header->start,
@@ -1973,7 +1971,6 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 						map_stride);
 			}
 
-			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				return 0;
 			}
@@ -2028,11 +2025,6 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 		}
 
 		if (sfd->type == FDC_DMABUF) {
-			if (sfd->mem_local != NULL) {
-				wp_error("Skipping update of RID=%d, buffer diff while mapped for reading",
-						sfd->remote_id);
-				return 0;
-			}
 			int bpp = get_shm_bytes_per_pixel(
 					sfd->dmabuf_info.format);
 			if (bpp == -1) {
@@ -2044,9 +2036,9 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 
 			void *handle = NULL;
 			uint32_t map_stride = 0;
-			sfd->mem_local = map_dmabuf(sfd->dmabuf_bo, true,
+			char *mem_local = map_dmabuf(sfd->dmabuf_bo, true,
 					&handle, &map_stride);
-			if (!sfd->mem_local) {
+			if (!mem_local) {
 				wp_error("Failed to apply diff to RID=%d, fd not mapped",
 						sfd->remote_id);
 				return 0;
@@ -2078,7 +2070,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				memcpy(sfd->mem_mirror + sizeof(uint32_t) * nfrom,
 						diff_blocks + i + 2,
 						sizeof(uint32_t) * span);
-				stride_shifted_copy(sfd->mem_local,
+				stride_shifted_copy(mem_local,
 						(char *)((diff_blocks + i + 2) -
 								nfrom),
 						sizeof(uint32_t) * nfrom,
@@ -2093,7 +2085,7 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 				memcpy(sfd->mem_mirror + offset,
 						act_buffer + header->diff_size,
 						header->ntrailing);
-				stride_shifted_copy(sfd->mem_local,
+				stride_shifted_copy(mem_local,
 						(act_buffer + header->diff_size) -
 								offset,
 						offset, header->ntrailing,
@@ -2101,7 +2093,6 @@ int apply_update(struct fd_translation_map *map, struct thread_pool *threads,
 						map_stride);
 			}
 
-			sfd->mem_local = NULL;
 			if (unmap_dmabuf(sfd->dmabuf_bo, handle) == -1) {
 				return 0;
 			}
