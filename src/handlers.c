@@ -1249,6 +1249,34 @@ void do_wl_drm_req_create_prime_buffer(struct context *ctx,
 	}
 }
 
+static bool dmabuf_format_permitted(
+		struct context *ctx, uint32_t format, uint64_t modifier)
+{
+	if (ctx->g->config->only_linear_dmabuf) {
+		/* MOD_INVALID is allowed because some drivers don't support
+		 * LINEAR. Every modern GPU+driver should be able to handle
+		 * LINEAR. Conditionally blocking INVALID (i.e, if LINEAR is an
+		 * option) can break things when the application-side Waypipe
+		 * instance does not support LINEAR. */
+		if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
+			return false;
+		}
+	}
+	/* Filter out formats which are not recognized, or multiplane */
+	if (get_shm_bytes_per_pixel(format) == -1) {
+		return false;
+	}
+	/* Blacklist intel modifiers which introduce a second color control
+	 * surface; todo: add support for these, eventually */
+	if (modifier == (1uLL << 56 | 4) || modifier == (1uLL << 56 | 5) ||
+			modifier == (1uLL << 56 | 6) ||
+			modifier == (1uLL << 56 | 7) ||
+			modifier == (1uLL << 56 | 8)) {
+		return false;
+	}
+	return true;
+}
+
 void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 		uint32_t modifier_hi, uint32_t modifier_lo)
 {
@@ -1256,13 +1284,7 @@ void do_zwp_linux_dmabuf_v1_evt_modifier(struct context *ctx, uint32_t format,
 	(void)format;
 	uint64_t modifier = modifier_hi * 0x100000000uLL + modifier_lo;
 	// Prevent all advertisements for dmabufs with modifiers
-	if (ctx->g->config->only_linear_dmabuf) {
-		if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
-			ctx->drop_this_msg = true;
-		}
-	}
-	/* Filter out formats which are not recognized, or multiplane */
-	if (get_shm_bytes_per_pixel(format) == -1) {
+	if (!dmabuf_format_permitted(ctx, format, modifier)) {
 		ctx->drop_this_msg = true;
 	}
 }
@@ -1514,7 +1536,6 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 	struct obj_zwp_linux_dmabuf_feedback *obj =
 			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
 
-	bool has_any_linear = false;
 	int worst_case_space = 2;
 	for (size_t i = 0; i < obj->tranche_count; i++) {
 		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
@@ -1523,10 +1544,6 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 				wp_error("Tranche format index %u out of bounds [0,%zu)",
 						idx, obj->table_len);
 				return;
-			}
-			uint64_t modifier = obj->table[idx].modifier;
-			if (modifier == 0) {
-				has_any_linear = true;
 			}
 		}
 
@@ -1549,18 +1566,8 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 		uint16_t *fmts = (uint16_t *)&ctx->message[m + 3];
 		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
 			uint16_t idx = obj->tranches[i].tranche[j];
-			uint64_t modifier = obj->table[idx].modifier;
-
-			bool is_single_plane =
-					get_shm_bytes_per_pixel(
-							obj->table[idx].format) >
-					0;
-			bool keep = is_single_plane &&
-				    (modifier == 0 ||
-						    (!has_any_linear &&
-								    modifier == DRM_FORMAT_MOD_INVALID) ||
-						    !ctx->g->config->only_linear_dmabuf);
-			if (keep) {
+			if (dmabuf_format_permitted(ctx, obj->table[idx].format,
+					    obj->table[idx].modifier)) {
 				fmts[w++] = idx;
 			}
 		}
