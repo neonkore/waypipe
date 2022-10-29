@@ -1333,40 +1333,6 @@ void do_zwp_linux_buffer_params_v1_req_add(struct context *ctx, int fd,
 	}
 }
 
-/** After this function is called, all subsets of fds that duplicate an
- * underlying dmabuf will be reduced to select a single fd. */
-static void deduplicate_dmabuf_fds(struct context *context,
-		struct obj_zwp_linux_dmabuf_params *params)
-{
-	if (params->nplanes == 1) {
-		return;
-	}
-	int handles[MAX_DMABUF_PLANES];
-	struct gbm_bo *temp_bos[MAX_DMABUF_PLANES];
-	memset(temp_bos, 0, sizeof(temp_bos));
-	for (int i = 0; i < params->nplanes; i++) {
-		handles[i] = get_unique_dmabuf_handle(&context->g->render,
-				params->add[i].fd, &temp_bos[i]);
-	}
-	for (int i = 0; i < params->nplanes; i++) {
-		destroy_dmabuf(temp_bos[i]);
-	}
-	for (int i = 0; i < params->nplanes; i++) {
-		int lowest = i;
-		for (int k = 0; k < i; k++) {
-			if (handles[k] == handles[i]) {
-				lowest = k;
-				break;
-			}
-		}
-		if (lowest != i &&
-				params->add[i].fd != params->add[lowest].fd) {
-			checked_close(params->add[i].fd);
-		}
-		params->add[i].fd = params->add[lowest].fd;
-	}
-}
-
 static uint32_t append_zwp_linux_buffer_params_v1_req_add(uint32_t *msg,
 		bool display_side, uint32_t obj_id, uint32_t plane_idx,
 		uint32_t offset, uint32_t stride, uint32_t modifier_hi,
@@ -1400,7 +1366,6 @@ void do_zwp_linux_buffer_params_v1_req_create(struct context *ctx,
 	params->create_width = width;
 	params->create_height = height;
 	params->create_format = format;
-	deduplicate_dmabuf_fds(ctx, params);
 
 	struct dmabuf_slice_data info = {.width = (uint32_t)width,
 			.height = (uint32_t)height,
