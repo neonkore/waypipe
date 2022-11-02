@@ -1560,27 +1560,22 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 	/* Inject messages for filtered tranche parameters here */
 	size_t m = 0;
 	for (size_t i = 0; i < obj->tranche_count; i++) {
-		ctx->message[m] = obj->base.obj_id;
-
-		size_t w = 0;
-		uint16_t *fmts = (uint16_t *)&ctx->message[m + 3];
+		bool empty = true;
 		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
 			uint16_t idx = obj->tranches[i].tranche[j];
 			if (dmabuf_format_permitted(ctx, obj->table[idx].format,
 					    obj->table[idx].modifier)) {
-				fmts[w++] = idx;
+				empty = false;
+				break;
 			}
 		}
-		if (w == 0) {
+
+		if (empty) {
 			/* discard tranche, has no entries */
 			continue;
 		}
 
-		size_t s = 3 + ((w + 1) / 2);
-		ctx->message[m + 1] = message_header_2(
-				4 * (uint32_t)s, 5); // tranche_formats
-		ctx->message[m + 2] = (uint32_t)(2 * w);
-		m += s;
+		size_t s;
 
 		s = 3 + ((sizeof(dev_t) + 3) / 4);
 		ctx->message[m] = obj->base.obj_id;
@@ -1595,6 +1590,22 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_done(struct context *ctx)
 		ctx->message[m + 1] = message_header_2(
 				4 * (uint32_t)s, 6); // tranche_flags
 		ctx->message[m + 2] = obj->tranches[i].flags;
+		m += s;
+
+		size_t w = 0;
+		uint16_t *fmts = (uint16_t *)&ctx->message[m + 3];
+		for (size_t j = 0; j < obj->tranches[i].tranche_size; j++) {
+			uint16_t idx = obj->tranches[i].tranche[j];
+			if (dmabuf_format_permitted(ctx, obj->table[idx].format,
+					    obj->table[idx].modifier)) {
+				fmts[w++] = idx;
+			}
+		}
+		s = 3 + ((w + 1) / 2);
+		ctx->message[m] = obj->base.obj_id;
+		ctx->message[m + 1] = message_header_2(
+				4 * (uint32_t)s, 5); // tranche_formats
+		ctx->message[m + 2] = (uint32_t)(2 * w);
 		m += s;
 
 		s = 2;
