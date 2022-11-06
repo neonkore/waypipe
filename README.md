@@ -6,7 +6,7 @@ serializes changes to shared memory buffers over a single socket. This makes
 application forwarding similar to `ssh -X` [1] feasible.
 
 [0] [https://wayland.freedesktop.org/](https://wayland.freedesktop.org/)
-[1] [https://unix.stackexchange.com/questions/12755/how-to-forward-x-over-ssh-to-run-graphics-applications-remotely](https://unix.stackexchange.com/questions/12755/how-to-forward-x-over-ssh-to-run-graphics-applications-remotely)
+[1] [https://wiki.archlinux.org/title/OpenSSH#X11_forwarding](https://wiki.archlinux.org/title/OpenSSH#X11_forwarding)
 
 ## Usage
 
@@ -65,35 +65,36 @@ Optional dependencies:
 [0] [https://mesonbuild.com/](https://mesonbuild.com/)
 [1] [https://git.sr.ht/~sircmpwn/scdoc](https://git.sr.ht/~sircmpwn/scdoc)
 
-## Status
+## Reporting issues
 
-This program is now relatively stable, with no large changes to the
-command line interface or wire format expected. Features like video
-encoding, multiplanar and tiled DMABUFs, and support for newer Wayland
-protocols are less well tested and more likely to break between minor
-versions.
+Waypipe is developed at [0]; file bug reports or submit patches here.
 
-Waypipe is developed at [1]; file bug reports or submit patches here.
+In general, if a program does not work properly under Waypipe, it is a bug
+worth reporting. If possible, before doing so ensure both computers are using
+the most recently released version of Waypipe (or are built from git master).
 
-The wire format most recently changed with version 0.7.0, and is not
-compatible with earlier versions of Waypipe. Both the client and
-server sides of a connection must have a feature in order for it to work;
-for example, if the local copy of Waypipe was built without LZ4 support,
-and the remote copy has the `--compress lz4` option set, the connection
-may fail at some point.
+A workaround that may help for some programs using OpenGL or Vulkan is to
+run Waypipe with the `--no-gpu` flag, which may force them to use software
+rendering and shared memory buffers. (Please still file a bug.)
 
-Any of the following may make waypipe crash with an error message. If
-it segfaults, file a bug report!
+Some programs may require specific environment variable settings or command
+line flags to run remotely; a few examples are given in the man page[1]. 
 
-* Different local/client and remote/server versions or capabilities
-* Differing byte orders
-* Applications using unexpected protocols that pass file descriptors; file
-  bug reports for these
+Useful information for bug reports includes:
 
-[0] [https://mstoeckl.com/notes/gsoc/blog.html](https://mstoeckl.com/notes/gsoc/blog.html)
-[1] [https://gitlab.freedesktop.org/mstoeckl/waypipe/](https://gitlab.freedesktop.org/mstoeckl/waypipe/)
+* If a Waypipe process has crashed on either end of the connection,
+  a full stack trace, with debug symbols. (In gdb, `bt full`).
+* If the program uses OpenGL or Vulkan, the graphics cards and drivers on
+  both computers.
+* The output of `waypipe --version` on both ends of the connection
+* Logs when Waypipe is run with the `--debug` flag, or when the program
+  is run with the environment variable setting `WAYLAND_DEBUG=1`.
+* Screenshots of any visual glitches.
 
-## Limitations
+[0] [https://gitlab.freedesktop.org/mstoeckl/waypipe/](https://gitlab.freedesktop.org/mstoeckl/waypipe/)
+[1] [https://gitlab.freedesktop.org/mstoeckl/waypipe/-/blob/master/waypipe.scd](https://gitlab.freedesktop.org/mstoeckl/waypipe/-/blob/master/waypipe.scd)
+
+## Technical Limitations
 
 Waypipe does not have a full view of the Wayland protocol. It includes a
 compiled form of the base protocol and several extension protocols, but is not
@@ -127,3 +128,8 @@ each buffer that is used by a window surface. Since surfaces typically rotate
 between a small number of buffers, a video encoded window will appear to
 flicker as it switches rapidly between the underlying buffers, each of whose
 video streams has different encoding artifacts.
+
+The `zwp_linux_explicit_synchronization_v1` Wayland protocol is currently not
+supported.
+
+Waypipe does not work between computers that use different byte orders.
