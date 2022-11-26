@@ -87,7 +87,7 @@ static void fill_random_key(struct connection_token *token)
 	token->key[1] += 1 + (uint32_t)tp.tv_sec;
 	token->key[2] += 2 + (uint32_t)tp.tv_nsec;
 
-	int devrand = open("/dev/urandom", O_RDONLY);
+	int devrand = open("/dev/urandom", O_RDONLY | O_NOCTTY);
 	if (devrand != -1) {
 		uint32_t tmp[3];
 		errno = 0;
@@ -737,7 +737,8 @@ int run_server(int cwd_fd, struct socket_path socket_path,
 			/* To prevent getting POLLHUP spam after the first user
 			 * closes this pipe, open both read and write ends of
 			 * the named pipe */
-			control_pipe = open(control_path, O_RDWR | O_NONBLOCK);
+			control_pipe = open(control_path,
+					O_RDWR | O_NONBLOCK | O_NOCTTY);
 			if (control_pipe == -1) {
 				wp_error("Failed to open created FIFO for reading: %s",
 						control_path, strerror(errno));

@@ -120,7 +120,7 @@ int init_render_data(struct render_data *data)
 	const char *card = data->drm_node_path ? data->drm_node_path
 					       : "/dev/dri/renderD128";
 
-	int drm_fd = open(card, O_RDWR | O_CLOEXEC);
+	int drm_fd = open(card, O_RDWR | O_CLOEXEC | O_NOCTTY);
 	if (drm_fd == -1) {
 		wp_error("Failed to open drm fd for %s: %s", card,
 				strerror(errno));

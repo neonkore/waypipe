@@ -292,7 +292,7 @@ static int run_recon(const char *control_path, const char *recon_path)
 				control_path, (int)len, 108);
 		return EXIT_FAILURE;
 	}
-	int cfd = open(control_path, O_WRONLY);
+	int cfd = open(control_path, O_WRONLY | O_NOCTTY);
 	if (cfd == -1) {
 		fprintf(stderr, "Failed to open control pipe at \"%s\"\n",
 				control_path);

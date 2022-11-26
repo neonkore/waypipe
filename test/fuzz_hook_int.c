@@ -131,7 +131,8 @@ int main(int argc, char **argv)
 			uint32_t fsize = data[cursor++];
 			if (fsize == 0) {
 				/* 'copy' sink */
-				new_fileno = open("/dev/null", O_WRONLY);
+				new_fileno = open("/dev/null",
+						O_WRONLY | O_NOCTTY);
 				if (new_fileno == -1) {
 					wp_error("Failed to open /dev/null");
 				}

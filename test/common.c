@@ -39,7 +39,7 @@ uint64_t local_time_offset = 0;
 
 void *read_file_into_mem(const char *path, size_t *len)
 {
-	int fd = open(path, O_RDONLY);
+	int fd = open(path, O_RDONLY | O_NOCTTY);
 	if (fd == -1) {
 		fprintf(stderr, "Failed to open '%s'", path);
 		return NULL;
