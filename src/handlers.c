@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1666,6 +1667,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_format_table(
 void do_zwp_linux_dmabuf_feedback_v1_evt_main_device(struct context *ctx,
 		uint32_t device_count, const uint8_t *device_val)
 {
+
 	struct obj_zwp_linux_dmabuf_feedback *obj =
 			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
 	if ((size_t)device_count != sizeof(dev_t)) {
@@ -1673,7 +1675,20 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_main_device(struct context *ctx,
 				(size_t)device_count, sizeof(dev_t));
 		return;
 	}
-	memcpy(&obj->main_device, device_val, sizeof(dev_t));
+
+	if (ctx->on_display_side) {
+		memcpy(&obj->main_device, device_val, sizeof(dev_t));
+	} else {
+		// adopt the main device from the render fd being used
+		struct stat fsdata;
+		memset(&fsdata, 0, sizeof(fsdata));
+		int ret = fstat(ctx->g->render.drm_fd, &fsdata);
+		if (ret == -1) {
+			wp_error("Failed to get render device info");
+			return;
+		}
+		obj->main_device = fsdata.st_rdev;
+	}
 
 	/* todo: add support for changing render devices in waypipe */
 }
@@ -1681,7 +1696,7 @@ void do_zwp_linux_dmabuf_feedback_v1_evt_tranche_done(struct context *ctx)
 {
 	struct obj_zwp_linux_dmabuf_feedback *obj =
 			(struct obj_zwp_linux_dmabuf_feedback *)ctx->obj;
-	if (obj->main_device != obj->current_device) {
+	if (obj->main_device != obj->current_device && ctx->on_display_side) {
 		/* Filter out/ignore all tranches for anything but the main
 		 * device. */
 		return;
